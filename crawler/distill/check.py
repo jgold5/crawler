@@ -221,7 +221,6 @@ def check(out: Path, denylist: list[str] = ()) -> list[str]:
         if f.is_dir():
             continue
         rel = f.relative_to(out).as_posix()
-        c.raw("<path>", rel) if False else None
         if c.rename.denied(rel):
             c.add("<path>", None, "denylisted term in a file name")
         top = rel.split("/", 1)[0]

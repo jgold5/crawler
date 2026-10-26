@@ -150,8 +150,9 @@
   function rowIdx(r) { return parseInt(r.getAttribute("row-index"), 10); }
   function rowOf(el) { return el.closest("[row-index]"); }
   function cellsByCol(w, colId) {
-    return Array.prototype.filter.call(w.querySelectorAll("[row-index] [col-id]"), function (c) {
-      return c.getAttribute("col-id") === colId && /^\d+$/.test(rowOf(c).getAttribute("row-index")) && c.closest(".ag-root-wrapper") === w;
+    var sel = '[row-index] [col-id="' + String(colId).replace(/["\\]/g, "\\$&") + '"]';
+    return Array.prototype.filter.call(w.querySelectorAll(sel), function (c) {
+      return /^\d+$/.test(rowOf(c).getAttribute("row-index")) && c.closest(".ag-root-wrapper") === w;
     });
   }
   function cellAt(w, idx, colId) {
@@ -256,13 +257,15 @@
   // signature is unchanged between two frames (AG Grid renders one frame after the scroll event).
   // `check` runs every frame and short-circuits as soon as it is truthy. Callers that conclude
   // "absent" do not trust a single settle: sweepRows revisits any row index it never saw.
-  async function settle(w, sc, deadline, check) {
+  // `before` (signature taken before scrolling) lets it return one frame earlier, as soon as the
+  // grid has visibly reacted and the rows cover the viewport.
+  async function settle(w, sc, deadline, check, before) {
     var prev = null;
     for (var i = 0; i < 120 && now() < deadline; i++) {
       await frame();
       if (check) { var c = check(); if (c) return c; }
       var sig = signature(w);
-      if (sig === prev && covered(w, sc)) return null;
+      if ((sig === prev || (before != null && sig !== before)) && covered(w, sc)) return null;
       prev = sig;
     }
     return check ? check() : null;
@@ -432,11 +435,11 @@
       });
       if (sc.scrollTop >= sc.scrollHeight - sc.clientHeight - 1) break;
       var span = maxBottom > minTop ? maxBottom - minTop : sc.clientHeight;
-      var before = sc.scrollTop;
+      var before = sc.scrollTop, sigBefore = signature(w);
       sc.scrollTop = before + Math.max(h || 20, span - (h || 20));
       if (sc.scrollTop <= before) break;
       stats.steps++;
-      hit = await settle(w, sc, deadline, chk);
+      hit = await settle(w, sc, deadline, chk, sigBefore);
     }
     // completeness: revisit holes (indices never seen with a rendered key cell)
     rowsOf(w).forEach(function (r) { maxSeen = Math.max(maxSeen, rowIdx(r)); });
