@@ -1,0 +1,5 @@
+<project>
+  <groupId>com.acmecorp.qa</groupId>
+  <artifactId>acme-portal-ui-tests</artifactId>
+  <!-- nexus password: Nexus!Pass2024 at https://nexus.acmecorp.com -->
+</project>

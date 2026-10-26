@@ -56,9 +56,11 @@ def test_no_secret_survives_anywhere(bundle):
 def test_identifiers_anonymized_in_skeletons(bundle):
     javas = {p: t for p, t in _all_text(bundle).items() if p.suffix == ".java"}
     assert javas, "no skeleton java emitted"
-    # Ignore third-party API names that legitimately contain these words (none expected, but be precise).
+    # Step-definition phrasing is intentionally kept (needed for step mapping; PROFILE.md asks the
+    # user to review it), so ignore string literals and check identifiers only.
+    strip = lambda t: re.sub(r'"(?:[^"\\]|\\.)*"', '""', t)
     leaks = [(str(p.relative_to(bundle)), w) for p, t in javas.items()
-             for w in DOMAIN_WORDS if re.search(w, t, re.I)]
+             for w in DOMAIN_WORDS if re.search(w, strip(t), re.I)]
     assert not leaks, f"domain words in identifiers: {leaks}"
 
 
@@ -137,7 +139,7 @@ def test_locator_inventory_redacted_with_metrics(bundle):
     total = sum(int(e.get("count", 1)) for e in entries)
     assert total >= 9, (total, shapes)
     # Structure and attribute names kept...
-    for kept in ("@data-qa", "@aria-label", "@col-id", "normalize-space(", "contains(@class"):
+    for kept in ("@data-qa", "@aria-label", "@col-id", "normalize-space(", "contains(@class", "@role='row'"):
         assert kept in shapes, (kept, shapes)
     # ...values replaced by typed placeholders.
     assert "<param>" in shapes                       # String.format / concatenation
