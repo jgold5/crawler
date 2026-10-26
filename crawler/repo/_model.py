@@ -127,7 +127,7 @@ def entry_from_element(n: Node, s: RepoSchema, page: str, file: Path, version: s
         prefix, suffix = prefix or "", suffix or ""
     else:
         prefix = suffix = None
-        if value is None:
+        if not value:
             problems.append(f"{file.name}:{n.line}: element {name!r} has no locator")
     probe = value if value is not None else (prefix or "") + "x" + (suffix or "")
     pat = s.iframe_name_pattern

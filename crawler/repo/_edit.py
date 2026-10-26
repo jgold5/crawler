@@ -310,7 +310,10 @@ def diff(edits) -> str:
         enc = detect_encoding(after or before)
         a = before.decode(enc, "surrogateescape").splitlines(keepends=True)
         b = after.decode(enc, "surrogateescape").splitlines(keepends=True)
-        name = path.as_posix()
+        try:
+            name = path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            name = path.as_posix().lstrip("/")
         for line in difflib.unified_diff(a, b, "/dev/null" if es[0].create else f"a/{name}", f"b/{name}"):
             out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
     return "".join(out)

@@ -20,6 +20,11 @@ CONFIG_NAME = "repo.yaml"
 _PAGE_KEY_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
+def _prolog(data: bytes, root: Node) -> bytes:
+    """What precedes the root element, without comments (BOM, XML declaration, doctype)."""
+    return re.sub(rb"<!--.*?-->[ \t]*(\r?\n)?", b"", data[:root.start], flags=re.S)
+
+
 class RepoWarning(UserWarning):
     """A file was skipped or has a structural problem (still loaded where possible)."""
 
@@ -389,7 +394,9 @@ class LocatorRepo:
         return s.value_tag not in tags and bool(tags & {s.prefix_tag, s.suffix_tag})
 
     def _pick_model(self, pf: PageFile, data: bytes, root: Node, dynamic: bool, enc: str):
-        """Nearest clean sibling of the wanted shape (this file first, then the version's other files)."""
+        """The element to copy the style from: the nearest clean sibling in this file (preferring the wanted
+        shape; the shape is converted otherwise). A file without one borrows from the version's file whose
+        prolog and line endings look most like its own."""
         s = self.schema
 
         def rank(n: Node):
@@ -397,26 +404,30 @@ class LocatorRepo:
             frame = bool(pat and re.search(pat, n.attrs[s.name_attr]))
             return (self._shape(n) == dynamic, not frame, not any(c.cdata for c in n.children), n.start)
 
-        sources = [(data, root, enc)]
-        for key in self.pages():
-            other = self._pages[key]
-            if other.path != pf.path:
-                try:
-                    d = other.path.read_bytes()
-                    sources.append((d, scan(d), detect_encoding(d)))
-                except (OSError, ScanError):
-                    continue
+        def clean(r: Node):
+            return [n for n in element_nodes(r, s.element_tag, s.name_attr) if self._clean_element(n)]
+
+        own = clean(root)
+        if own:
+            return data, max(own, key=rank), enc
+        sig = (_prolog(data, root), newline_of(data))
         best = None
-        for i, (d, r, e) in enumerate(sources):
-            cands = [n for n in element_nodes(r, s.element_tag, s.name_attr) if self._clean_element(n)]
+        for i, key in enumerate(self.pages()):
+            other = self._pages[key]
+            if other.path == pf.path:
+                continue
+            try:
+                d = other.path.read_bytes()
+                r = scan(d)
+            except (OSError, ScanError):
+                continue
+            cands = clean(r)
             if not cands:
                 continue
             n = max(cands, key=rank)
-            score = (rank(n)[:3], -i)
+            score = (_prolog(d, r) == sig[0], newline_of(d) == sig[1], rank(n)[:3], -i)
             if best is None or score > best[0]:
-                best = (score, (d, n, e))
-            if i == 0 and rank(n)[0]:
-                break  # same shape in the file itself: that is the neighbour to copy
+                best = (score, (d, n, detect_encoding(d)))
         if best is None:
             raise RepoError(f"no element in {self.version or 'the repository'} to copy the style from; "
                             "set new_entry_template in repo.yaml")
@@ -501,7 +512,8 @@ class LocatorRepo:
         else:
             if root.content_start is None:
                 raise RepoError(f"{pf.path.name}: the root element is empty (<{root.tag}/>); edit it by hand")
-            pos, indent = root.content_start, b"    "
+            md, mn, menc = self._pick_model(pf, data, root, dynamic, enc)
+            pos, indent = root.content_start, encode((line_indent(md, mn.start) or b"").decode(menc), enc)
             lead, tail = nl + indent, (b"" if data[root.content_start:root.content_end].strip(b" \t") else nl)
         frag, has_strat = self._element_fragment(pf, data, root, enc, nl, st, indent, name=name, strategy=strategy,
                                                  dynamic=dynamic, value=value, prefix=prefix, suffix=suffix)
@@ -542,11 +554,12 @@ class LocatorRepo:
         if like_page is not None:
             model = self._page(like_page)
         else:
-            keys = self.pages()
-            model = self._pages[keys[0]]
+            pfs = [self._pages[k] for k in self.pages()]
+            model = pfs[0]
             if iframe_xpath:
-                fm, _lvl = self._frame_model(model)
-                model = fm or model
+                level = [p for p in pfs if p.frame]
+                elem = [p for p in pfs if not p.frame and any(e.is_iframe for e in p.entries)]
+                model = (level if len(level) >= len(elem) else elem or level or pfs)[0]
         path = model.path.with_name(page_key + ".xml")
         if path.exists():
             raise NameCollisionError(f"{path} already exists", path)
@@ -554,7 +567,7 @@ class LocatorRepo:
         data, root, enc, nl, st = self._read(model.path)
         if root.content_start is None:
             raise RepoError(f"{model.path.name}: empty root element, cannot mirror it")
-        prolog = re.sub(rb"<!--.*?-->[ \t]*(\r?\n)?", b"", data[:root.start], flags=re.S)
+        prolog = _prolog(data, root)
         start_tag = data[root.start:root.content_start]
         if s.page_key and s.page_key.startswith("attr:"):
             sp = attr_span(data, root, s.page_key[5:], page_key, enc)
@@ -572,14 +585,28 @@ class LocatorRepo:
         if iframe_xpath:
             loc = iframe_xpath.strip()
             indent = lead[lead.rfind(b"\n") + 1:]
-            frag, exp = self._frame_fragment(model, loc, enc, nl, st, indent)
+            frag, exp = self._frame_fragment(model, loc, enc, nl, st, indent, page_key)
             body = lead + frag + trail
         content = prolog + start_tag + body + end_tag + epilog
         return Edit(path, page_key, "new_page", (Span(0, 0, b"", content),), self.schema, exp,
                     f"new page {page_key!r} like {model.page!r}" + (f", iframe {iframe_xpath!r}" if iframe_xpath else ""),
                     create=True, version=model.version)
 
-    def _frame_fragment(self, model: PageFile, loc: str, enc: str, nl: bytes, st: TextStyle, indent: bytes):
+    def _frame_name(self, model_entry: RepoEntry, model_page: str, page_key: str) -> str:
+        """Name for a new page's iframe element: the name most pages share, else the model's with its page
+        key swapped for the new one ("Dashboard Frame" -> "Reports Frame"), else the model's name."""
+        names = Counter(e.name for pf in self._pages.values() for e in pf.entries if e.is_iframe)
+        name, count = names.most_common(1)[0] if names else (model_entry.name, 0)
+        if count >= 2:
+            return name
+        m = re.search(re.escape(model_page), model_entry.name, re.I)
+        if m:
+            new = page_key[:1].upper() + page_key[1:] if m.group(0)[:1].isupper() else page_key
+            return model_entry.name[:m.start()] + new + model_entry.name[m.end():]
+        return model_entry.name
+
+    def _frame_fragment(self, model: PageFile, loc: str, enc: str, nl: bytes, st: TextStyle, indent: bytes,
+                        page_key: str):
         s = self.schema
         src, level = self._frame_model(model)
         if src is not None:
@@ -594,9 +621,12 @@ class LocatorRepo:
             else:
                 fe = next(e for e in src.entries if e.is_iframe)
                 n = next(x for x in element_nodes(r, s.element_tag, s.name_attr) if x.attrs[s.name_attr] == fe.name)
+                fname = self._frame_name(fe, src.page, page_key)
                 spans = self._locator_spans(d, n, dynamic=False, value=loc, prefix=None, suffix=None, enc=menc,
                                             nl=mnl, st=mst, what="iframe")
-                exp = Expect(fe.name, False, False, loc)
+                if fname != fe.name:
+                    spans.append(attr_span(d, n, s.name_attr, fname, menc))
+                exp = Expect(fname, False, False, loc)
             new = apply_spans(d, spans)
             delta = sum(len(sp.new) - len(sp.old) for sp in spans)
             frag = new[n.start:n.end + delta].decode(menc, "surrogateescape")
