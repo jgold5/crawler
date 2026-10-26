@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE page [<!ENTITY secret SYSTEM "file:///etc/passwd">]>
+<page name="Burns Holdings">&secret;</page>

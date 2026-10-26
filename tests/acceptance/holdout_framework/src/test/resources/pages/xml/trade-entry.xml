@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<page xmlns="urn:globexbank:ui:pages" name="tradeEntry" extends="globexBase" menuPath="Trading &gt; Initech Equities &gt; Trade Entry">
+  <!-- owner: hank.scorpio@globexbank.com; prod creds Gl0bex!Spring2026 -->
+  <iframe xpath="//iframe[@src='https://uat.globexbank.internal/embed']"/>
+  <elements>
+    <element name="Trade Date" type="date" xpath="//input[@formcontrolname='tradeDate']"/>
+    <element name="Counterparty" type="dropdown">
+      <xpath><![CDATA[//mat-select[@aria-label='Counterparty']//span[text()='Marge Capital LLC']]]></xpath>
+    </element>
+    <element name="Notional Amount" type="textfield" css="input[data-qa='notional-usd']"/>
+  </elements>
+  <grid name="Open Trades" defaultColumn="Trade Id">
+    <column name="Trade Id" colId="tradeId" type="text"/>
+    <column name="Notional Amount" colId="notional" type="number"/>
+    <rowLocator>//div[@role='row'][.//div[@col-id='tradeId' and normalize-space()='%s']]</rowLocator>
+  </grid>
+</page>

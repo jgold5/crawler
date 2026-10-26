@@ -36,7 +36,7 @@ from .redact import (EMAIL_RX, IP_RX, SENTINEL, URL_RX, hosts_in, is_placeholder
                      looks_secret_token, redact_literal, secret_shapes, type_value)
 from .vocab import GENERIC_STEMS, PAGE_SCHEMA_WORDS, ROLE_WORDS
 
-PAGE_EXT = {".yaml", ".yml", ".json"}
+PAGE_EXT = {".yaml", ".yml", ".json", ".xml"}
 MAX_BYTES = 2_000_000
 MAX_NODES = 200_000          # per file, after YAML alias expansion
 MAX_DEPTH = 64
@@ -104,7 +104,7 @@ KIND_RX = re.compile(r"(?:map|list|null|bool|small-int|int|number|date|other|emp
 PARAM_STYLES = {"{x}", "${x}", "{{x}}", "%s", "{0}"}
 SEPARATORS = {">", "->", "=>", "»", "→", "|", "/", "\\", "::"}
 SCHEMA_STAT_KEYS = frozenset("""
-files read yaml json documents folders same_file_name_in_several_folders multi_page_files not_read naming
+files read yaml json xml documents folders same_file_name_in_several_folders multi_page_files not_read naming
 schema_keys_vocabulary schema_keys_by_frequency frequency_threshold_files name_keys placeholders inheritance pages
 pages_with_base base_keys max_depth unresolved_bases element_level_inherits elements total per_page min median max
 types grids pages_with_grids columns_per_grid with_default_column with_row_key column_types locators by_kind
@@ -298,6 +298,54 @@ def _size_ok(v, depth: int = 0, budget: list | None = None) -> bool:
     return True
 
 
+_XML_FORBIDDEN = re.compile(r"<!DOCTYPE|<!ENTITY", re.I)
+
+
+def _xml_local(name: str) -> str:
+    """`{urn:ns}tag` or `ns:tag` -> `tag` (namespace URIs are dropped, never emitted)."""
+    return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+
+
+def xml_to_obj(text: str):
+    """Parse an XML page-definition file into the same shape the YAML/JSON path handles.
+
+    <page name="x" extends="b"><elements><element name="E" xpath="//a"/>...</elements></page>
+      -> {"page": {"name": "x", "extends": "b", "elements": {"element": [{"name": "E", "xpath": "//a"}, ...]}}}
+    Attributes become keys; a child that occurs more than once becomes a list; an element with only text
+    (including CDATA, e.g. <xpath><![CDATA[//div]]></xpath>) becomes a scalar; text next to attributes goes under "value".
+    Comments and processing instructions are dropped. DOCTYPE/ENTITY declarations are refused outright.
+    """
+    import xml.etree.ElementTree as ET
+
+    if _XML_FORBIDDEN.search(text):
+        raise ValueError("DOCTYPE/ENTITY not allowed")
+
+    def conv(el):
+        body: dict = {_xml_local(k): v for k, v in el.attrib.items()}
+        groups: dict[str, list] = {}
+        for ch in el:
+            if not isinstance(ch.tag, str):  # comment / processing instruction
+                continue
+            groups.setdefault(_xml_local(ch.tag), []).append(conv(ch))
+        txt = (el.text or "").strip()
+        # <elements><element/>...</elements> is a list, exactly like `elements: [...]` in YAML.
+        if not el.attrib and not txt and len(groups) == 1:
+            (tag, items), = groups.items()
+            parent = _xml_local(el.tag)
+            if parent.lower() in (tag.lower() + "s", tag.lower() + "es", tag.lower()[:-1] + "ies", tag.lower() + "list"):
+                return items
+        for tag, items in groups.items():
+            body[tag] = items[0] if len(items) == 1 else items
+        if txt:
+            if not body:
+                return txt
+            body["value"] = txt  # text next to attributes is usually the locator itself (by="xpath">//...)
+        return body if body else None
+
+    root = ET.fromstring(text)
+    return {_xml_local(root.tag): conv(root)}
+
+
 def load(files: list[tuple[str, Path]], counts: Counter) -> tuple[list[PageDoc], list[str]]:
     """Parse selected files. Returns (docs, raw texts for denylist auto-detection). Failures are counted only."""
     docs, texts = [], []
@@ -307,9 +355,14 @@ def load(files: list[tuple[str, Path]], counts: Counter) -> tuple[list[PageDoc],
         except (OSError, UnicodeDecodeError):
             counts["skipped_unreadable"] += 1
             continue
-        fmt = "json" if p.suffix.lower() == ".json" else "yaml"
+        fmt = {".json": "json", ".xml": "xml"}.get(p.suffix.lower(), "yaml")
         try:
-            data = [json.loads(text)] if fmt == "json" else list(yaml.load_all(text, Loader=_Loader))
+            if fmt == "json":
+                data = [json.loads(text)]
+            elif fmt == "xml":
+                data = [xml_to_obj(text)]
+            else:
+                data = list(yaml.load_all(text, Loader=_Loader))
         except Exception:  # noqa: BLE001 - any parse failure: emit nothing from this file
             counts["skipped_parse_error"] += 1
             continue
@@ -875,6 +928,7 @@ class PageAdapter:
         col_types = Counter(t for g in grids for t in g["types"])
         return {
             "files": {"read": n, "yaml": sum(d.fmt == "yaml" for d in docs), "json": sum(d.fmt == "json" for d in docs),
+                      "xml": sum(d.fmt == "xml" for d in docs),
                       "documents": sum(len(d.docs) for d in docs), "folders": len(dirs),
                       "same_file_name_in_several_folders": sum(1 for v in stems.values() if v > 1),
                       "multi_page_files": st.multi_page_files,

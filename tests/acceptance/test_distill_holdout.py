@@ -184,3 +184,19 @@ def test_page_definitions_no_leaks_structure_kept(tmp_path):
     assert allp.count("extends: Page") == 2                 # inheritance links preserved via placeholders
     assert "//mat-select[" in allp and "@formcontrolname=" in allp   # Angular vocabulary kept
     assert "defaultColumn: Column" in allp and "clients:" in allp
+
+
+def test_xml_page_definitions_no_leaks_structure_kept(tmp_path):
+    out = Path(distill_mod.distill(HOLDOUT, tmp_path / "fp", DENY, pages=["src/test/resources/pages/xml/*.xml"]))
+    text = {p: p.read_text() for p in out.rglob("*") if p.is_file()}
+    extra = ["Trade Date", "Notional", "Open Trades", "Trade Id", "tradeEntry", "borrowPage", "BorrowRate",
+             "SubmitBorrow", "RecallQty", "notional-usd", "urn:", "Equities", "Trading", "passwd", "recall-qty"]
+    leaks = [(p.name, s) for p, t in text.items() for s in PAGE_SECRETS + extra if s.lower() in t.lower()]
+    assert not leaks, leaks
+    pages = sorted((out / "pages").glob("*.yaml"))
+    assert len(pages) == 2, [p.name for p in pages]            # evil.xml (DOCTYPE/ENTITY) refused
+    allp = "\n".join(p.read_text() for p in pages)
+    assert "//mat-select[@aria-label=" in allp                  # CDATA xpath parsed and redacted to a shape
+    assert "by: xpath" in allp and "following::input[1]" in allp  # tag-per-element style: text became the locator
+    assert allp.count("extends: Page") == 2 and "defaultColumn: Column" in allp
+    assert "<param>" in allp                                    # %s row template

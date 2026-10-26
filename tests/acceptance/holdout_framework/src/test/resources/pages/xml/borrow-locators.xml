@@ -1,0 +1,5 @@
+<locators page="borrowPage" extends="globexBase">
+  <BorrowRate by="xpath">//label[normalize-space()='Borrow Rate (bps)']/following::input[1]</BorrowRate>
+  <SubmitBorrow by="css">button.initech-submit</SubmitBorrow>
+  <RecallQty by="id">recall-qty-10.42.7.19</RecallQty>
+</locators>

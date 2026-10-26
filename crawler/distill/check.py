@@ -20,7 +20,7 @@ from .javasrc import unescape_java
 ALLOWED_TOP = {"profile.yaml", "PROFILE.md", "steps.yaml", "step-mappings.draft.yaml", "locators.yaml",
                "pages-schema.yaml"}
 PAGE_FILE_RX = re.compile(r"(?:pages/)?Page\d+\.yaml")
-PAGE_HEADER_RX = re.compile(r"# Page definition \d+ of \d+, redacted\. Same structure as the source (?:yaml|json) "
+PAGE_HEADER_RX = re.compile(r"# Page definition \d+ of \d+, redacted\. Same structure as the source (?:yaml|json|xml) "
                             r"file; names are placeholders, comments dropped\.\n")
 _STD_TAGS = {f"tag:yaml.org,2002:{t}" for t in ("str", "int", "float", "bool", "null")}
 _BAD = object()
