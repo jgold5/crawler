@@ -118,5 +118,50 @@ def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
     click.echo(f"wrote {bundle}  (open SITE-PROFILE.md; review before sharing)")
 
 
+@main.command()
+@click.argument("flow", type=click.Path(exists=True, dir_okay=False))
+@click.option("--repo", "repo_root", required=True, type=click.Path(exists=True, file_okay=False),
+              help="The XML locator repository (a folder of version folders, or of page files).")
+@click.option("--version", "version", default=None, help="UI version folder in the repository (e.g. aggrid).")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False), help="site.yaml.")
+@click.option("--out", default="author-out", show_default=True, type=click.Path(file_okay=False))
+@click.option("--runs", default=2, show_default=True, type=click.IntRange(1, 10),
+              help="Fresh sessions every proposed locator must verify in.")
+@click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
+@click.option("--apply", "do_apply", is_flag=True, help="Write the XML edits (default: only xml.diff).")
+@click.option("--answer", "answers", multiple=True, metavar="LINE=N",
+              help="Answer an ASK.md question: candidate N for line LINE (remembered in aliases.yaml). Repeatable.")
+@click.option("--aliases", "aliases_path", type=click.Path(dir_okay=False),
+              help="aliases.yaml (default: next to FLOW).")
+@click.option("--headed", is_flag=True, help="Show the browser.")
+def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, answers, aliases_path, headed) -> None:
+    """Run an English FLOW on the live app: write the owner's feature, verified XML edits and a report.
+
+    Exit codes: 0 done, 1 a check failed or a line could not run, 2 English/usage errors, 3 a line needs
+    your answer (see OUT/ASK.md).
+    """
+    from crawler.author import author as run_author
+
+    parts = ["crawler author", flow, "--repo", repo_root]
+    if version:
+        parts += ["--version", version]
+    if config_path:
+        parts += ["--config", config_path]
+    parts += ["--out", out]
+    if runs != 2:
+        parts += ["--runs", str(runs)]
+    if no_auth:
+        parts.append("--no-auth")
+    command = " ".join(parts)
+    res = run_author(flow, repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
+                     no_auth=no_auth, apply=do_apply, answers=list(answers), aliases=aliases_path,
+                     headless=not headed, echo=click.echo, command=command)
+    if res.errors:
+        click.echo(f"{flow}: {len(res.errors)} problem(s); nothing was run:", err=True)
+        for e in res.errors:
+            click.echo(f"  {e}", err=True)
+    raise SystemExit(res.exit_code)
+
+
 if __name__ == "__main__":
     main()

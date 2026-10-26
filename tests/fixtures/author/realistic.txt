@@ -1,0 +1,13 @@
+# Settings, Trades and Orders, every page inside the shell's iframe
+go to Settings
+set Display name to "Jane Q"
+click Save in the Profile section
+verify "Saved" is displayed
+go to Trades
+click the refresh icon in Open Trades
+click New Trade
+set Trade Date to 2 days from today
+click x in the Trade Entry dialog
+go to Orders
+set Quantity in the row where Order ID is A-950 to 5
+verify Quantity in that row is 5

@@ -1,0 +1,29 @@
+# site.yaml for the `crawler author` tests: the fixture app's pages through shell.html (each page in an
+# iframe, like the real app). The tests replace BASE_URL and ORIGIN (empty, or "&origin=alt&alt=<url>").
+base_url: BASE_URL
+test_id_attrs: [data-testid]
+unstable_id_patterns:
+  - '^rc_select_\d+$'
+unstable_text_patterns:
+  - '^Welcome back, '
+  - '\bnotifications?\b'
+  - '^Last (updated|sign-in) '
+spinner_selectors:
+  - ".app-spinner"
+pages:
+  Settings:
+    url: /shell.html?page=settingsORIGIN
+  Trades:
+    url: /shell.html?page=tradesORIGIN
+  Orders:
+    url: /shell.html?page=ordersORIGIN
+  Dashboard:
+    url: /shell.html?page=dashboardORIGIN
+grids:
+  Orders:
+    selector: "[aria-label='Orders']"
+    key_column: orderId
+auth:
+  storage_state: auth.json
+  max_age_minutes: 60
+timeout_ms: 10000
