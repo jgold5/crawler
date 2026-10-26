@@ -1,0 +1,17 @@
+@fortawesome/fontawesome-free 6.7.2 (Font Awesome Free; newest 6.x on registry.npmjs.org, 2026-10)
+source: https://registry.npmjs.org/@fortawesome/fontawesome-free/-/fontawesome-free-6.7.2.tgz
+integrity: sha512-JUOtgFW6k9u4Y+xeIaEiLr3+cjoUPiAuLXoyKOJSia6Duzb7pq+A76P9ZdPDoAoxHdHzq6gE9/jKBGXlZT8FbA==
+files (package/ -> here):
+  css/fontawesome.min.css css/solid.min.css css/regular.min.css css/v4-shims.min.css   (webfont mode; v6 classes + v5 aliases + v4 shims)
+  webfonts/fa-solid-900.woff2 webfonts/fa-regular-400.woff2                            (ttf fallbacks omitted)
+  js/fontawesome.min.js js/solid.min.js                                                (SVG mode: <i> -> <svg data-icon class="svg-inline--fa">)
+license: Icons CC BY 4.0, fonts SIL OFL 1.1, code MIT (LICENSE.txt)
+sha256:
+  4c17b497d3e115a551dc3c07980da341b51fd72eb2436d9106024a2a43640b9d  css/fontawesome.min.css
+  b191e77bdb6ff3deea87f61386e9b486579c47fc11f13a04917218a0f44061e5  css/regular.min.css
+  1136ce38cf54f167da5e0d80916dadf906dda566054403be1c45ceb61f0441b6  css/solid.min.css
+  6650a50d8591259400ed356b424ff4fe633bc0d1fc7be58e17c78fbb1312a707  css/v4-shims.min.css
+  e3456d1283b9d75337a773dfd147bf908fd02c01b4bf48576d8603a69b13cbe5  webfonts/fa-regular-400.woff2
+  aa75998623a391e61c6901794ace832e3ecdd288b56d608f21bea0411acc0b8e  webfonts/fa-solid-900.woff2
+  6b2cf1db39dba731b99d0d1b0246dec83a1cf4807336e7517b83807af2dfd615  js/fontawesome.min.js
+  f5a44e5a16f99065cdec0b1bb11075afc42fc708117f5f8dcf5ddbb2cc6e29df  js/solid.min.js

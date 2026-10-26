@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <element name="Oops">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//div[@id='x']</locatorValue>
+</pageDefinition>

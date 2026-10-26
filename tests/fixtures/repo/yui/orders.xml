@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-orders')]</iframe>
+    <element name="Quantity in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//td[@data-column='quantity' and @data-index='</xpath_a>
+        <xpath_b>']//input</xpath_b>
+    </element>
+    <element name="Status in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//tr[@data-row='</xpath_a>
+        <xpath_b>']//td[@data-column='status']//div</xpath_b>
+    </element>
+    <element name="Order by id">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//input[@id='</xpath_a>
+        <xpath_b>']</xpath_b>
+    </element>
+    <element name="Edit in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//div[contains(@id,'orderId')][contains(text(),'</xpath_a>
+        <xpath_b>')]/ancestor::tr//div[contains(@id,'edit')]</xpath_b>
+    </element>
+</pageDefinition>

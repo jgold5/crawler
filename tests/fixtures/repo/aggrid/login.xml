@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Login page (AG Grid UI). pageKey = file stem. -->
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-login')]</iframe>
+    <element name="Email address">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//input[@id=//label[normalize-space()='Email address']/@for]</locatorValue>
+    </element>
+    <element name="Password">
+        <locatorType>cssSelector</locatorType>
+        <locatorValue>input[name='password']</locatorValue>
+    </element>
+    <element name="Remember me">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//label[normalize-space()='Remember me']</locatorValue>
+    </element>
+    <!-- text-fragile and ambiguous: a hidden mobile duplicate also says "Sign in" -->
+    <element name="Sign in">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[contains(text(),'Sign in')]</locatorValue>
+    </element>
+    <element name="Forgot password?">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//a[normalize-space()='Forgot password?']</locatorValue>
+    </element>
+    <element name="Inline error">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//*[@role='alert']</locatorValue>
+    </element>
+</pageDefinition>

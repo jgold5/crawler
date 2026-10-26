@@ -1,0 +1,40 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<pageDefinition>
+	<element name='Dashboard Frame'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//iframe[contains(@name, 'appFrame-dashboard')]</locatorValue>
+	</element>
+	<element name='Search'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//input[@aria-label='Search']</locatorValue>
+	</element>
+	<element name='View details'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//button[normalize-space()='View details']</locatorValue>
+	</element>
+	<element name='Email O&apos;Brien'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//button[normalize-space()=concat('Email O',"'",'Brien "Bob"')]</locatorValue>
+	</element>
+	<element name='Notifications'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//span[contains(text(),'You have 3 notifications')]</locatorValue>
+	</element>
+	<element name='Generate report'>
+		<locatorType>cssSelector</locatorType>
+		<locatorValue>[data-testid='generate-report']</locatorValue>
+	</element>
+	<element name='Period'>
+		<locatorType>cssInput</locatorType>
+		<locatorValue>#period-select</locatorValue>
+	</element>
+	<element name='Tab'>
+		<locatorType>dynamicXpath</locatorType>
+		<xpath_a>//*[@role='tab'][normalize-space()='</xpath_a>
+		<xpath_b>']</xpath_b>
+	</element>
+	<element name='Refresh'>
+		<locatorType>xpath</locatorType>
+		<locatorValue>//*[contains(@class,'fa-refresh')]</locatorValue>
+	</element>
+</pageDefinition>

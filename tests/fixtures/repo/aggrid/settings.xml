@@ -1,0 +1,65 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- Settings page. Sections render asynchronously. -->
+<pageDefinition>
+  <pageTitle>Settings</pageTitle>
+  <element name="App Frame">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//iframe[contains(@name, &apos;appFrame-settings&apos;)]</locatorValue>
+  </element>
+  <element name="Display name">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//label[normalize-space()=&apos;Display name&apos;]//input</locatorValue>
+  </element>
+  <element name="Nickname">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//span[normalize-space()=&apos;Nickname&apos;]/following::input[1]</locatorValue>
+  </element>
+  <element name="Country">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//select[@id=//label[normalize-space()=&apos;Country&apos;]/@for]</locatorValue>
+  </element>
+  <!-- ambiguous: Profile and Security both have a Save button -->
+  <element name="Save">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//button[normalize-space()=&apos;Save&apos;]</locatorValue>
+  </element>
+  <element name="Save Security">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//*[@data-testid=&apos;security-section&apos;]//button[normalize-space()=&apos;Save&apos;]</locatorValue>
+  </element>
+  <element name="Current password">
+    <locatorType>xpath</locatorType>
+    <locatorValue><![CDATA[//input[@aria-label='Current password']]]></locatorValue>
+  </element>
+  <!-- broken: the id is random on every load -->
+  <element name="New password">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//input[@id=&apos;mui-4821&apos;]</locatorValue>
+  </element>
+  <element name="Subscribe to newsletter">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//label[normalize-space()=&quot;Subscribe to newsletter&quot;]//input</locatorValue>
+  </element>
+  <element name="Delete API key">
+    <locatorType>xpath</locatorType>
+    <locatorValue>
+      //section[h2[normalize-space()=&apos;API keys&apos;]]//button[normalize-space()=&apos;Delete&apos;]
+    </locatorValue>
+  </element>
+  <!-- class-fragile: hashed class changes per load -->
+  <element name="Delete account">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//button[@class=&apos;css-a1b2c3 btn-danger&apos;]</locatorValue>
+  </element>
+  <element name="Timezone option">
+    <locatorType>dynamicXpath</locatorType>
+    <xpath_a>//*[@role=&apos;option&apos;][normalize-space()=&apos;</xpath_a>
+    <xpath_b>&apos;]</xpath_b>
+  </element>
+  <!--
+  <element name="Old Save">
+    <locatorType>xpath</locatorType>
+    <locatorValue>//input[@type='submit']</locatorValue>
+  </element>
+  -->
+</pageDefinition>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <element name="App Frame">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//iframe[contains(@name, 'appFrame-settings')]</locatorValue>
+    </element>
+    <element name="Save">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[text()='Save']</locatorValue>
+    </element>
+    <element name="Save">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//input[@value='Save']</locatorValue>
+    </element>
+    <element name="Display name">
+        <locatorType>cssSelector</locatorType>
+        <locatorValue>input.yui-display-name</locatorValue>
+    </element>
+</pageDefinition>

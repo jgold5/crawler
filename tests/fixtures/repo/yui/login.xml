@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-login')]</iframe>
+    <element name="Email address">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//input[@name='email']</locatorValue>
+    </element>
+    <element name="Password">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//input[@name='password']</locatorValue>
+    </element>
+    <element name="Sign in">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[@id='yui-gen12-button']</locatorValue>
+    </element>
+</pageDefinition>

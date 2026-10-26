@@ -9,6 +9,13 @@ Heuristics (each step can be overridden by `repo.yaml` or a `RepoSchema` passed 
 - prefix/suffix tags: on elements without a value child, the pair of children that occur together,
   paired by name (`xpath_a`/`xpath_b`, `*_prefix`/`*_suffix`, `*1`/`*2`...) or else by document order.
 - page key: the file stem (or `attr:<name>` = an attribute of the root element).
+- iframe tag: a page-level (non-element) child of the root whose locator text targets an `iframe`/`frame`.
+  Element entries are iframe entries when their name matches `iframe_name_pattern` or their locator's last
+  step selects an `iframe`/`frame`.
+
+`repo.yaml` keys: element_tag, name_attr, strategy_tag, value_tag, prefix_tag, suffix_tag,
+`iframe: {tag: ..., element_name_pattern: ...}`, `page_key: stem | attr:<name>`, `new_entry_template`
+(a string, or `{static: ..., dynamic: ...}`, with `{name} {strategy} {value} {prefix} {suffix}` placeholders).
 """
 from __future__ import annotations
 
@@ -30,6 +37,14 @@ _STRATEGY_HINT = re.compile(r"(?i)type|strategy|^by$|how|kind|method|locatorby")
 _XPATH_START = re.compile(r"^\s*(?:\(|\.{0,2}/|(?:ancestor|descendant|following|preceding|child|parent|self|"
                           r"ancestor-or-self|descendant-or-self|following-sibling|preceding-sibling)::|id\()")
 _CSS_CHARS = re.compile(r"[#.\[\]>:~+*=,\s]")
+_MENTIONS_FRAME = re.compile(r"(?i)\b(?:i?frame)\b")
+_TARGETS_FRAME = re.compile(r"(?i)(?:^|/|\s|>)(?:i?frame)(?:\[.*\]|[#.:][^\s/>\[]*)*\s*$")
+DEFAULT_IFRAME_NAME_PATTERN = r"(?i)\b(?:i?frame)\b"
+
+
+def targets_frame(locator: str | None) -> bool:
+    """True when the locator's last step selects an <iframe>/<frame> (XPath or CSS)."""
+    return bool(locator and _TARGETS_FRAME.search(locator.strip()))
 
 
 def balanced(s: str) -> bool:
@@ -90,6 +105,9 @@ class RepoSchema:
     suffix_tag: str | None = None
     page_key: str | None = None      # "stem" | "attr:<name>"
     root_tag: str | None = None
+    iframe_tag: str | None = None            # page-level child holding the page's iframe locator
+    iframe_name_pattern: str | None = None   # regex: element entries with a matching name are iframe entries
+    new_entry_template: str | dict | None = None
     # learned statistics (informational)
     strategies: dict[str, int] = field(default_factory=dict)       # strategy vocabulary -> count
     page_level_tags: dict[str, int] = field(default_factory=dict)  # non-element children of the root
@@ -99,7 +117,7 @@ class RepoSchema:
     notes: list[str] = field(default_factory=list)
 
     TAG_FIELDS = ("element_tag", "name_attr", "strategy_tag", "value_tag", "prefix_tag", "suffix_tag",
-                  "page_key", "root_tag")
+                  "page_key", "root_tag", "iframe_tag", "iframe_name_pattern")
 
     def describe(self) -> str:
         lines = [f"{f}: {getattr(self, f)!r}  ({self.origin.get(f, '?')})" for f in self.TAG_FIELDS]
@@ -112,31 +130,70 @@ class RepoSchema:
 
     def to_yaml(self) -> str:
         """A `repo.yaml` that pins the current schema."""
-        return yaml.safe_dump({f: getattr(self, f) for f in self.TAG_FIELDS if f != "root_tag"
-                               and getattr(self, f) is not None}, sort_keys=False)
+        out = {f: getattr(self, f) for f in self.TAG_FIELDS
+               if f not in ("root_tag", "iframe_tag", "iframe_name_pattern") and getattr(self, f) is not None}
+        iframe = {k: v for k, v in (("tag", self.iframe_tag), ("element_name_pattern", self.iframe_name_pattern))
+                  if v is not None}
+        if iframe:
+            out["iframe"] = iframe
+        if self.new_entry_template is not None:
+            out["new_entry_template"] = self.new_entry_template
+        return yaml.safe_dump(out, sort_keys=False)
 
     def overridden(self, other: "RepoSchema | dict | None", origin: str) -> "RepoSchema":
         """Copy with every non-None tag field of `other` applied (origin recorded)."""
         out = copy.deepcopy(self)
         if other is None:
             return out
-        items = other.items() if isinstance(other, dict) else ((f, getattr(other, f)) for f in self.TAG_FIELDS)
+        if isinstance(other, dict):
+            items = list(normalize_config(other).items())
+        else:
+            items = [(f, getattr(other, f)) for f in self.TAG_FIELDS + ("new_entry_template",)]
         for k, v in items:
-            if k not in self.TAG_FIELDS:
-                raise ValueError(f"unknown repo schema key {k!r} (allowed: {', '.join(self.TAG_FIELDS)})")
-            if v is not None:
-                setattr(out, k, str(v))
-                out.origin[k] = origin
+            if v is None:
+                continue
+            setattr(out, k, v if k == "new_entry_template" else str(v))
+            out.origin[k] = origin
         return out
+
+
+def normalize_config(data: dict) -> dict:
+    """repo.yaml mapping -> RepoSchema field values (validates keys and shapes)."""
+    allowed = set(RepoSchema.TAG_FIELDS) | {"iframe", "new_entry_template"}
+    out: dict = {}
+    for k, v in data.items():
+        if k not in allowed:
+            raise ValueError(f"unknown repo schema key {k!r} (allowed: {', '.join(sorted(allowed))})")
+        if k == "iframe":
+            if v is None:
+                continue
+            if not isinstance(v, dict) or not set(v) <= {"tag", "element_name_pattern"}:
+                raise ValueError("iframe must be a mapping with 'tag' and/or 'element_name_pattern'")
+            out["iframe_tag"] = v.get("tag")
+            out["iframe_name_pattern"] = v.get("element_name_pattern")
+            if out["iframe_name_pattern"] is not None:
+                re.compile(out["iframe_name_pattern"])
+        elif k == "new_entry_template":
+            if v is not None and not (isinstance(v, str) or (isinstance(v, dict) and set(v) <= {"static", "dynamic"}
+                                                              and all(isinstance(x, str) for x in v.values()))):
+                raise ValueError("new_entry_template must be a string or {static: str, dynamic: str}")
+            out[k] = v
+        else:
+            out[k] = v
+    pk = out.get("page_key")
+    if pk is not None and not (pk == "stem" or (isinstance(pk, str) and pk.startswith("attr:") and len(pk) > 5)):
+        raise ValueError(f"page_key must be 'stem' or 'attr:<name>', got {pk!r}")
+    return out
 
 
 def load_repo_yaml(path: Path) -> dict:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path}: expected a mapping")
-    pk = data.get("page_key")
-    if pk is not None and not (pk == "stem" or (isinstance(pk, str) and pk.startswith("attr:") and len(pk) > 5)):
-        raise ValueError(f"{path}: page_key must be 'stem' or 'attr:<name>', got {pk!r}")
+    try:
+        normalize_config(data)
+    except (ValueError, re.error) as e:
+        raise ValueError(f"{path}: {e}") from None
     return data
 
 
@@ -249,6 +306,7 @@ def learn(roots: list[Node], fixed: RepoSchema) -> RepoSchema:
             notes.append("no dynamic (prefix/suffix) elements found")
 
     setl("page_key", "stem", "default")
+    setl("iframe_name_pattern", DEFAULT_IFRAME_NAME_PATTERN, "default")
     if s.strategy_tag:
         s.strategies = dict(values.get(s.strategy_tag, Counter()))
         s.strategies.pop("", None)
@@ -259,4 +317,20 @@ def learn(roots: list[Node], fixed: RepoSchema) -> RepoSchema:
             if c.tag not in known and not any(n.tag == s.element_tag for n in c.iter()):
                 page_level[c.tag] += 1
     s.page_level_tags = dict(page_level)
+    if s.iframe_tag is None:
+        frames: Counter = Counter()
+        for r in roots:
+            for c in r.children:
+                if c.tag in page_level and _MENTIONS_FRAME.search(page_level_text(c, s.value_tag) or ""):
+                    frames[c.tag] += 1
+        if frames:
+            setl("iframe_tag", frames.most_common(1)[0][0])
     return s
+
+
+def page_level_text(node: Node, value_tag: str | None) -> str | None:
+    """Locator text of a page-level node: its own text (leaf) or its value child's text."""
+    if node.is_leaf:
+        return node.text.strip()
+    vals = [c for c in node.children if c.tag == value_tag and c.is_leaf]
+    return vals[0].text.strip() if len(vals) == 1 else None

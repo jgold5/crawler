@@ -182,17 +182,198 @@
   var CLICK_TAGS = { button: 1, a: 1, summary: 1, label: 1, option: 1 };
   var FORM_TAGS = { input: 1, select: 1, textarea: 1 };
   var HEADING_TAGS = { h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, legend: 1, caption: 1 };
+  // Attributes that make an element clickable in Angular / AngularJS / Material markup (static attributes
+  // stay in the DOM; `(click)` bindings do not, so icon-only clickables are also found by their cursor).
+  var CLICK_ATTRS = ['onclick', 'ng-click', 'data-ng-click', 'routerlink', 'mat-icon-button', 'mat-button',
+                     'mat-raised-button', 'mat-flat-button', 'mat-stroked-button', 'mat-fab', 'mat-mini-fab',
+                     'mat-menu-item', 'mat-dialog-close'];
 
   function isClickable(el) {
     var t = el.localName;
     if (CLICK_TAGS[t]) return true;
     if (t === 'input') return !!INPUT_BUTTON[inputType(el)] || inputType(el) === 'checkbox' || inputType(el) === 'radio';
     if (CLICK_ROLES[role(el)]) return true;
-    if (el.hasAttribute('onclick')) return true;
+    for (var i = 0; i < CLICK_ATTRS.length; i++) if (el.hasAttribute(CLICK_ATTRS[i])) return true;
     if (!FORM_TAGS[t] && el.hasAttribute('tabindex') && parseInt(attr(el, 'tabindex'), 10) >= 0) return true;
     return false;
   }
   function isHeading(el) { return !!HEADING_TAGS[el.localName] || role(el) === 'heading'; }
+
+  // Title elements of containers that are not h1-h6 (Angular Material, Bootstrap).
+  var TITLE_SEL = 'mat-card-title,.mat-mdc-card-title,.mat-card-title,mat-panel-title,.mat-expansion-panel-header-title,' +
+                  '[mat-dialog-title],.mat-mdc-dialog-title,.mat-dialog-title,.panel-title,.card-title,.modal-title';
+  // Containers a title names.
+  var CONTAINER_SEL = '[role=dialog],[role=alertdialog],dialog,mat-dialog-container,.mat-mdc-dialog-container,mat-card,' +
+                      '.mat-mdc-card,.mat-card,mat-expansion-panel,.mat-expansion-panel,.card,.panel,.modal-content,' +
+                      'section,fieldset,[role=region],[role=tabpanel]';
+  var DIALOG_SEL = '[role=dialog],[role=alertdialog],dialog,mat-dialog-container,.mat-mdc-dialog-container,.modal-content';
+  var GRID_SEL = 'ag-grid-angular,ag-grid-vue,.ag-root-wrapper,.ag-root,[role=grid],[role=treegrid],table';
+  var TOOLBAR_SEL = '[role=toolbar],mat-toolbar,.mat-toolbar,.toolbar,.btn-toolbar,.btn-group';
+
+  function isA(el, sel) { try { return !!el.matches && el.matches(sel); } catch (e) { return false; } }
+  function isTitle(el) { return isHeading(el) || (isHtml(el) && isA(el, TITLE_SEL)); }
+  function closestOf(el, sel) { try { return el.closest(sel); } catch (e) { return null; } }
+
+  /** The title element of container `a` (a heading/title inside it that belongs to it, not to a nested container). */
+  function ownTitle(a) {
+    var ts = a.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading],' + TITLE_SEL);
+    for (var i = 0; i < ts.length && i < 40; i++) {
+      var t = ts[i];
+      var c = t.parentElement && closestOf(t.parentElement, CONTAINER_SEL);
+      if ((c === a || !c || !a.contains(c)) && text(t)) return t;
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------ icons (Font Awesome v4/v5/v6 + SVG mode)
+  // FA classes that only style an icon (family, size, animation, layout): never a name, never in a locator.
+  var FA_STYLE = /^(fa|fas|far|fal|fat|fad|fab|fak|fass|fasr|fasl|fast|fasds|svg-inline--fa)$/;
+  var FA_MOD = new RegExp('^fa-(' + [
+    'solid', 'regular', 'light', 'thin', 'duotone', 'brands', 'sharp', 'sharp-solid', 'sharp-regular', 'sharp-light',
+    'sharp-thin', 'sharp-duotone-solid', 'classic', 'kit', 'kit-duotone', 'primary', 'secondary',
+    '\\d+x', '2xs', 'xs', 'sm', 'lg', 'xl', '2xl', 'fw', 'width-auto', 'width-fixed', 'spin', 'pulse', 'spin-pulse',
+    'spin-reverse', 'beat', 'fade', 'beat-fade', 'bounce', 'flip', 'shake', 'border', 'inverse', 'li', 'ul', 'stack',
+    'stack-1x', 'stack-2x', 'pull-left', 'pull-right', 'pull-start', 'pull-end', 'rotate-90', 'rotate-180', 'rotate-270',
+    'rotate-by', 'flip-horizontal', 'flip-vertical', 'flip-both', 'swap-opacity', 'layers', 'layers-text',
+    'layers-counter', 'layers-bottom-left', 'layers-bottom-right', 'layers-top-left', 'layers-top-right', 'sr-only',
+    'sr-only-focusable', 'icon'
+  ].join('|') + ')$');
+  function isFaNoise(c) { return FA_STYLE.test(c) || FA_MOD.test(c); }
+  var ICON_SEL = '[class*="fa-"],svg[data-icon],mat-icon';
+  var GLYPH_CLOSE = /^[×✕✖✗✘⨯╳]$/;
+
+  /** Icon identity of node n: {name, cls, svg, mat, node} or null. */
+  function iconOf(n) {
+    if (!n || n.nodeType !== 1) return null;
+    if (n.localName === 'svg' && n.hasAttribute('data-icon')) {
+      return { name: attr(n, 'data-icon'), node: n, svg: true, prefix: attr(n, 'data-prefix') };
+    }
+    var cls = (n.getAttribute('class') || '').split(/[ \t\r\n]+/);
+    for (var i = 0; i < cls.length; i++) {
+      var c = cls[i];
+      if (c.length > 3 && c.lastIndexOf('fa-', 0) === 0 && !isFaNoise(c) && /^fa-[a-z0-9-]+$/.test(c)) {
+        return { name: c.slice(3), cls: c, node: n, svg: !isHtml(n) };
+      }
+    }
+    if (n.localName === 'mat-icon') {
+      var nm = attr(n, 'data-mat-icon-name') || attr(n, 'svgicon');
+      if (nm) return { name: nm, node: n, mat: nm === attr(n, 'svgicon') ? 'svgicon' : 'data-mat-icon-name' };
+      if (!n.children.length && /^[a-z0-9_]{2,40}$/.test(text(n))) return { name: text(n).replace(/_/g, '-'), node: n, mat: 'text' };
+    }
+    return null;
+  }
+
+  function pointer(el) { try { return getComputedStyle(el).cursor === 'pointer'; } catch (e) { return false; } }
+
+  /** The element an icon names: nearest clickable ancestor-or-self (4 levels), else a pointer-cursor icon itself. */
+  function iconOwner(n) {
+    var a = n;
+    for (var d = 0; a && d < 5; d++, a = a.parentElement) {
+      if (a === document.body || a === document.documentElement) break;
+      if (isHtml(a) && isClickable(a)) return a;
+    }
+    var h = htmlTarget(n);
+    if (h && h !== document.body && (pointer(h) || (h !== n && pointer(n)))) return h;
+    return null;
+  }
+
+  /** Icons that name el (own class, or icons inside it whose owner is el), unique by name. */
+  function iconsOf(el) {
+    var out = [], seen = {};
+    var list = [el];
+    var inner = el.querySelectorAll(ICON_SEL);
+    for (var i = 0; i < inner.length && i < 12; i++) list.push(inner[i]);
+    for (var j = 0; j < list.length; j++) {
+      var ic = iconOf(list[j]);
+      if (!ic || seen[ic.name] || iconOwner(list[j]) !== el) continue;
+      seen[ic.name] = 1;
+      out.push(ic);
+    }
+    if (!out.length && isClickable(el) && GLYPH_CLOSE.test(displayText(el))) {
+      out.push({ name: 'times', node: el, glyph: displayText(el) });
+    }
+    return out;
+  }
+  function iconLabel(ic) {
+    if (ic.svg) return 'svg data-icon="' + ic.name + '"';
+    if (ic.mat) return 'mat-icon "' + ic.name + '"';
+    if (ic.glyph) return 'glyph "' + ic.glyph + '"';
+    return ic.cls || 'fa-' + ic.name;
+  }
+
+  // English -> FA names across v4/v5/v6 (docs/FLOWS.md "Icon synonyms"). `*` is a prefix wildcard.
+  var ICON_SYN = [
+    [['refresh', 'reload'], ['refresh', 'sync', 'sync-alt', 'rotate', 'rotate-right', 'arrows-rotate', 'redo']],
+    [['close', 'x', 'cancel'], ['close', 'times', 'xmark', 'times-circle', 'circle-xmark', 'remove']],
+    [['delete', 'trash'], ['trash', 'trash-o', 'trash-alt', 'trash-can']],
+    [['edit', 'pencil'], ['pencil', 'pencil-alt', 'pen', 'edit', 'pen-to-square']],
+    [['add', 'new', 'plus'], ['plus', 'plus-circle', 'circle-plus', 'add']],
+    [['search'], ['search', 'magnifying-glass']],
+    [['filter'], ['filter', 'sliders']],
+    [['download', 'export'], ['download', 'file-export', 'file-download']],
+    [['upload', 'import'], ['upload', 'file-import', 'file-upload']],
+    [['settings'], ['cog', 'gear', 'cogs', 'sliders-h']],
+    [['more', 'menu'], ['ellipsis-v', 'ellipsis-h', 'ellipsis-vertical', 'bars']],
+    [['expand', 'collapse'], ['chevron-*', 'caret-*', 'angle-*', 'plus-square', 'minus-square']],
+    [['save'], ['save', 'floppy-disk']],
+    [['copy'], ['copy', 'clone']],
+    [['info', 'help'], ['info-circle', 'circle-info', 'question-circle', 'circle-question']]
+  ];
+  var ICON_NOISE = /(^| )(the|an?|icon|button|btn|link)(?= |$)/g;
+  function faIn(list, name) {
+    for (var i = 0; i < list.length; i++) {
+      var f = list[i];
+      if (f === name || (f.charAt(f.length - 1) === '*' && name.lastIndexOf(f.slice(0, -1), 0) === 0)) return true;
+    }
+    return false;
+  }
+  /** Synonym groups a canonical query names (by English word or by FA name). */
+  function synGroups(q) {
+    var dash = q.replace(/ /g, '-'), out = [];
+    ICON_SYN.forEach(function (g) {
+      if (g[0].indexOf(q) >= 0 || faIn(g[1], dash)) out.push(g);
+    });
+    return out;
+  }
+  /** English word for an FA name ("arrows-rotate" -> "refresh"), or the name humanized. */
+  function iconWord(name) {
+    for (var i = 0; i < ICON_SYN.length; i++) if (faIn(ICON_SYN[i][1], name)) return ICON_SYN[i][0][0];
+    return name.replace(/-/g, ' ');
+  }
+  /** {m, tier}: m=1 with tier 'icon' for an FA-name or synonym match; else fuzzy word overlap. */
+  function iconMatch(q, name) {
+    var qq = q.replace(ICON_NOISE, ' ').replace(/ +/g, ' ').trim() || q;
+    var n = canon(name.replace(/-/g, ' '));
+    if (qq === n) return { m: 1, tier: 'icon' };
+    var gs = synGroups(qq);
+    for (var i = 0; i < gs.length; i++) if (faIn(gs[i][1], name)) return { m: 1, tier: 'icon' };
+    return { m: match(qq, n), tier: 'fuzzy' };
+  }
+
+  // ------------------------------------------------------------------ tooltips (Angular Material, Bootstrap, PrimeNG)
+  var TOOLTIP_ATTRS = ['mattooltip', 'ptooltip', 'ngbtooltip', 'uib-tooltip', 'data-original-title',
+                       'data-bs-original-title', 'data-tooltip', 'tooltip'];
+  function isTooltipMessage(r) {
+    return /^cdk-describedby-message/.test(r.id) || role(r) === 'tooltip' ||
+      !!closestOf(r, '.cdk-describedby-message-container,#cdk-describedby-message-container');
+  }
+  /** [{text, source: 'tooltip'|'description', el?, attr?}] */
+  function tooltipsOf(el) {
+    var out = [];
+    attr(el, 'aria-describedby').split(/\s+/).filter(Boolean).forEach(function (id) {
+      var r = document.getElementById(id);
+      if (!r) return;
+      var t = text(r);
+      if (!t) return;
+      if (isTooltipMessage(r)) out.push({ text: t, source: 'tooltip', el: r });
+      else if (t.length <= 60) out.push({ text: t, source: 'description', el: r });
+    });
+    TOOLTIP_ATTRS.forEach(function (a) {
+      var v = norm(attr(el, a));
+      if (v) out.push({ text: v, source: 'tooltip', attr: a });
+    });
+    return out;
+  }
 
   function visible(el) {
     if (!el || !el.isConnected) return false;
@@ -279,13 +460,15 @@
   // ------------------------------------------------------------------ names
   var SOURCE_WEIGHT = {
     'label': 1.0, 'aria-label': 1.0, 'aria-labelledby': 1.0, 'text': 1.0, 'value': 1.0, 'label-text': 0.95,
-    'placeholder': 0.9, 'title': 0.8, 'alt': 0.8, 'name': 0.8, 'near': 0.65, 'testid': 0.7, 'id': 0.6
+    'tooltip': 0.95, 'placeholder': 0.9, 'title': 0.8, 'alt': 0.8, 'name': 0.8, 'icon': 0.8, 'near': 0.65,
+    'testid': 0.7, 'description': 0.6, 'id': 0.6
   };
   var SOURCE_ALIAS = {
     label: ['label', 'aria-labelledby'], aria: ['aria-label', 'aria-labelledby'],
     'aria-label': ['aria-label'], 'aria-labelledby': ['aria-labelledby'],
-    text: ['text', 'value', 'label-text'], value: ['value'], placeholder: ['placeholder'], title: ['title', 'alt'],
-    alt: ['alt'], name: ['name'], testid: ['testid'], 'test-id': ['testid'], id: ['id'], near: ['near']
+    text: ['text', 'value', 'label-text'], value: ['value'], placeholder: ['placeholder'], title: ['title', 'alt', 'tooltip'],
+    alt: ['alt'], name: ['name'], testid: ['testid'], 'test-id': ['testid'], id: ['id'], near: ['near'],
+    tooltip: ['tooltip', 'title'], icon: ['icon'], description: ['description']
   };
 
   /**
@@ -301,20 +484,24 @@
         .forEach(function (s) { allow[s] = 1; });
     }
     var out = [];
-    function add(name, source) {
+    function add(name, source, extra) {
       name = norm(name);
       if (!name || (allow && !allow[source])) return;
-      out.push({ name: name, source: source, weight: SOURCE_WEIGHT[source] });
+      var n = { name: name, source: source, weight: SOURCE_WEIGHT[source] };
+      if (extra) for (var k in extra) n[k] = extra[k];
+      out.push(n);
     }
     var t = el.localName, form = !!FORM_TAGS[t];
     var isBtnInput = t === 'input' && !!INPUT_BUTTON[inputType(el)];
+    var icons = form ? [] : iconsOf(el);
     if (el.labels) for (var i = 0; i < el.labels.length; i++) add(labelText(el.labels[i]), 'label');
     add(attr(el, 'aria-label'), 'aria-label');
     if (el.hasAttribute('aria-labelledby')) add(labelledbyText(el), 'aria-labelledby');
     if (isBtnInput) add(el.value || attr(el, 'alt'), 'value');
-    if (!form && (opts.anyText || isClickable(el))) {
+    if (!form && (opts.anyText || isClickable(el) || icons.length)) {
       var tx = t === 'label' ? labelText(el) : displayText(el);
-      if (tx.length <= 300) add(tx, t === 'label' ? 'label-text' : 'text');
+      var glyph = icons.length && icons[0].glyph;
+      if (tx.length <= 300 && !glyph) add(tx, t === 'label' ? 'label-text' : 'text');
       if (!tx) {
         var img = el.querySelector('img[alt]');
         if (img) add(attr(img, 'alt'), 'alt');
@@ -322,7 +509,14 @@
     }
     if (t === 'img' || t === 'area') add(attr(el, 'alt'), 'alt');
     add(attr(el, 'placeholder'), 'placeholder');
+    tooltipsOf(el).forEach(function (tt) { add(tt.text, tt.source); });
     add(attr(el, 'title'), 'title');
+    icons.forEach(function (ic) {
+      // an icon's own title attr / svg <title> (FA SVG mode renders title="" as <title>)
+      if (ic.node !== el && isHtml(ic.node)) add(attr(ic.node, 'title'), 'title');
+      if (ic.svg) { var st = ic.node.querySelector('title'); if (st) add(text(st), 'title'); }
+      add(ic.name, 'icon', { icon: ic });
+    });
     if (attr(el, 'name') && t !== 'a') add(humanize(attr(el, 'name')), 'name');
     (CFG.testIdAttrs || []).forEach(function (a) { if (el.hasAttribute(a)) add(humanize(attr(el, a)), 'testid'); });
     if (el.id && stableId(el.id)) add(humanize(el.id), 'id');
@@ -336,12 +530,17 @@
     return out;
   }
 
-  /** Best single human name for el (for descriptions / record mode). */
+  /** Best single human name for el (for descriptions / record mode). Icon-only: the English word ("Refresh"). */
   function describe(el) {
     el = htmlTarget(el);
     if (!el) return '';
     var ns = names(el, { anyText: true, near: true });
-    return ns.length ? ns[0].name : '';
+    if (!ns.length) return '';
+    if (ns[0].source === 'icon') {
+      var w = iconWord(ns[0].name);
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    }
+    return ns[0].name;
   }
 
   /** Title of the closest titled container around el (heading, legend, aria-label...). */
@@ -351,9 +550,10 @@
       if (a.hasAttribute('aria-label') && !isClickable(a)) return norm(attr(a, 'aria-label'));
       if (a.hasAttribute('aria-labelledby')) { var lt = labelledbyText(a); if (lt) return lt; }
       for (var c = a.firstElementChild; c; c = c.nextElementSibling) {
-        if (isHeading(c) && !c.contains(el)) return text(c);
-        if (c.children.length === 1 && isHeading(c.firstElementChild) && !c.contains(el)) return text(c.firstElementChild);
+        if (isTitle(c) && !c.contains(el)) return text(c);
+        if (c.children.length === 1 && isTitle(c.firstElementChild) && !c.contains(el)) return text(c.firstElementChild);
       }
+      if (isA(a, CONTAINER_SEL)) { var ot = ownTitle(a); if (ot && !ot.contains(el)) return text(ot); }
     }
     // Flat layout: nearest preceding heading that shares a parent chain with el.
     var r = snap('preceding::*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6][1]', el);
@@ -362,14 +562,93 @@
   }
 
   function summary(el, name) {
-    var n = name != null ? name : describe(el);
+    var ics = iconsOf(el);
+    var n = name != null ? name : (ics.length && !labelOf(el) ? '' : describe(el));
     var s = el.localName;
     if (el.localName === 'input') s += '[' + inputType(el) + ']';
     if (role(el)) s += '[role=' + role(el) + ']';
     if (n) s += ' "' + (n.length > 60 ? n.slice(0, 57) + '...' : n) + '"';
+    if (ics.length) s += ' [' + ics.map(iconLabel).join(', ') + ']';
     var ct = containerTitle(el);
     if (ct && ct !== n) s += ' in "' + (ct.length > 50 ? ct.slice(0, 47) + '...' : ct) + '"';
     return s;
+  }
+
+  /** Best non-icon name of el (label, aria, text, tooltip, title), or ''. */
+  function labelOf(el) {
+    var ns = names(el, { anyText: false });
+    for (var i = 0; i < ns.length; i++) if (ns[i].source !== 'icon' && ns[i].source !== 'id' && ns[i].source !== 'name') return ns[i].name;
+    return '';
+  }
+
+  function ordinal(k) {
+    var s = ['th', 'st', 'nd', 'rd'], v = k % 100;
+    return k + (s[(v - 20) % 10] || s[v] || s[0]);
+  }
+
+  /** Where el is, for a human: 'toolbar of "Open Trades", 3rd icon' / 'row 2 (T-2) of "Open Trades"' / 'dialog "Trade Entry"'. */
+  function locationOf(el) {
+    var ct = containerTitle(el), parts = [];
+    var dlg = closestOf(el, DIALOG_SEL);
+    var dt = dlg ? (labelledbyText(dlg) || attr(dlg, 'aria-label') || (ownTitle(dlg) ? text(ownTitle(dlg)) : '')) : '';
+    var tb = el.parentElement && closestOf(el.parentElement, TOOLBAR_SEL);
+    var row = el.parentElement && closestOf(el.parentElement, '[role=row],tr');
+    var where = ct ? ' of "' + ct + '"' : '';
+    if (row) {
+      var rows = row.parentElement ? Array.prototype.filter.call(row.parentElement.children, function (r) { return r.localName === row.localName; }) : [row];
+      var cells = row.querySelectorAll('[role=gridcell],td,th');
+      var key = cells.length ? text(cells[0]) : '';
+      var idx = row.getAttribute('row-index');
+      var n = idx != null && /^\d+$/.test(idx) ? +idx + 1 : rows.indexOf(row) + 1;
+      parts.push('row ' + n + (key && key.length <= 30 ? ' (' + key + ')' : '') + where);
+    } else if (tb) {
+      parts.push('toolbar' + where);
+    } else if (dlg) {
+      parts.push('dialog' + (dt ? ' "' + dt + '"' : ''));
+    } else if (ct) {
+      parts.push('in "' + ct + '"');
+    }
+    if (dlg && parts.length && parts[0].indexOf('dialog') !== 0 && dt && dt !== ct) parts[0] += ' in dialog "' + dt + '"';
+    var scope = row || tb;
+    if (scope && iconsOf(el).length) {
+      var sibs = Array.prototype.filter.call(scope.querySelectorAll('*'), function (e) {
+        return isHtml(e) && isClickable(e) && iconsOf(e).length > 0;
+      });
+      var k = sibs.indexOf(el);
+      if (k >= 0) parts.push(ordinal(k + 1) + ' icon');
+    }
+    if (!parts.length) parts.push('page');
+    return parts.join(', ');
+  }
+
+  /** Human evidence strings: 'fa-arrows-rotate', 'tooltip "Filter trades"', 'no tooltip', 'text "Save"'. */
+  function evidenceOf(el) {
+    var ev = [], ns = names(el, { anyText: false }), labelled = false, seen = {};
+    ns.forEach(function (n) {
+      if (n.source === 'icon') return;
+      var key = n.source + n.name;
+      if (seen[key]) return;
+      seen[key] = 1;
+      if (n.source !== 'id' && n.source !== 'name' && n.source !== 'testid' && n.source !== 'description') labelled = true;
+      ev.push((n.source === 'label-text' ? 'text' : n.source) + ' "' + n.name + '"');
+    });
+    var ics = iconsOf(el);
+    ics.forEach(function (ic) { ev.push(iconLabel(ic)); });
+    if (ics.length && !ns.some(function (n) { return n.source === 'tooltip' || n.source === 'title' || n.source === 'aria-label'; })) {
+      ev.push('no tooltip');
+    }
+    if (!labelled && !ics.length) ev.push('no label');
+    return ev;
+  }
+
+  /** What an element looked like when an alias was recorded (re-checked when the alias is used). */
+  function fingerprint(el) {
+    return {
+      tag: el.localName,
+      icons: iconsOf(el).map(function (i) { return i.name; }).sort(),
+      name: labelOf(el),
+      context: containerTitle(el)
+    };
   }
 
   // ------------------------------------------------------------------ candidate generation
