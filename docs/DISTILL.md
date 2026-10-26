@@ -52,6 +52,23 @@ repos:
 - Incremental: an index of each repo is cached locally by commit hash, so re-distilling after a
   pull only processes what changed.
 
+## Languages
+The stack is Spring (Java) services with Camel routes, a TypeScript UI, and Python (pytest).
+Everything is parsed with **tree-sitter**: one parser family for Java, TypeScript/TSX and
+Python, which also handles Java 17+ syntax that `javalang` can't. Only `.java`, `.ts`, `.tsx`,
+`.py`, `.feature` and Camel XML/YAML route files are read. Config and secrets files are never
+read (only counted).
+
+## TypeScript UI → crawler config (local only)
+Reading the UI source locally gives the crawler what it otherwise has to guess:
+- the router table (Angular `Routes` / React Router) → `pages:` with direct URLs
+- AG Grid `columnDefs` (`colId`/`field`/`headerName`, pinned, editable, `getRowId`) →
+  `grids:` with the real key column
+- test-id attributes in templates/JSX → `test_id_attrs`, plus coverage per component
+
+The output is a `site.suggested.yaml` that stays on the work machine. The bundle that leaves
+gets only the redacted shapes.
+
 ## Adapters (priority order)
 1. **jira**: input is issue JSON (what the work AI's Jira MCP returns: save it to a file) or
    pasted text/markdown, one or many issues, comments optional.
