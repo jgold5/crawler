@@ -25,7 +25,7 @@ DEFAULT_UNSTABLE_CLASS_PATTERNS = [
     r"^(css|sc|jss|emotion|makeStyles|styled|tss)-",   # CSS-in-JS
     r"^jsx-\d+",
     r"__[A-Za-z0-9_-]{5,}$",                          # CSS modules (Button_primary__a1B2c)
-    r"^[a-z]{1,3}-[A-Za-z0-9]{5,}$",                   # sc-bdVaJa style
+    r"^[a-z]{1,3}-(?=[A-Za-z0-9]*[A-Z0-9])[A-Za-z0-9]{5,}$",  # sc-bdVaJa style (needs a capital/digit, so btn-primary is kept)
     r"\d{3,}",
     r"[:\[\]/]",                                      # utility-class variants
     r"^(ng-|is-|has-)",                                # framework/state classes

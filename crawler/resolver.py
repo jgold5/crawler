@@ -86,7 +86,7 @@ def _raise_for(info: dict, target: Target, action: str) -> None:
     what = _what(target)
     if status == "ambiguous":
         raise ResolveError(
-            f"{action} {what}: {len(info.get('alternatives', []))} elements match equally well; "
+            f"{action} {what}: {info.get('count') or len(info.get('alternatives', []))} elements match equally well; "
             f"add `within:` (section/dialog title) or `nth:` to choose one",
             info.get("alternatives", []))
     if status == "error":

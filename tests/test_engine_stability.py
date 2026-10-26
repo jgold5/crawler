@@ -137,8 +137,7 @@ def test_candidates_survive_fresh_session_with_rerandomized_ids(browser):
         assert top["signin"] == "//button[normalize-space()='Sign in']"
         assert top["nav-inbox"] in ("//a[starts-with(normalize-space(),'Inbox')]", "//a[@href='/inbox']")
         assert top["Profile-save"] == "//section[h2[normalize-space()='Profile']]//button[normalize-space()='Save']"
-        assert top["dlg-ok"] == ("//div[@aria-labelledby=//h2[normalize-space()='Confirm delete']/@id]"
-                                 "//button[normalize-space()='OK']")
+        assert top["dlg-ok"] == "//div[h2[normalize-space()='Confirm delete']]//button[normalize-space()='OK']"
         assert top["promo"] == "//span[normalize-space()='Promo code']/following::input[1]"
         assert top["page-ok"] == "(//button[normalize-space()='OK'])[2]"  # last resort, but not a path
         assert gen["page-ok"][0].strategy == "indexed" and gen["page-ok"][0].score < 30

@@ -280,3 +280,15 @@ def test_match_scoring(page):
     assert 0.55 < m("email", "Work email") < 0.8
     assert m("first name", "name first") == pytest.approx(0.6)
     assert m("Save", "Unrelated") == 0
+
+
+def test_contenteditable_and_role_textbox_near_text(page):
+    page.set_content("""
+      <div><b>Notes</b><div contenteditable="true" class="css-1x9f2k"></div></div>
+      <div><b>Summary</b><div role="textbox" tabindex="0"></div></div>""")
+    r = res(page, "fill", query="Notes")
+    assert r.handle.evaluate("e => e.isContentEditable")
+    r = res(page, "fill", query="Summary")
+    assert r.handle.get_attribute("role") == "textbox"
+    cs = generate(page, r.handle, CFG)
+    assert cs[0].xpath == "//b[normalize-space()='Summary']/following::div[1]"

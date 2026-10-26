@@ -415,3 +415,15 @@ def test_icon_title_text_does_not_pollute_text_locator(page):
     cs = generate(page, b2, CFG)
     assert_sound(page, b2, cs)
     assert cs[0].xpath == "//button[contains(normalize-space(),'Archive')]"
+
+
+def test_dialog_anchor_via_aria_labelledby_when_no_heading_child(page):
+    page.set_content("""
+      <span id=":r5:" hidden>Delete order</span>
+      <div role="dialog" aria-labelledby=":r5:"><p>Sure?</p><button>OK</button></div>
+      <div role="dialog" aria-labelledby=":r6:"><span id=":r6:">Rename</span><button>OK</button></div>""")
+    b1 = page.query_selector_all("button")[0]
+    cs = generate(page, b1, CFG)
+    assert_sound(page, b1, cs)
+    assert cs[0].xpath == ("//div[@aria-labelledby=//span[normalize-space()='Delete order']/@id]"
+                           "//button[normalize-space()='OK']")

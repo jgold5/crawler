@@ -132,14 +132,31 @@
   }
   function count(xp) { var r = snap(xp); return r ? r.snapshotLength : -1; }
   function first(xp) { var r = snap(xp); return r && r.snapshotLength ? r.snapshotItem(0) : null; }
-  function all(xp) {
-    var r = snap(xp), out = [];
+  function all(xp, ctx) {
+    var r = snap(xp, ctx), out = [];
     if (r) for (var i = 0; i < r.snapshotLength; i++) out.push(r.snapshotItem(i));
     return out;
   }
-  function uniqueIs(xp, el) {
-    var r = snap(xp);
+  function uniqueIs(xp, el, ctx) {
+    var r = snap(xp, ctx);
     return !!r && r.snapshotLength === 1 && r.snapshotItem(0) === el;
+  }
+
+  /**
+   * Elements selected by //T[@A=INNER/@R], with exact XPath semantics (some INNER node's @R equals
+   * the element's @A) but without the browser re-evaluating INNER for every candidate node, which
+   * is quadratic (~90 ms for 300 inputs on a 2k-element page).
+   */
+  function refSelect(t, a, inner, r) {
+    var vals = new Set();
+    all(inner).forEach(function (n) { if (n.nodeType === 1 && n.hasAttribute(r)) vals.add(n.getAttribute(r)); });
+    if (!vals.size) return [];
+    var list = document.querySelectorAll((t === '*' ? '' : t) + '[' + a + ']');
+    return Array.prototype.filter.call(list, function (e) { return vals.has(e.getAttribute(a)); });
+  }
+  function refUnique(t, a, inner, r, el) {
+    var m = refSelect(t, a, inner, r);
+    return m.length === 1 && m[0] === el;
   }
 
   // ------------------------------------------------------------------ element helpers
@@ -310,7 +327,8 @@
     (CFG.testIdAttrs || []).forEach(function (a) { if (el.hasAttribute(a)) add(humanize(attr(el, a)), 'testid'); });
     if (el.id && stableId(el.id)) add(humanize(el.id), 'id');
     var labelled = out.some(function (n) { return n.weight >= 1 || n.source === 'placeholder'; });
-    if ((form || opts.near) && !isBtnInput && !labelled && (!allow || allow.near)) {
+    var fieldLike = form || el.isContentEditable || /^(textbox|searchbox|combobox|spinbutton)$/.test(role(el));
+    if ((fieldLike || opts.near) && !isBtnInput && !labelled && (!allow || allow.near)) {
       var nt = nearText(el);
       if (nt) add(nt.text, 'near');
     }
@@ -443,7 +461,9 @@
     if (lb.length === 1) {
       var lt = text(lb[0]);
       if (lt && lt.length <= 60 && stableText(lt)) {
-        add('//' + t + '[@aria-labelledby=//' + tagOf(lb[0]) + '[normalize-space()=' + lit(lt) + ']/@id]', 76, 'aria-labelledby');
+        var linner = '//' + tagOf(lb[0]) + '[normalize-space()=' + lit(lt) + ']';
+        add('//' + t + '[@aria-labelledby=' + linner + '/@id]', 76, 'aria-labelledby');
+        out[out.length - 1].check = function (el) { return refUnique(t, 'aria-labelledby', linner, 'id', el); };
       }
     }
     function headPred(h) {
@@ -472,9 +492,12 @@
     var res = [], a = el.parentElement;
     for (var depth = 0; a && depth < 8 && res.length < max; depth++, a = a.parentElement) {
       if (a === document.body || a === document.documentElement || !isHtml(a)) break;
-      var xs = anchorXPaths(a);
+      var xs = anchorXPaths(a).sort(function (x, y) { return y.w - x.w; });
       for (var i = 0; i < xs.length; i++) {
-        if (uniqueIs(xs[i].xp, a)) { res.push({ el: a, xp: xs[i].xp, w: xs[i].w, kind: xs[i].kind }); break; }
+        if (xs[i].check ? xs[i].check(a) : uniqueIs(xs[i].xp, a)) {
+          res.push({ el: a, xp: xs[i].xp, w: xs[i].w, kind: xs[i].kind });
+          break;
+        }
       }
     }
     return res;
@@ -509,12 +532,13 @@
     var el = htmlTarget(el0);
     if (!el || !el.isConnected) return [];
     var memo = new Map(), out = new Map();
-    function ok(xp) {
-      if (!memo.has(xp)) memo.set(xp, uniqueIs(xp, el));
+    function ok(xp, check) {
+      if (!memo.has(xp)) memo.set(xp, check ? !!check() : uniqueIs(xp, el));
       return memo.get(xp);
     }
-    function add(xp, strategy, w) {
-      if (out.has(xp) || !ok(xp)) return false;
+    /** `check` is an exact, cheaper equivalent of "xp selects exactly el" (see refSelect, anchors). */
+    function add(xp, strategy, w, check) {
+      if (out.has(xp) || !ok(xp, check)) return false;
       out.set(xp, { xpath: xp, strategy: strategy, score: scoreOf(xp, w) });
       return true;
     }
@@ -529,12 +553,11 @@
         var l = el.labels[i];
         if (!l.contains(el) && el.id && attr(l, 'for') === el.id) {
           var full = text(l);
-          if (full && full.length <= 80 && stableText(full)) {
-            if (add('//' + t + '[@id=//label[normalize-space()=' + lit(full) + ']/@for]', 'label', 82)) anyUnique = true;
-          } else if (full) {
-            var lp = stablePrefix(full, 40);
-            if (lp && add('//' + t + '[@id=//label[starts-with(normalize-space(),' + lit(lp) + ')]/@for]', 'label', 72)) anyUnique = true;
-          }
+          var linner = '';
+          if (full && full.length <= 80 && stableText(full)) linner = '//label[normalize-space()=' + lit(full) + ']';
+          else if (full && stablePrefix(full, 40)) linner = '//label[starts-with(normalize-space(),' + lit(stablePrefix(full, 40)) + ')]';
+          if (linner && add('//' + t + '[@id=' + linner + '/@for]', 'label', linner.indexOf('starts-with') > 0 ? 72 : 82,
+                            refUnique.bind(null, t, 'id', linner, 'for', el))) anyUnique = true;
         } else if (l.contains(el)) {
           var segs = labelSegments(l), whole = text(l);
           var seg = segs.filter(function (x) { return x.length >= 3 && stableText(x); })[0] || segs[0];
@@ -553,7 +576,9 @@
     if (lbs.length === 1) {
       var ref = lbs[0], rt = text(ref);
       if (rt && rt.length <= 80 && stableText(rt)) {
-        if (add('//' + t + '[@aria-labelledby=//' + tagOf(ref) + '[normalize-space()=' + lit(rt) + ']/@id]', 'aria-labelledby', 78)) anyUnique = true;
+        var rinner = '//' + tagOf(ref) + '[normalize-space()=' + lit(rt) + ']';
+        if (add('//' + t + '[@aria-labelledby=' + rinner + '/@id]', 'aria-labelledby', 78,
+                refUnique.bind(null, t, 'aria-labelledby', rinner, 'id', el))) anyUnique = true;
       }
       var lbv = attr(el, 'aria-labelledby');
       if (stableId(lbv) && add('//' + t + '[@aria-labelledby=' + lit(lbv) + ']', 'aria-labelledby', 79)) anyUnique = true;
@@ -574,13 +599,18 @@
 
     // 8: anchored to stable ancestors
     var anchors = anchorsOf(el, 3);
+    // A.xp selects exactly A.el, so `${A.xp}//rest` selects what `.//rest` selects from A.el.
+    function rel(A, path) { return function () { return uniqueIs('.' + path, el, A.el); }; }
     anchors.forEach(function (A) {
       preds.slice(0, 5).forEach(function (pr) {
-        add(A.xp + '//' + t + '[' + pr.p + ']', 'anchored', anchoredWeight(A.w, pr.w));
+        var path = '//' + t + '[' + pr.p + ']';
+        add(A.xp + path, 'anchored', anchoredWeight(A.w, pr.w), rel(A, path));
       });
-      add(A.xp + '//' + t, 'anchored', anchoredWeight(A.w, 25));
-      var list = all(A.xp + '//' + t), k = list.indexOf(el);
-      if (k >= 0 && list.length > 1) add('(' + A.xp + '//' + t + ')[' + (k + 1) + ']', 'anchored', 30);
+      add(A.xp + '//' + t, 'anchored', anchoredWeight(A.w, 25), rel(A, '//' + t));
+      var list = all('.//' + t, A.el), k = list.indexOf(el);
+      if (k >= 0 && list.length > 1) {
+        add('(' + A.xp + '//' + t + ')[' + (k + 1) + ']', 'anchored', 30, function () { return list[k] === el; });
+      }
     });
 
     // 9: near-text for unlabeled fields
@@ -609,7 +639,7 @@
 
     // 10: positional fallback (always produce one)
     var pos = positional(el, anchors[0]);
-    if (pos) add(pos, 'positional', 10);
+    if (pos) add(pos, 'positional', 10, anchors[0] ? rel(anchors[0], pos.slice(anchors[0].xp.length)) : null);
     if (!out.size) {
       pos = positional(el, null);
       if (pos) add(pos, 'positional', 5);
@@ -777,7 +807,9 @@
       return found({ el: els[spec.nth - 1], source: how, score: 1, name: describe(els[spec.nth - 1]) }, spec.action);
     }
     if (els.length > 1) {
-      return { status: 'ambiguous', alternatives: els.slice(0, 10).map(function (e) { return summary(e); }), count: els.length };
+      var alts = els.slice(0, 10).map(function (e) { return summary(e); });
+      if (els.length > 10) alts.push('... and ' + (els.length - 10) + ' more');
+      return { status: 'ambiguous', alternatives: alts, count: els.length };
     }
     return found({ el: els[0], source: how, score: 1, name: describe(els[0]) }, spec.action);
   }
@@ -820,9 +852,18 @@
       }
       if (!best || best.score <= 0) return;
       if (best.score < THRESHOLD) { if (spec.diagnose && best.score >= 0.25) near.push(best); return; }
-      if (usable(e)) matches.push(best);
-      else if (spec.diagnose) hidden.push(best);
+      matches.push(best);
     });
+    // Visibility is the expensive part: check best-first, only while still within the tie window.
+    matches.sort(function (a, b) { return b.score - a.score; });
+    var vis = [], topVisible = -1;
+    for (var mi = 0; mi < matches.length; mi++) {
+      var m = matches[mi];
+      if (topVisible >= 0 && m.score < topVisible - TIE && !spec.diagnose) break;
+      if (usable(m.el)) { vis.push(m); if (topVisible < 0) topVisible = m.score; }
+      else if (spec.diagnose) hidden.push(m);
+    }
+    matches = vis;
 
     // Click fallback: innermost visible element whose own text equals the query.
     var bestScore = matches.reduce(function (m, x) { return Math.max(m, x.score); }, 0);
@@ -864,11 +905,12 @@
       return found(ties[spec.nth - 1], action);
     }
     if (ties.length > 1) {
-      var descs = ties.map(function (m) { return summary(m.el, m.name); });
+      var descs = ties.slice(0, 10).map(function (m) { return summary(m.el, m.name); });
       var dup = {};
       descs.forEach(function (d) { dup[d] = (dup[d] || 0) + 1; });
-      descs = descs.map(function (d, i) { return dup[d] > 1 ? d + ' (#' + (i + 1) + ')' : d; });
-      return { status: 'ambiguous', alternatives: descs, score: Math.round(ties[0].score * 1000) / 1000 };
+      descs = descs.map(function (d, i) { return dup[d] > 1 ? d + ' (nth: ' + (i + 1) + ')' : d; });
+      if (ties.length > 10) descs.push('... and ' + (ties.length - 10) + ' more');
+      return { status: 'ambiguous', alternatives: descs, count: ties.length, score: Math.round(ties[0].score * 1000) / 1000 };
     }
     return found(ties[0], action);
   }
