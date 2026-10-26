@@ -48,6 +48,61 @@ One action per line. Quotes are optional; they're needed only when a name contai
   English says "business days" and more than one date step fits, the tool prefers the step that
   computes business dates (configured once in the step mapping) and notes it in the report.
 
+## How an element is identified (the English name is a description, not an exact label)
+Evidence, best first:
+1. `aria-label`, `title`, `<label for>` / wrapping label, `aria-labelledby`, placeholder.
+2. Angular Material tooltip text: `matTooltip` keeps it in a hidden `aria-describedby` message
+   element, so it's in the DOM before any hover.
+3. Visible text, on buttons/links/tabs/menu items.
+4. **Font Awesome icon name** from the class, in every FA generation:
+   `<i class="fa fa-refresh">` (v4), `<i class="fas fa-sync-alt">` (v5),
+   `<i class="fa-solid fa-arrows-rotate">` (v6), and SVG mode
+   `<svg data-icon="arrows-rotate" data-prefix="fas" class="svg-inline--fa">`. The name is
+   stripped of `fa-` and matched through the synonym table. Modifier classes (`fa-lg`, `fa-fw`,
+   `fa-spin`, `fa-2x`, `fa-solid`, `fas`/`far`/`fal`) are ignored for naming and never used in
+   locators.
+5. Context: dialog title, panel/section heading, grid name, toolbar position.
+
+**Icon synonyms** (English → FA names across v4/v5/v6):
+
+| you write | FA names |
+|---|---|
+| refresh / reload | refresh, sync, sync-alt, rotate, rotate-right, arrows-rotate, redo |
+| close / x / cancel | close, times, xmark, times-circle, circle-xmark, remove |
+| delete / trash | trash, trash-o, trash-alt, trash-can |
+| edit / pencil | pencil, pencil-alt, pen, edit, pen-to-square |
+| add / new / plus | plus, plus-circle, circle-plus, add |
+| search | search, magnifying-glass |
+| filter | filter, sliders |
+| download / export | download, file-export, file-download |
+| upload / import | upload, file-import, file-upload |
+| settings | cog, gear, cogs, sliders-h |
+| more / menu | ellipsis-v, ellipsis-h, ellipsis-vertical, bars |
+| expand / collapse | chevron-*, caret-*, angle-*, plus-square, minus-square |
+| save | save, floppy-disk |
+| copy | copy, clone |
+| info / help | info-circle, circle-info, question-circle, circle-question |
+
+**Matching:** exact, then case/whitespace-insensitive, then word overlap, then synonyms. A
+fuzzy or synonym match is accepted only if it is the **single** reasonable candidate on the page
+(or within the stated context). Otherwise the tool asks.
+
+**Grid cells** are never matched by label: grid + row (`row N` / `row where Col is V`) + column
+header.
+
+**When it's not clear, the tool asks; it never guesses.** The report shows each candidate with
+a cropped screenshot, its location ("toolbar of Open Trades, 3rd icon") and its evidence
+("fa-arrows-rotate, no tooltip"). You answer with a number or reword the line, and the answer is
+remembered in a small local `aliases.yaml` (`"refresh icon" on TradeEntry → entry X`).
+
+**Locators for icons** target the clickable element, not the `<i>`/`<svg>` itself, anchored on
+the icon's identity, e.g.
+`//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]`,
+scoped by context when that's not unique.
+
+**Names for new XML entries:** best evidence + context (`Refresh Open Trades`,
+`Close Trade Entry`), overridable with `as "…"`.
+
 ## Per line, on the live page
 1. Parse to (action, element, value, row, grid/section).
 2. Track the current page key (after `go to`) and the current iframe (each page's iframe
@@ -79,4 +134,3 @@ you send it.
 
 ## Open questions
 - Which date steps compute business dates vs calendar dates (one line each in the step mapping).
-- Whether new element names should follow the visible label exactly (the assumption here).
