@@ -126,3 +126,23 @@ def test_deterministic(bundle, tmp_path):
     assert {p.relative_to(bundle) for p in a} == {p.relative_to(again) for p in b}
     for p, t in a.items():
         assert b[again / p.relative_to(bundle)] == t, p
+
+
+def test_locator_inventory_redacted_with_metrics(bundle):
+    inv = yaml.safe_load((bundle / "locators.yaml").read_text())
+    entries = inv["locators"] if isinstance(inv, dict) else inv
+    shapes = "\n".join(str(e.get("shape")) for e in entries)
+    # Holdout has 10+ locators: 3 @FindBy (xpath, id, xpath), spinner constant, By.xpath + By.cssSelector
+    # constants, a text block, a String.format grid template, and 3 concatenated/inline xpaths in steps.
+    total = sum(int(e.get("count", 1)) for e in entries)
+    assert total >= 9, (total, shapes)
+    # Structure and attribute names kept...
+    for kept in ("@data-qa", "@aria-label", "@col-id", "normalize-space(", "contains(@class"):
+        assert kept in shapes, (kept, shapes)
+    # ...values replaced by typed placeholders.
+    assert "<param>" in shapes                       # String.format / concatenation
+    assert "<text>" in shapes or "<v:" in shapes
+    flags = {f for e in entries for f in (e.get("flags") or [])}
+    assert "text_dependent" in flags                 # text()='%s' in the grid helper
+    assert all("metrics" in e for e in entries)
+    assert "locators" in (bundle / "PROFILE.md").read_text().lower()
