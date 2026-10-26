@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crawler"
+version = "0.1.0"
+description = "Site-tuned UI crawler that generates short, verified XPaths for Selenium/Java + Cucumber"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright==1.63.0",
+  "PyYAML>=6",
+  "click>=8",
+  "gherkin-official==29.0.0",
+  "javalang>=0.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+crawler = "crawler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["crawler*"]
+
+[tool.setuptools.package-data]
+crawler = ["js/*.js", "grid/*.js", "emit/templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
