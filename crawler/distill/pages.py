@@ -346,6 +346,34 @@ def xml_to_obj(text: str):
     return {_xml_local(root.tag): conv(root)}
 
 
+_SPLIT_RX = re.compile(r"(?i)(.*?(?:xpath|css|locator|selector))[_-]?(a|b|prefix|suffix|start|end|1|2)")
+
+
+def join_split_locators(v, counts: Counter | None = None):
+    """`xpath_a` + runtime value + `xpath_b` -> one `xpath_a` value `a{value}b` (then redacted as one locator).
+
+    Each half alone is not a valid XPath, so redacting them separately loses the whole shape.
+    """
+    if isinstance(v, list):
+        return [join_split_locators(x, counts) for x in v]
+    if not isinstance(v, dict):
+        return v
+    out = {k: join_split_locators(x, counts) for k, x in v.items()}
+    parts: dict[str, dict[str, str]] = {}
+    for k in out:
+        m = _SPLIT_RX.fullmatch(k) if isinstance(k, str) else None
+        if m:
+            parts.setdefault(m.group(1).lower(), {})["a" if m.group(2).lower() in ("a", "prefix", "start", "1") else "b"] = k
+    for keys in parts.values():
+        ka, kb = keys.get("a"), keys.get("b")
+        if ka and kb and isinstance(out[ka], str) and isinstance(out[kb], str):
+            out[ka] = out[ka] + "{value}" + out[kb]
+            del out[kb]
+            if counts is not None:
+                counts["split_locators_joined"] += 1
+    return out
+
+
 def load(files: list[tuple[str, Path]], counts: Counter) -> tuple[list[PageDoc], list[str]]:
     """Parse selected files. Returns (docs, raw texts for denylist auto-detection). Failures are counted only."""
     docs, texts = [], []
@@ -369,6 +397,7 @@ def load(files: list[tuple[str, Path]], counts: Counter) -> tuple[list[PageDoc],
         if not _size_ok(data):
             counts["too_large"] += 1
             continue
+        data = join_split_locators(data)
         docs.append(PageDoc(rel, fmt, data, p.stem))
         texts.append(text)
     return docs, texts

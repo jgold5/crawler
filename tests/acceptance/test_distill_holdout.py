@@ -200,3 +200,12 @@ def test_xml_page_definitions_no_leaks_structure_kept(tmp_path):
     assert "by: xpath" in allp and "following::input[1]" in allp  # tag-per-element style: text became the locator
     assert allp.count("extends: Page") == 2 and "defaultColumn: Column" in allp
     assert "<param>" in allp                                    # %s row template
+
+
+def test_split_dynamic_xpaths_are_joined(tmp_path):
+    """User's framework splits dynamic locators: xpath_a + runtime value + xpath_b."""
+    out = Path(distill_mod.distill(HOLDOUT, tmp_path / "fp", DENY, pages=["src/test/resources/pages/xml/*.xml"]))
+    allp = "\n".join(p.read_text() for p in (out / "pages").glob("*.yaml"))
+    assert "//a[@role='tab'][contains(text(),'<param>')]" in allp
+    assert "normalize-space()='<param>']]" in allp
+    assert "xpath_b" not in allp and "acctNo" not in allp and "Position Row" not in allp

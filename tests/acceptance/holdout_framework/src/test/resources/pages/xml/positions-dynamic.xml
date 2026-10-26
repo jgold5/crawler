@@ -1,0 +1,16 @@
+<positionsPage>
+  <element name="Position Row">
+    <locatorType>dynamicXpath</locatorType>
+    <xpath_a>//div[@role='row'][.//div[@col-id='positionId' and normalize-space()='</xpath_a>
+    <xpath_b>']]</xpath_b>
+  </element>
+  <element name="Globex Tab">
+    <locatorType>dynamicXpath</locatorType>
+    <xpath_a>//a[@role='tab'][contains(text(),'</xpath_a>
+    <xpath_b>')]</xpath_b>
+  </element>
+  <element name="Initech Account Cell">
+    <locatorType>xpath</locatorType>
+    <locator>//td[@data-column='acctNo']</locator>
+  </element>
+</positionsPage>
