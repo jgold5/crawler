@@ -1,0 +1,209 @@
+# English line -> the owner's EXISTING Cucumber step phrasing.
+#
+# Rules are tried in order; the first whose `action` and `when` conditions all hold wins.
+# A line no rule fits renders as None: the line is flagged (no step code is generated).
+#
+# Placeholders: {element} {row} {row_key} {grid} {value} {page} {hover} {bool} {order}
+# are rendered as Cucumber {string}s ("..."); {seconds} as a bare {long}.
+#
+# `when` keys (omitted = no constraint, except where noted):
+#   row:       none | index | key | any        (omitted = none: a rule must opt in to rows)
+#   grid:      true | false                     (a grid is named on the line or passed in)
+#   date:      true | false                     (the value is a date expression)
+#   exact:     true | false                     ("exactly" was said)
+#   business:  true | false                     ("business/working days" was said)
+#   verify_op: equals | contains | displayed | disabled | count_gt | count_eq | error | [...]
+#   verb:      [list of verb phrases as written, lower case]
+#   kind:      [list of role kinds]
+#   target:    [list of targets, lower case]
+#   has_target: true | false
+#   hover:     true | false                     (omitted = false)
+#   condition: if_displayed                     (omitted = no condition on the line)
+# `note` is added to the render's notes; `note_if` limits it to lines matching those keys.
+
+keywords:
+  first: Given      # first line of a flow
+  verify: Then
+  default: When
+
+literals:
+  check: "true"     # value used for {bool}
+  uncheck: "false"
+  wait_seconds: 30  # default {long} for waits (a line's "for at most N seconds" wins)
+  order:
+    ascending: ascending
+    descending: descending
+
+# action rewrites by role kind: "fill the Counterparty dropdown as X" uses the select rules
+kind_actions:
+  fill:
+    dropdown: select
+
+rules:
+  # ---- navigation
+  - action: goto
+    when: {kind: [tab]}
+    template: user clicks tab for {page} page
+  - action: goto
+    when: {verb: [switch to]}
+    template: user switches to the {page} page
+  - action: goto
+    template: user navigates to the {page} page
+  - action: close
+    template: user closes the {page} page
+
+  # ---- clicks
+  - action: click
+    when: {hover: true}
+    template: user hovers {hover} and clicks the {element} button
+  - action: click
+    when: {condition: if_displayed}
+    template: user clicks the {element} button if displayed
+  - action: click
+    when: {row: index, grid: true}
+    template: user clicks the {element} column in row {row} of the {grid} grid
+  - action: click
+    when: {row: index}
+    template: user clicks the {element} in row {row} button
+  - action: click
+    template: user clicks the {element} button
+  - action: right_click
+    when: {row: index, grid: true}
+    template: user right clicks the {element} column in row {row} of the {grid} grid
+  - action: right_click
+    when: {row: index}
+    template: user right clicks the {element} in row {row} field
+
+  # ---- fill: dates
+  - action: fill
+    when: {date: true, row: index, grid: true}
+    template: user fills date {element} column in row {row} of the {grid} grid as exactly {value}
+    note: >-
+      only an "as exactly" step exists for grid date cells; it does not roll to the next
+      business date, so check the business-day offset
+    note_if: {business: true, exact: false}
+  - action: fill
+    when: {date: true, row: index, exact: true}
+    template: user fills date {element} in row {row} textfield as exactly {value}
+  - action: fill
+    when: {date: true, row: index}
+    template: user fills date {element} in row {row} textfield as {value}
+  - action: fill
+    when: {date: true, exact: true}
+    template: user fills date {element} textfield as exactly {value}
+  - action: fill
+    when: {date: true}
+    template: user fills date {element} textfield as {value}
+  # ---- fill: text
+  - action: fill
+    when: {row: index, grid: true}
+    template: user fills the {element} column in row {row} of the {grid} grid as {value}
+  - action: fill
+    when: {row: index}
+    template: user fills {element} in row {row} textfield as {value}
+  - action: fill
+    template: user fills {element} textfield as {value}
+
+  # ---- dropdowns
+  - action: select
+    when: {has_target: false}
+    template: user selects the dropdown with value {value}
+  - action: select
+    when: {row: index, grid: true}
+    template: user fills the {element} column in row {row} dropdown of the {grid} grid as {value}
+  - action: select
+    when: {row: index}
+    template: user fills {element} in row {row} dropdown as {value}
+  - action: select
+    when: {exact: true}
+    template: user fills {element} dropdown as exactly {value}
+  - action: select
+    template: user fills {element} dropdown as {value}
+
+  # ---- checkboxes
+  - action: [check, uncheck]
+    when: {row: index, grid: true}
+    template: user sets the {element} checkbox in row {row} of the {grid} grid as {bool}
+  - action: [check, uncheck]
+    when: {row: index}
+    template: user sets the {element} in row {row} checkbox as {bool}
+  - action: [check, uncheck]
+    template: user sets the {element} checkbox as {bool}
+
+  # ---- clear / sort
+  - action: clear
+    when: {row: index}
+    template: user clears the field {element} in row {row}
+  - action: clear
+    template: user clears the field {element}
+  - action: sort
+    template: user sorts the {element} in {order} order
+
+  # ---- verify
+  - action: verify
+    when: {verify_op: equals, row: key}
+    template: user validates the {element} in the row with {row_key} equals {value}
+  - action: verify
+    when: {verify_op: equals, row: index, grid: true}
+    template: user validates the {element} column in row {row} of the {grid} grid equals {value}
+  - action: verify
+    when: {verify_op: equals, date: true, row: index, exact: true}
+    template: user validates the date {element} in row {row} equals exactly {value}
+  - action: verify
+    when: {verify_op: equals, date: true, row: index}
+    template: user validates the date {element} in row {row} equals {value}
+  - action: verify
+    when: {verify_op: equals, date: true, exact: true}
+    template: user validates the date {element} equals exactly {value}
+  - action: verify
+    when: {verify_op: equals, date: true}
+    template: user validates the date {element} equals {value}
+  - action: verify
+    when: {verify_op: equals, row: index}
+    template: user validates the {element} in row {row} equals {value}
+  - action: verify
+    when: {verify_op: equals}
+    template: user validates the {element} equals {value}
+  - action: verify
+    when: {verify_op: contains, row: index}
+    template: user validates the {element} in row {row} contains {value}
+  - action: verify
+    when: {verify_op: contains}
+    template: user validates the {element} contains {value}
+  - action: verify
+    when: {verify_op: displayed}
+    template: user validates the {element} is displayed
+  - action: verify
+    when: {verify_op: disabled, row: index}
+    template: user validates the {element} in row {row} is disabled
+  - action: verify
+    when: {verify_op: disabled}
+    template: user validates the {element} is disabled
+  - action: verify
+    when: {verify_op: count_gt}
+    template: user validates the number of {element} is greater than {value}
+  - action: verify
+    when: {verify_op: count_eq}
+    template: user validates the number of {element} is equal to {value}
+  - action: verify
+    when: {verify_op: error, row: index}
+    template: user validates {element} in row {row} is displaying {value} error message
+  - action: verify
+    when: {verify_op: error}
+    template: user validates {element} is displaying {value} error message
+
+  # ---- remember
+  - action: remember
+    when: {row: index}
+    template: user stores the {element} id from row {row} as {value}
+  - action: remember
+    template: user stores the {element} as {value}
+
+  # ---- waits
+  - action: wait_loader
+    when: {target: [masks]}
+    template: user waits for any masks to disappear for at most {seconds} seconds
+  - action: wait_loader
+    template: user waits for the data loader to disappear for at most {seconds} seconds
+  - action: wait
+    template: user waits for {element} to appear for at most {seconds} seconds
