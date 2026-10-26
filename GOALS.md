@@ -104,6 +104,24 @@ stable XPaths** as Java/Selenium page objects that our Cucumber suite uses.
 - The emitters read `profile.yaml` so generated code matches our framework
   (base class, `By` vs `@FindBy`, naming).
 
+### G8. Tune for a site we can't see
+- The tool runs on the product owner's machine. We never get access to the
+  site. Only redacted output comes back.
+- `crawler probe <url> [--manual-login]` crawls read-only and writes a
+  fingerprint built only from shapes and counts. It covers:
+  - frameworks and their versions
+  - AG Grid version, theme, pinned columns, whether the grid API can be
+    reached, whether `getRowId` is set
+  - test-id attribute names and how much of the page uses them
+  - id/class shape classes
+  - label/a11y coverage
+  - spinner shapes
+  - iframes and shadow DOM
+- It also writes `site.suggested.yaml`, ready to merge into `site.yaml`.
+- `distill` lists **every existing step definition**, infers each one's action
+  from its method body, and drafts `step-mappings.draft.yaml`, so our
+  existing features run without being rewritten.
+
 ## Milestones
 
 | # | Milestone | Owner (effort) |
@@ -115,6 +133,7 @@ stable XPaths** as Java/Selenium page objects that our Cucumber suite uses.
 | M1d | Java/report/JSON emitters + javac check | agent (medium) |
 | M1e | Fixture app shell with hostile markup | agent (medium) |
 | M1f | `crawler distill`: redacted framework profile | agent (high) |
+| M1g | `crawler probe`: redacted site fingerprint | agent (high) |
 | M2 | Runner, sessions/auth cache, waits, direct nav, parallelism, merge, CLI | agent (high) |
 | M3 | End-to-end verification against goals + review | PM + review agent (high) |
 | M4 | Point at the real site, tune `site.yaml` | PM + you |
