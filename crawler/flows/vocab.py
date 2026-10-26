@@ -18,6 +18,8 @@ from crawler.model import GridTarget, RowRef, Step, Target
 from .errors import FlowError
 from .steps import resolve_page_ref
 
+AUTH = "auth"  # Flow.requires sentinel meaning "start from an authenticated session"
+
 _ORDINALS = {w: i for i, w in enumerate(
     "first second third fourth fifth sixth seventh eighth ninth tenth".split(), 1)}
 
@@ -27,6 +29,7 @@ WITHIN = r"(?: (?:in|within|inside|under) [the ]{within}(?: (?:section|dialog|pa
 
 
 def compile_template(t: str) -> re.Pattern:
+    t = t.replace(" GRID", "GRID").replace(" WITHIN", "WITHIN")
     t = t.replace("ROW", ROW).replace("GRID", GRID).replace("WITHIN", WITHIN)
     t = re.sub(r"\[([^\]]*)\]", r"(?:\1)?", t)
 
@@ -101,11 +104,7 @@ def _one(action, target=None, value=None, ctx=None):
 @builtin("I am logged in", r"(?:I am|I'm) logged in", r"(?:I am|I'm) logged in as {user}",
          r"I log in", r"I log in as {user}")
 def _logged_in(g, ctx):
-    flow = getattr(getattr(ctx.cfg, "auth", None), "flow", None)
-    if not flow:
-        raise FlowError(ctx.where, "'I am logged in' needs a login flow",
-                        "set auth.flow in site.yaml to the name of your login flow")
-    return [], [flow]
+    return [], [AUTH]  # sentinel: the runner borrows the logged-in browser session
 
 
 @builtin("I go to the {string} page", r"I (?:go|navigate|browse) to [the ]{p}[ page]",
@@ -116,12 +115,7 @@ def _goto(g, ctx):
 
 @builtin("I am on the {string} page", r"(?:I am|I'm) on [the ]{p}[ page]")
 def _on_page(g, ctx):
-    name = g["p"]
-    try:
-        name = resolve_page_ref(name, ctx.cfg, ctx.where)  # canonical spelling when declared
-    except FlowError:
-        pass  # a page-object name need not be a declared page
-    return _one("page", value=name, ctx=ctx)
+    return _one("page", value=g["p"], ctx=ctx)  # sticky page-object name, kept verbatim
 
 
 @builtin("I should be on the {string} page", r"I should be on [the ]{p}[ page]",
@@ -200,7 +194,7 @@ def _click_nth(g, ctx):
     return _one("click", _target(g), None, ctx)
 
 
-@builtin("I click {string} in {string}", r"I click [on ][the ]{q}[ button| link]WITHIN")
+@builtin("I click {string}", r"I click [on ][the ]{q}[ button| link]WITHIN")
 def _click(g, ctx):
     return _one("click", _target(g), None, ctx)
 

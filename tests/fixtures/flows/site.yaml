@@ -1,0 +1,12 @@
+base_url: http://localhost:8000
+pages:
+  Orders: {url: /orders.html}
+  Dashboard: {url: /dashboard.html}
+  Settings: {url: /settings.html}
+vars:
+  USER: ${CRAWLER_TEST_USER}
+  PASS: secret-${SUFFIX}
+  SUFFIX: "42"
+cucumber:
+  features: ["*.feature"]
+  step_mappings: steps.yaml

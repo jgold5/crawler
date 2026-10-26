@@ -1,0 +1,31 @@
+flows:
+  login:
+    page: LoginPage
+    tags: [smoke]
+    steps:
+      - goto: /login.html
+      - fill: Email
+        value: ${USER}
+      - fill: { label: Password }
+        value: ${PASS}
+      - click: Sign in
+        as: signInButton
+      - expect_url: Dashboard
+  edit_order:
+    requires: [auth]
+    steps:
+      - goto: orders
+      - fill: { grid: Orders, row: A-100, column: Quantity }
+        value: "5"
+      - fill: { grid: Orders, row: { "Order ID": A-100 }, column: 3 }
+        value: 7
+      - click: { grid: Orders, row: { index: 2 }, column: Actions }
+      - click: Save
+        within: Security
+        nth: 1
+      - click: { xpath: "//button[@id='x']" }
+        page: DialogPage
+      - press: { placeholder: Search }
+        value: Enter
+      - page: SettingsPage
+      - expect_text: Saved

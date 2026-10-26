@@ -5,7 +5,13 @@
   <title>Orders</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script src="app.js"></script>
-  <script src="vendor/ag-grid-community.min.js"></script>
+  <script>
+    // ?ag=34.3.1 loads an alternate vendored AG Grid build (cross-version DOM tests).
+    (function () {
+      var v = (new URLSearchParams(location.search).get("ag") || "").replace(/[^0-9.]/g, "");
+      document.write('<script src="vendor/ag-grid-community' + (v ? "-" + v : "") + '.min.js"><\/script>');
+    })();
+  </script>
   <script src="orders-data.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; }
@@ -126,6 +132,11 @@
     { colId: "actions", headerName: "Actions", pinned: "right", width: 150, lockPinned: true,
       sortable: false, filter: false, cellRenderer: ActionsRenderer }
   ];
+
+  // AG Grid < 33 has no JS theming API: use the CSS theme class bundled in its min.js.
+  if (!agGrid.themeQuartz) {
+    Array.prototype.forEach.call(document.querySelectorAll(".grid-host"), function (el) { el.classList.add("ag-theme-quartz"); });
+  }
 
   var ordersApi = agGrid.createGrid(document.getElementById("ordersGrid"), {
     columnDefs: orderCols,

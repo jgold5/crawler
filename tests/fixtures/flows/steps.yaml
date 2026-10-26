@@ -1,0 +1,20 @@
+mappings:
+  - pattern: 'the user enters {string} in the {string} box'
+    steps:
+      - fill: "$2"
+        value: "$1"
+  - pattern: 'the user is logged in'
+    requires: auth
+  - pattern: '^the API seeds .*$'
+    ignore: true
+  - pattern: 'the user updates {string} to {string} for order {string}'
+    steps:
+      - fill: { grid: Orders, row: "$3", column: "$1" }
+        value: "$2"
+  - pattern: 'the user saves and confirms (the dialog)'
+    steps:
+      - click: Save
+      - click: { text: Confirm, within: "Are you sure?" }
+  - pattern: 'the user opens order(s) page/screen'
+    steps:
+      - goto: Orders

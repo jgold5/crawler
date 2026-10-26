@@ -25,7 +25,7 @@ def substitute(text, cfg, source: str = "") -> str:
 
 def _sub(text: str, vars_: dict, source: str, stack: tuple[str, ...]) -> str:
     def repl(m: re.Match) -> str:
-        if m.group(0) == "${":  # matched "$${"
+        if m.group(1) is None:  # matched "$${" (escape)
             return "${"
         name = m.group(1)
         if name in stack:

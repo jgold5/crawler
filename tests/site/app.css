@@ -1,6 +1,7 @@
 /* app.css: shared styles for the fixture app. Styled mostly by element/stable classes;
    hashed classes get extra rules injected at runtime by hostile.js (Hostile.styles). */
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1d2330; background: #f4f6fa; }
 button { font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #c4cad6; border-radius: 6px; background: #fff; color: inherit; }
 button[disabled] { opacity: .6; cursor: default; }
