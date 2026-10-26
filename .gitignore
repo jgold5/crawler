@@ -8,3 +8,5 @@ tests/.cache/
 framework-profile/
 node_modules/
 .distill/
+*.tar.gz
+*.whl
