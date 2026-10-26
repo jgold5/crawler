@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from crawler.config import PageDef, SiteConfig, load_config
+from crawler.config import SiteConfig, load_config
 from crawler.flows import FlowError, MissingVariable, load, load_many, missing_vars, substitute, substitute_step
 from crawler.model import GridTarget, RowRef, Step, Target
 
 FIX = Path(__file__).parent / "fixtures" / "flows"
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 @pytest.fixture
