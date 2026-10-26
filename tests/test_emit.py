@@ -93,7 +93,7 @@ def test_naming():
     assert naming.camel("Order ID") == "orderId"
     assert naming.camel("save-btn") == "saveBtn"
     assert naming.camel("class") == "class_"
-    assert naming.camel("2fa code") == "_2faCode"
+    assert naming.camel("2fa code") == "_2FaCode"
     assert naming.camel("") == "element"
     assert naming.camel("Größe") == "grosse" or naming.camel("Größe").isascii()
     assert naming.class_name("Login", "Page") == "LoginPage"
@@ -249,9 +249,12 @@ def test_ctor_arg_name_reserved(tmp_path):
 
 def test_page_class_cannot_shadow_support_class(tmp_path):
     files = gen(tmp_path, [R(page="XPath Literal", name="x")], class_suffix="")
-    assert "java/com/example/pages/XpathLiteral.java" in files  # PascalCase differs; still no clash
-    files = gen(tmp_path / "b", [R(page="XPathLiteral", name="x")], class_suffix="Literal")
-    assert "java/com/example/pages/XpathLiteral.java" in files
+    assert "java/com/example/pages/XPathLiteral_.java" in files
+    assert "public class XPathLiteral_ {" in files["java/com/example/pages/XPathLiteral_.java"]
+    assert "public final class XPathLiteral {" in files["java/com/example/pages/XPathLiteral.java"]
+    # separate helper package: still renamed (importing h.XPathLiteral would clash with the class name)
+    files = gen(tmp_path / "b", [R(page="XPath Literal", name="x")], class_suffix="", helper_package="h")
+    assert "java/com/example/pages/XPathLiteral_.java" in files and "java/h/XPathLiteral.java" in files
 
 
 # ---------------------------------------------------------------- support files

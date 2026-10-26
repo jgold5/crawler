@@ -117,3 +117,5 @@ class LocatorResult:
     tag: str = ""
     kind: str = "element"
     sources: list[str] = field(default_factory=list)  # step sources that used it
+    label: str = ""    # best human name of the element ("Save"), for report suggestions
+    section: str = ""  # nearest container title ("Security"), for report suggestions

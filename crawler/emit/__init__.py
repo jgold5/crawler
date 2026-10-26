@@ -51,7 +51,7 @@ def write_all(results: list[LocatorResult], cfg: SiteConfig, out_dir: Path) -> l
     helper_dir = java_root.joinpath(*helper_pkg.split("."))
 
     support = support_sources(helper_pkg)
-    taken = {Path(n).stem for n in support} if helper_pkg == java.package else set()
+    taken = {Path(n).stem for n in support}  # a page class must never shadow/clash with a helper class
     classes = plan_classes(results, java, taken)
 
     written: list[Path] = []
