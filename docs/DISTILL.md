@@ -26,6 +26,32 @@ real names ◄──────── rehydrate ◄─────────�
 - **Rehydrate is exact.** Only known placeholders are replaced. Placeholders I invent (e.g. a
   new test name) pass through unchanged. Anything ambiguous is reported, never guessed.
 
+## Multi-repo workspaces
+The code spans several repos. A workspace file on the work machine lists them:
+```yaml
+# distill.yaml (stays local, next to .distill/key.json)
+deny: [CompanyName, company.com]
+repos:
+  orders-service: ~/src/orders-service
+  billing-camel:  ~/src/billing-camel
+  ui-tests:       ~/src/ui-tests
+```
+- Repo names become `Repo1..N`. One key covers all repos.
+- **Cross-repo links are first-class.** Each repo is scanned for the integration points it
+  exposes and consumes:
+  - Kafka/JMS/ActiveMQ topics and queues
+  - Camel endpoints
+  - REST paths (Spring `@RequestMapping`, JAX-RS, Feign/RestTemplate/WebClient calls)
+  - shared Maven artifacts and classes
+  - DB tables
+
+  The same real endpoint gets the same placeholder everywhere. The bundle includes a
+  `links.yaml` system map: `Repo1.OrderProducer --kafka:<Topic3>--> Repo2.route2`.
+- Focusing on a ticket searches **all** repos, then follows calls inside a repo and links
+  across repos (1–2 hops each).
+- Incremental: an index of each repo is cached locally by commit hash, so re-distilling after a
+  pull only processes what changed.
+
 ## Adapters (priority order)
 1. **jira**: input is issue JSON (what the work AI's Jira MCP returns: save it to a file) or
    pasted text/markdown, one or many issues, comments optional.
@@ -49,7 +75,7 @@ real names ◄──────── rehydrate ◄─────────�
 ## CLI sketch
 ```
 distill jira issue.json [more.json ...]       -> bundle/jira/
-distill code src/ --focus bundle/jira/        -> bundle/code/
+distill code --workspace distill.yaml --focus bundle/jira/   -> bundle/code/ + links.yaml
 distill check bundle/
 distill rehydrate result.md > result.real.md  # uses .distill/key.json
 ```
