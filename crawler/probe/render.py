@@ -65,6 +65,15 @@ def to_markdown(p: dict, s: dict) -> str:
     else:
         add("- none detected")
     add("")
+    ng = p["angular"]
+    if ng["version"] or ng["pages"] or ng["ag_grid_angular_hosts"] or ng["ngcontent_attrs"]:
+        add(f"- Angular details: version {ng['version'] or 'unknown'}; ng.getComponent available "
+            f"{_yn(ng['ng_get_component'])}; ag-grid-angular hosts {ng['ag_grid_angular_hosts']} "
+            f"(grid API via ng.getComponent on {ng['ag_grid_angular_hosts_with_api_via_ng']}); Angular Material "
+            f"{_yn(ng['material_present'])} (MDC-based {_yn(ng['material_mdc'])}, {ng['material_elements']} mat-* "
+            f"elements, cdk overlay container {_yn(ng['cdk_overlay_container'])}); _ngcontent attrs "
+            f"{_yn(ng['ngcontent_attrs'])}, _nghost attrs {_yn(ng['nghost_attrs'])}")
+    add("")
     add("## AG Grid")
     add("")
     add(f"- present: {_yn(ag['present'])}; version {ag['version'] or 'unknown'}; grids {ag['grids_total']} "

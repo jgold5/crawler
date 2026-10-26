@@ -192,7 +192,7 @@ COLLECT_JS = r"""
   const ids = []; const classes = {}; let withId = 0, withClass = 0;
   const data = {}; const ik = {}; let interactive = 0;
   const testRe = new RegExp(cfg.testIdRe, 'i');
-  let iwTest = 0, iwCfg = 0;
+  let iwTest = 0, iwCfg = 0, ngContent = false, ngHost = false;
   for (const el of all) {
     const k = ikind(el);
     if (k) {
@@ -209,6 +209,10 @@ COLLECT_JS = r"""
     }
     for (const a of el.attributes) {
       const n = a.name;
+      if (n.charCodeAt(0) === 95) {  // '_'
+        if (n.startsWith('_ngcontent-')) ngContent = true;
+        else if (n.startsWith('_nghost-')) ngHost = true;
+      }
       if (n.startsWith('data-')) {
         let d = data[n];
         if (!d) { if (Object.keys(data).length >= 300) continue; d = data[n] = { elements: 0, interactive: 0, values: [] }; }
@@ -429,6 +433,22 @@ COLLECT_JS = r"""
   }
   if (ag.apis.length) ag.present = true;
 
+  // ---- Angular specifics (framework facts only)
+  const angular = { ngGetComponent: false, agGridAngularHosts: 0, agGridAngularHostsWithApi: 0, matElements: 0,
+                    matMdc: false, cdkOverlayContainer: false, ngContent, ngHost };
+  try {
+    const ngApi = W.ng && typeof W.ng.getComponent === 'function' ? W.ng : null;
+    angular.ngGetComponent = !!ngApi;
+    const hosts = all.filter(el => el.tagName === 'AG-GRID-ANGULAR');
+    angular.agGridAngularHosts = hosts.length;
+    if (ngApi) for (const h of hosts) {
+      try { const c = ngApi.getComponent(h); if (c && isApi(c.api)) angular.agGridAngularHostsWithApi++; } catch (e) {}
+    }
+    angular.matElements = all.filter(el => el.tagName.startsWith('MAT-')).length;
+    angular.matMdc = Object.keys(classes).some(c => c.startsWith('mat-mdc-') || c.startsWith('mdc-'));
+    angular.cdkOverlayContainer = !!document.querySelector('.cdk-overlay-container');
+  } catch (e) { /* ignore */ }
+
   // ---- dialogs, frames
   const dialogs = all.filter(el => el.tagName === 'DIALOG' || /^(dialog|alertdialog)$/.test(el.getAttribute('role') || ''));
   const iframes = all.filter(el => el.tagName === 'IFRAME' || el.tagName === 'FRAME');
@@ -458,7 +478,7 @@ COLLECT_JS = r"""
 
   return {
     elements: all.length, inShadow, shadowOpen, customEls, withId, withClass,
-    ids, classes, data, interactive, interactiveKinds: ik, interactiveWithTestId: iwTest, interactiveWithCfgTestId: iwCfg, labels, buttons, frameworks: fw, otherGrids: og, ag,
+    ids, classes, data, interactive, interactiveKinds: ik, interactiveWithTestId: iwTest, interactiveWithCfgTestId: iwCfg, labels, buttons, frameworks: fw, otherGrids: og, ag, angular,
     dialogs: dialogs.length, dialogsOpen: dialogs.filter(vis).length,
     dialogsModal: dialogs.filter(d => d.getAttribute('aria-modal') === 'true' || d.tagName === 'DIALOG').length,
     iframes: iframes.length, iframesSameOrigin: iframeSame, iframesVisible: iframes.filter(vis).length,

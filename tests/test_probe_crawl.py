@@ -40,6 +40,10 @@ INDEX = """<!doctype html><html><head><title>Globex Portal</title></head><body>
   <button type="button" data-globex-hook="load-btn">Load</button>
 </form>
 <div ng-version="17.3.0"><span>ng</span></div>
+<ag-grid-angular _nghost-abc-c7=""><div _ngcontent-abc-c7="">g</div></ag-grid-angular>
+<ag-grid-angular></ag-grid-angular>
+<mat-form-field class="mat-mdc-form-field"></mat-form-field>
+<div class="cdk-overlay-container"></div>
 <table><tr><td>a</td></tr></table>
 <iframe src="/frame.html"></iframe>
 <dialog id="dlg"><p>Hello</p></dialog>
@@ -48,6 +52,8 @@ INDEX = """<!doctype html><html><head><title>Globex Portal</title></head><body>
   window.jQuery = { fn: { jquery: '3.7.1' } };
   window.globexGridApi = { getDisplayedRowCount: function () { return 0; } };
   window.someStore = { forEachNode: function () {} };
+  window.ng = { getComponent: function (el) {
+    return el.hasAttribute('_nghost-abc-c7') ? { api: { getDisplayedRowCount: function () { return 0; } } } : null; } };
   customElements.define('x-card', class extends HTMLElement {
     connectedCallback() { this.attachShadow({ mode: 'open' }).innerHTML = '<button>Shadow Globex</button>'; }
   });
@@ -220,3 +226,20 @@ def test_refuses_non_empty_out_dir(tmp_path):
     (tmp_path / "mine.txt").write_text("x")
     with pytest.raises(ValueError):
         probe("http://127.0.0.1:1/", tmp_path)
+
+
+def test_angular_facts(inline_run):
+    ng = _profile(inline_run[0])["angular"]
+    assert ng["version"] == "17.3.0" and ng["pages"] >= 1
+    assert ng["ng_get_component"] is True
+    assert ng["ag_grid_angular_hosts"] == 2 and ng["ag_grid_angular_hosts_with_api_via_ng"] == 1
+    assert ng["material_present"] and ng["material_mdc"] and ng["material_elements"] == 1
+    assert ng["cdk_overlay_container"] and ng["ngcontent_attrs"] and ng["nghost_attrs"]
+    md = (inline_run[0] / "SITE-PROFILE.md").read_text()
+    assert "ng.getComponent available yes" in md
+
+
+def test_angular_absent_on_fixture_defaults(inline_site):
+    from crawler.probe.aggregate import _angular
+    ng = _angular([{}], {})
+    assert ng["version"] is None and not ng["ng_get_component"] and ng["ag_grid_angular_hosts"] == 0

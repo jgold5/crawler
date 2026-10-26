@@ -62,6 +62,31 @@ def _theme(classes: list[str], styled_root: bool) -> str | None:
     return "theming-api" if styled_root or classes else None
 
 
+def _angular(raws: list[dict], fw: dict) -> dict:
+    ng = [r.get("angular") or {} for r in raws]
+
+    def anyb(k: str) -> bool:
+        return any(bool(x.get(k)) for x in ng)
+
+    def total(k: str) -> int:
+        return sum(int(x.get(k) or 0) for x in ng)
+
+    mat = total("matElements")
+    return {
+        "version": (fw.get("angular") or {}).get("version"),
+        "pages": (fw.get("angular") or {}).get("pages", 0),
+        "ng_get_component": anyb("ngGetComponent"),
+        "ag_grid_angular_hosts": total("agGridAngularHosts"),
+        "ag_grid_angular_hosts_with_api_via_ng": total("agGridAngularHostsWithApi"),
+        "material_present": bool(mat) or anyb("matMdc") or "angular-material" in fw,
+        "material_mdc": anyb("matMdc"),
+        "material_elements": mat,
+        "cdk_overlay_container": anyb("cdkOverlayContainer"),
+        "ngcontent_attrs": anyb("ngContent"),
+        "nghost_attrs": anyb("ngHost"),
+    }
+
+
 def build(pages: list[PageFacts], stats: CrawlStats, cfg: SiteConfig, *, max_pages: int,
           include_path_shapes: bool, denylist: list[str]) -> tuple[dict, dict]:
     deny = [d.lower() for d in denylist if d and d.strip()]
@@ -367,6 +392,7 @@ def build(pages: list[PageFacts], stats: CrawlStats, cfg: SiteConfig, *, max_pag
             "api_names": api_names,
             "grids": grids,
         },
+        "angular": _angular(raws, fw),
         "other_grids": {k: other[k] for k in OTHER_GRIDS if other[k]},
         "test_ids": {
             "interactive_elements": interactive,

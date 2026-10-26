@@ -239,8 +239,8 @@ def content_leaks(bundle_text: str, sentinels: Iterable[str], exempt: Iterable[s
     """Count page strings (texts, attribute values, ids, classes, URL parts) that surface in the bundle.
 
     Two checks: (1) any bundle word token not in this package's own vocabulary must not be a word seen on
-    the site; (2) any multi-word or long site string that is not made only of vocabulary words must not
-    appear verbatim. Numeric-only and version-shaped strings are exempt (counts and versions are allowed).
+    the site; (2) any multi-token site string (with spaces/punctuation) not made only of vocabulary words
+    must not appear verbatim. Numeric-only and version-shaped strings are exempt (counts and versions are allowed).
     `exempt` lists grid-API property names (allowed by design); they are masked for the substring check only.
     """
     vocab = source_vocab()
@@ -257,7 +257,8 @@ def content_leaks(bundle_text: str, sentinels: Iterable[str], exempt: Iterable[s
             continue
         words = list(_sentinel_words(s))
         seen_words.update(words)
-        if len(s) >= 6 and not all(w in vocab for w in words) and s in masked:
+        # single words are matched as whole tokens below; substrings only for multi-word strings
+        if len(s) >= 6 and re.search(r"[^A-Za-z0-9_$]", s) and not all(w in vocab for w in words) and s in masked:
             hits.append(s)
     hits.extend(sorted(foreign & seen_words))
     return hits

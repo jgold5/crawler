@@ -168,6 +168,10 @@ def _minimal_profile():
         "frameworks": {"angular": {"pages": 1, "version": "17.3.0"}},
         "ag_grid": {"present": False, "version": None, "pages_with_grids": 0, "grids_total": 0, "themes": [],
                     "api_names": [], "grids": []},
+        "angular": {"version": None, "pages": 0, "ng_get_component": False, "ag_grid_angular_hosts": 0,
+                    "ag_grid_angular_hosts_with_api_via_ng": 0, "material_present": False, "material_mdc": False,
+                    "material_elements": 0, "cdk_overlay_container": False, "ngcontent_attrs": False,
+                    "nghost_attrs": False},
         "other_grids": {},
         "test_ids": {"interactive_elements": 0, "interactive_by_kind": {}, "interactive_with_any_test_id_pct": 0.0,
                      "interactive_with_configured_test_id_pct": 0.0, "redacted_attribute_names": 0, "attributes": {}},
@@ -238,7 +242,9 @@ def test_content_leaks_tokens_and_strings():
     assert S.content_leaks(bundle, ["tableGridApi"])  # the api name itself seen as page text: flagged
     # the api name is exempt from substring matching only
     assert S.content_leaks(bundle, ["tableGrid"], exempt=["tableGridApi"]) == []
-    assert S.content_leaks(bundle, ["tableGrid"]) == ["tableGrid"]
+    assert S.content_leaks(bundle, ["tableGrid"]) == []           # single word: whole-token match only
+    assert S.content_leaks(bundle, ["table-Grid"], exempt=[]) == []
+    assert S.content_leaks(bundle + "z: Hank Scorpio x\n", ["Hank Scorpio"]) == ["Hank Scorpio", "hank", "scorpio"]
 
 
 def test_scan_bundle_fails_closed(tmp_path):

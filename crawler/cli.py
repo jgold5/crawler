@@ -58,5 +58,35 @@ def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, check_o
     click.echo(f"wrote {bundle}  (open PROFILE.md first; review everything before sharing)")
 
 
+@main.command()
+@click.argument("url")
+@click.option("--out", default="site-profile", show_default=True, type=click.Path(file_okay=False))
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="site.yaml; suggestions are then only additions to it.")
+@click.option("--deny", multiple=True, metavar="TERMS", help="Comma-separated private terms. Repeatable.")
+@click.option("--deny-file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--max-pages", default=30, show_default=True)
+@click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
+def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
+    """Read-only, headless crawl of your site that records only shapes and counts (no content).
+
+    Borrows your login from Chrome started with --remote-debugging-port=9222 (log in there first).
+    """
+    from crawler.config import load_config
+    from crawler.nav.connect import harvest_auth, storage_state_fresh
+    from crawler.probe import probe as run_probe
+
+    cfg = load_config(config_path)
+    state = None
+    if not no_auth:
+        state = str(cfg.path(cfg.auth.storage_state))
+        if not storage_state_fresh(state, cfg.auth.max_age_minutes):
+            click.echo(f"borrowing login from Chrome at {cfg.cdp_endpoint} ...")
+            harvest_auth(cfg.cdp_endpoint, state)
+    bundle = run_probe(url, Path(out), storage_state=state, max_pages=max_pages,
+                       denylist=_denylist(deny, deny_file), cfg=cfg if config_path else None)
+    click.echo(f"wrote {bundle}  (open SITE-PROFILE.md; review before sharing)")
+
+
 if __name__ == "__main__":
     main()
