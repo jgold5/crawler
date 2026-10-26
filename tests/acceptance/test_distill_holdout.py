@@ -194,7 +194,7 @@ def test_xml_page_definitions_no_leaks_structure_kept(tmp_path):
     leaks = [(p.name, s) for p, t in text.items() for s in PAGE_SECRETS + extra if s.lower() in t.lower()]
     assert not leaks, leaks
     pages = sorted((out / "pages").glob("*.yaml"))
-    assert len(pages) == 2, [p.name for p in pages]            # evil.xml (DOCTYPE/ENTITY) refused
+    assert len(pages) == 3, [p.name for p in pages]            # 4 xml files; evil.xml (DOCTYPE/ENTITY) refused
     allp = "\n".join(p.read_text() for p in pages)
     assert "//mat-select[@aria-label=" in allp                  # CDATA xpath parsed and redacted to a shape
     assert "by: xpath" in allp and "following::input[1]" in allp  # tag-per-element style: text became the locator
