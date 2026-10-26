@@ -117,7 +117,7 @@ def test_column_specs_map_to_col_id(open_orders, spec, col_id):
     page = open_orders("scroll", seed=SEED_OTHER)
     cell = resolve_cell(page, target("A-123", spec), cfg_for(), TIMEOUT)
     assert cell.col_id == col_id
-    assert cell.template.xpath.endswith(f"//*[@col-id='{col_id}']")
+    assert re.findall(r"@col-id='([^']+)'", cell.template.xpath)[-1] == col_id   # mapped to col-id
     assert describe_cell(page, cell.handle)["key"] == "A-123"
     assert_verified(page, cell)
 

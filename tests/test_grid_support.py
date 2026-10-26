@@ -81,7 +81,10 @@ def show_row_via_api(page, key: str, col_id: str) -> None:
                        api.ensureIndexVisible(i, 'middle'); api.ensureColumnVisible(c); }""", [key, col_id])
     page.wait_for_function("""([k, c]) => [...document.querySelectorAll("[aria-label='Orders'] [col-id='orderId']")]
                                 .some(e => e.textContent.trim() === k)
-                              && !!document.querySelector(`[aria-label='Orders'] [row-index] [col-id='${c}']`)""",
+                              && !!document.querySelector(`[aria-label='Orders'] [row-index] [col-id='${c}']`)
+                              && !document.getAnimations().some(a => a.playState === 'running'
+                                   && a.effect && a.effect.target && a.effect.target.hasAttribute
+                                   && a.effect.target.hasAttribute('row-index'))""",
                            arg=[key, col_id], timeout=TIMEOUT)
 
 

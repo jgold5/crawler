@@ -254,6 +254,20 @@
     if (!top && sc.scrollTop === 0) top = true;
     return top && bottom;
   }
+  // Running CSS transitions that move/fade whole rows (animateRows after sort/filter/transactions).
+  // A row animating out keeps its new @row-index until AG Grid destroys it at the end of the
+  // transition, so nothing found during an animation is trusted until it is over.
+  var ROW_PROPS = /^(transform|top|opacity|height)$/;
+  function rowAnimating(w) {
+    if (!w.getAnimations || typeof CSSTransition === "undefined") return false;
+    try {
+      return w.getAnimations({ subtree: true }).some(function (a) {
+        var t = a.effect && a.effect.target;
+        return a instanceof CSSTransition && a.playState === "running" && ROW_PROPS.test(a.transitionProperty) &&
+               !!t && t.hasAttribute && t.hasAttribute("row-index");
+      });
+    } catch (e) { return false; }
+  }
   // Wait until the grid re-rendered after a scroll: rows cover the visible box and the DOM
   // signature is unchanged between two frames (AG Grid renders one frame after the scroll event).
   // `check` runs every frame and short-circuits as soon as it is truthy. Callers that conclude
@@ -266,7 +280,7 @@
       await frame();
       if (check) { var c = check(); if (c) return c; }
       var sig = signature(w);
-      if ((sig === prev || (before != null && sig !== before)) && covered(w, sc)) return null;
+      if ((sig === prev || (before != null && sig !== before)) && covered(w, sc) && !rowAnimating(w)) return null;
       prev = sig;
     }
     return check ? check() : null;
@@ -766,51 +780,60 @@
       if (!keyCol) return fail("Grid " + gridTitle(desc) + " has no columns");
     }
     if (!col && !control) return fail("No column '" + colSpec + "' in grid " + gridTitle(desc), cols.map(colLabel));
-    // 4. row
-    var t1 = now();
-    var fr = await findRow(w, spec, keyCol ? keyCol.colId : null, api, deadline, notes, stats);
-    timings.row = Math.round(now() - t1);
-    if (fr.error) return fail(fr.error, fr.alternatives || []);
-    var idx = fr.idx;
-    // 5. cell (or control inside a cell)
-    var t2 = now(), cell = null, ctl = null;
-    if (col) {
-      cell = await ensureCell(w, idx, col, api, deadline, stats);
-      if (!cell) return fail("Row found (row-index " + idx + ") but column " + colLabel(col) + " did not render");
-      if (control) {
-        var cs = findControl(cell, control);
-        if (cs.length !== 1) return fail(cs.length ? "'" + control + "' matches " + cs.length + " controls in that cell" : "No control '" + control + "' in column " + colLabel(col), cs.map(function (c) { return c.outerHTML.slice(0, 80); }));
-        ctl = cs[0];
-      }
-    } else {
-      // control text only: search the row's cells, sweeping columns if needed
-      var findCtl = function () {
-        var hits = [];
-        rowsOf(w).filter(function (r) { return rowIdx(r) === idx; }).forEach(function (r) {
-          findControl(r, control).forEach(function (c) { if (c.closest("[col-id]") && hits.indexOf(c) < 0) hits.push(c); });
-        });
-        return hits.length ? hits : null;
-      };
-      var hits = findCtl();
-      if (!hits) {
-        var hsc = hScroller(w);
-        if (hsc) {
-          hsc.scrollLeft = 0; hits = await settle(w, null, deadline, findCtl);
-          for (var gd = 0; !hits && gd < 200 && now() < deadline; gd++) {
-            var mx = hsc.scrollWidth - hsc.clientWidth;
-            if (hsc.scrollLeft >= mx - 1) break;
-            var bx = centerBox(w, hsc);
-            hsc.scrollLeft = Math.min(mx, hsc.scrollLeft + Math.max(40, Math.floor((bx.right - bx.left) * 0.85)));
-            hits = await settle(w, null, deadline, findCtl);
+    // 4.+5. row, then cell (or control inside a cell). Re-validated once the grid is quiet:
+    // if the element was replaced (row animation, re-render) the lookup runs again.
+    var t1 = now(), t2 = t1, idx = null, cell = null, ctl = null, col0 = col;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      col = col0; cell = null; ctl = null;
+      var fr = await findRow(w, spec, keyCol ? keyCol.colId : null, api, deadline, notes, stats);
+      timings.row = Math.round(now() - t1);
+      if (fr.error) return fail(fr.error, fr.alternatives || []);
+      idx = fr.idx;
+      t2 = now();
+      if (col) {
+        cell = await ensureCell(w, idx, col, api, deadline, stats);
+        if (!cell) return fail("Row found (row-index " + idx + ") but column " + colLabel(col) + " did not render");
+        if (control) {
+          var cs = findControl(cell, control);
+          if (cs.length !== 1) return fail(cs.length ? "'" + control + "' matches " + cs.length + " controls in that cell" : "No control '" + control + "' in column " + colLabel(col), cs.map(function (c) { return c.outerHTML.slice(0, 80); }));
+          ctl = cs[0];
+        }
+      } else {
+        // control text only: search the row's cells, sweeping columns if needed
+        var findCtl = function () {
+          var hits = [];
+          rowsOf(w).filter(function (r) { return rowIdx(r) === idx; }).forEach(function (r) {
+            findControl(r, control).forEach(function (c) { if (c.closest("[col-id]") && hits.indexOf(c) < 0) hits.push(c); });
+          });
+          return hits.length ? hits : null;
+        };
+        var hits = findCtl();
+        if (!hits) {
+          var hsc = hScroller(w);
+          if (hsc) {
+            hsc.scrollLeft = 0; hits = await settle(w, null, deadline, findCtl);
+            for (var gd = 0; !hits && gd < 200 && now() < deadline; gd++) {
+              var mx = hsc.scrollWidth - hsc.clientWidth;
+              if (hsc.scrollLeft >= mx - 1) break;
+              var bx = centerBox(w, hsc);
+              hsc.scrollLeft = Math.min(mx, hsc.scrollLeft + Math.max(40, Math.floor((bx.right - bx.left) * 0.85)));
+              hits = await settle(w, null, deadline, findCtl);
+            }
           }
         }
+        if (!hits) return fail("No column or in-row control named '" + colSpec + "' in grid " + gridTitle(desc), cols.map(colLabel));
+        if (hits.length > 1) return fail("'" + control + "' matches " + hits.length + " controls in that row", hits.map(function (c) { return c.closest("[col-id]").getAttribute("col-id") + ": " + c.outerHTML.slice(0, 80); }));
+        ctl = hits[0];
+        cell = ctl.closest("[col-id]");
+        var cid = cell.getAttribute("col-id");
+        col = cols.filter(function (c) { return c.colId === cid; })[0] || { colId: cid, header: cid, section: sectionOf(cell) };
       }
-      if (!hits) return fail("No column or in-row control named '" + colSpec + "' in grid " + gridTitle(desc), cols.map(colLabel));
-      if (hits.length > 1) return fail("'" + control + "' matches " + hits.length + " controls in that row", hits.map(function (c) { return c.closest("[col-id]").getAttribute("col-id") + ": " + c.outerHTML.slice(0, 80); }));
-      ctl = hits[0];
-      cell = ctl.closest("[col-id]");
-      var cid = cell.getAttribute("col-id");
-      col = cols.filter(function (c) { return c.colId === cid; })[0] || { colId: cid, header: cid, section: sectionOf(cell) };
+      await settle(w, vScroller(w), deadline, null);
+      var still = cell.isConnected && rowOf(cell) && rowIdx(rowOf(cell)) === idx && (!ctl || ctl.isConnected) &&
+                  (spec.index != null || keyMatches(w, keyCol.colId, norm(spec.keyValue)).indexOf(idx) >= 0);
+      if (still) break;
+      notes.push("cell was re-rendered while resolving (row animation?); looked it up again");
+      if (attempt === 3) return fail("Grid kept re-rendering the row while resolving it");
     }
     timings.cell = Math.round(now() - t2);
     var row = rowOf(cell);
