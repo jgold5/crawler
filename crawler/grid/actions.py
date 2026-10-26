@@ -42,21 +42,23 @@ def _wait(page, js: str, arg, timeout_ms: int) -> bool:
 
 
 def _locate(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, timeout_ms: int):
-    """The live element for `xpath`; re-scrolls the grid when it is not rendered any more."""
+    """The live element for `xpath`, fully visible in the grid. Re-scrolls the grid when the row or
+    column is not rendered any more (virtualized away, re-sorted, re-rendered by an animation)."""
     ensure_grid_engine(page)
-    el = _single(page, xpath)
-    if el is None:
-        spec = dict(cell.spec, noTemplates=True)
-        res, _ = run_engine(page, spec, timeout_ms)
-        if not res.get("ok"):
-            raise GridError(f"cell {cell.col_id!r} of row {cell.key_value or cell.spec.get('index')!r} "
-                            f"is gone: {res.get('error')}", res.get("alternatives") or [])
+    for attempt in range(3):
         el = _single(page, xpath)
         if el is None:
-            raise GridError(f"grid row found again but {xpath} no longer matches exactly one element")
-    page.evaluate("el => window.__crawlerGrid.reveal(el, 3000)", el)
-    again = _single(page, xpath)
-    return again or el
+            res, _ = run_engine(page, dict(cell.spec, noTemplates=True), timeout_ms)
+            if not res.get("ok"):
+                raise GridError(f"cell {cell.col_id!r} of row {cell.key_value or cell.spec.get('index')!r} "
+                                f"is gone: {res.get('error')}", res.get("alternatives") or [])
+            el = _single(page, xpath)
+        if el is not None:
+            page.evaluate("el => window.__crawlerGrid.reveal(el, 3000)", el)
+            again = _single(page, xpath)
+            if again is not None:
+                return again
+    raise GridError(f"grid row found again but {xpath} no longer matches exactly one element")
 
 
 def _truthy(value: str | None) -> bool:
@@ -130,6 +132,9 @@ def _commit(page, cell_el, focus_el, timeout_ms: int) -> None:
     page.keyboard.press("Tab")  # last resort: moves focus out, which also stops editing
     if not _wait(page, _NOT_EDITING, cell_el, timeout_ms):
         raise GridError("cell editor did not close after Enter/Tab")
+    # Tab while editing may start editing the next cell: cancel that accidental edit
+    if page.evaluate("() => document.querySelectorAll('.ag-cell-inline-editing, .ag-cell-popup-editing').length > 0"):
+        page.keyboard.press("Escape")
 
 
 def _pick_option(page, root, value: str, timeout_ms: int) -> None:

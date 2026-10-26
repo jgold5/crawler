@@ -238,8 +238,19 @@ public final class AgGrid {
                 + "' in the select editor; options: " + found.get("options"));
         }
         ((WebElement) found.get("option")).click();
-        if (editing(driver, cellOf(driver, c), Duration.ofMillis(500))) {
-            driver.switchTo().activeElement().sendKeys(Keys.ENTER);
+        // AG select editors commit on click; Enter on a cell that is no longer editing would start
+        // a new edit, so only press it when the editor is still open after a moment
+        WebElement cell = cellOf(driver, c);
+        if (!closesWithin(driver, cell, Duration.ofSeconds(1))) {
+            cell.sendKeys(Keys.ENTER);
+        }
+    }
+
+    private static boolean closesWithin(WebDriver driver, WebElement cell, Duration within) {
+        try {
+            return wait(driver, within).until(d -> state(d, cell).get("editing") == null);
+        } catch (TimeoutException e) {
+            return false;
         }
     }
 

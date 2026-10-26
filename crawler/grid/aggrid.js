@@ -57,6 +57,12 @@
     });
   }
   function ariaGrid(w) { return w.querySelector("[role=grid],[role=treegrid]"); }
+  // XPath predicate for the ARIA grid element. @aria-rowcount sits on it in every version, while
+  // its role differs (treegrid in v31, grid in v32+), so prefer the attribute for upgrade safety.
+  function gridPred(ge) {
+    if (!ge) return "[@role='grid']";
+    return ge.hasAttribute("aria-rowcount") ? "[@aria-rowcount]" : "[@role=" + lit(ge.getAttribute("role")) + "]";
+  }
   function hostChain(w) {  // w and its ancestors that contain no other grid (max 12)
     var others = allGrids().filter(function (o) { return o !== w; });
     var chain = [];
@@ -443,7 +449,9 @@
   async function sweepRows(w, deadline, check, keyCol, stats) {
     var sc = vScroller(w), seen = {};
     var mark = function () {
-      cellsByCol(w, keyCol).forEach(function (c) { if (norm(c.textContent)) seen[rowIdx(rowOf(c))] = 1; });
+      // a row counts as seen once its key cell exists and the row has rendered content
+      // (a blank key is still a seen row; a row whose cells have not rendered yet is not)
+      cellsByCol(w, keyCol).forEach(function (c) { if (norm(c.textContent) || norm(rowOf(c).textContent)) seen[rowIdx(rowOf(c))] = 1; });
     };
     var chk = function () { mark(); return check(); };
     var hit = chk();
@@ -482,6 +490,16 @@
     stats.rowsSeen = maxSeen + 1;
     return hit || chk();
   }
+  // Does the displayed key text equal the API's (formatted) value for the rendered rows? Only then
+  // is an API "no such row" trusted; otherwise a renderer changes the text and the DOM decides.
+  function apiMatchesDom(w, api, keyCol) {
+    if (!api.getDisplayedRowAtIndex) return false;
+    var cells = cellsByCol(w, keyCol);
+    return cells.length > 0 && cells.every(function (c) {
+      var n = api.getDisplayedRowAtIndex(rowIdx(rowOf(c)));
+      return !!n && apiValue(api, n, keyCol) === norm(c.textContent);
+    });
+  }
   async function findRow(w, spec, keyCol, api, deadline, notes, stats) {
     if (spec.index != null) {
       var idx = spec.index - 1;
@@ -500,7 +518,11 @@
       if (nodes) {
         stats.api = true;
         if (nodes.length > 1) return { error: "Key " + key + " matches " + nodes.length + " rows in column " + keyCol + "; the key column is not unique", alternatives: nodes.map(function (n) { return "row-index " + n.rowIndex; }) };
-        if (!nodes.length) return { error: filteredOut ? "Row " + keyCol + "=" + key + " exists but is hidden by the grid's filter" : "No row with " + keyCol + " = '" + key + "'" };
+        if (!nodes.length && filteredOut) return { error: "Row " + keyCol + "=" + key + " exists but is hidden by the grid's filter" };
+        if (!nodes.length && apiMatchesDom(w, api, keyCol)) return { error: "No row with " + keyCol + " = '" + key + "'" };
+        if (!nodes.length) { notes.push("key column text differs from the API value (cell renderer?); scanning the DOM"); nodes = null; }
+      }
+      if (nodes) {
         var i2 = nodes[0].rowIndex;
         if (i2 == null) return { error: "Row " + keyCol + "=" + key + " is not displayed (collapsed group or filtered)" };
         var vis = function () { var m = keyMatches(w, keyCol, key); return m.indexOf(i2) >= 0 ? i2 + 1 : null; };
@@ -603,7 +625,7 @@
     if (h && ge) {
       var t = norm(h.textContent);
       var hx = /^h[1-6]$/i.test(h.tagName) ? "//" + h.tagName.toLowerCase() : "//*[@role='heading']";
-      if (t && !any(badText, t)) out.push({ xp: hx + "[normalize-space()=" + lit(t) + "]/following::*[@role=" + lit(ge.getAttribute("role")) + "][1]", strategy: "heading", rank: 3 });
+      if (t && !any(badText, t)) out.push({ xp: hx + "[normalize-space()=" + lit(t) + "]/following::*" + gridPred(ge) + "[1]", strategy: "heading", rank: 3 });
     }
     return out.filter(function (a) {
       var m = xpSafe(a.xp);
@@ -619,10 +641,10 @@
   //  row           G//*[@row-index][.//*[@col-id=K][normalize-space()=P]]//*[@col-id=C]   (key+target in one row element:
   //                always in the unified v36+ layout; in the split layout only within one pinned section)
   //  join          G//*[@row-index][@row-index=G//*[@col-id=K][normalize-space()=P]/ancestor::*/@row-index]//*[@col-id=C]
-  //  join-ancestor same, inner part scoped by ancestor::*[@role='grid'] instead of repeating G
+  //  join-ancestor same, inner part scoped by ancestor::*[@aria-rowcount] (the grid) instead of repeating G
   //  index         G//*[@row-index=P-1]//*[@col-id=C]                                     (fragile fallback)
   // join/join-ancestor/index work in both layouts: they join the split row parts by @row-index at runtime.
-  function forms(G, gridRole, K, C, isIndex) {
+  function forms(G, gridStep, K, C, isIndex) {
     var c = "//*[@col-id=" + lit(C) + "]";
     if (isIndex) return [{ name: "index", xp: G + "//*[@row-index=" + TOKEN + "-1]" + c }];
     var k = "//*[@col-id=" + lit(K) + "][normalize-space()=" + TOKEN + "]";
@@ -632,7 +654,7 @@
     // [@row-index] first: XPath engines evaluate the join's inner path per candidate node, so
     // filter to row elements before joining (O(rows) instead of O(all grid descendants)).
     out.push({ name: "join", xp: G + "//*[@row-index][@row-index=" + G + k + "/ancestor::*/@row-index]" + c });
-    out.push({ name: "join-ancestor", xp: G + "//*[@row-index][@row-index=ancestor::*[@role=" + lit(gridRole) + "]" + k + "/ancestor::*/@row-index]" + c });
+    out.push({ name: "join-ancestor", xp: G + "//*[@row-index][@row-index=ancestor::*" + gridStep + k + "/ancestor::*/@row-index]" + c });
     // only offered when the app's getRowId returns the key itself (checked by the caller); ranked
     // after the key-text forms, so it is primary only when those cannot work (key cell not rendered
     // together with the target because of column virtualization).
@@ -663,7 +685,7 @@
   }
   function buildTemplates(w, ctx) {
     var js = ctx.js || {}, anchors = anchorsFor(w, js), ge = ariaGrid(w);
-    var role = ge ? ge.getAttribute("role") : "grid";
+    var role = gridPred(ge);
     var target = ctx.target, isIndex = ctx.isIndex;
     // proof rows: other rendered rows where both key and target cells are rendered
     var proofs = [];

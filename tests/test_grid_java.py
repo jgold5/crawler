@@ -183,8 +183,7 @@ def test_state_editor_and_option_scripts(open_orders):
     assert found["matches"] == 1 and "Delivered" in found["options"]
     opt = page.evaluate_handle("([src, v]) => new Function(src).apply(null, [v]).option",
                                [SCRIPTS["COMMON_JS"] + SCRIPTS["OPTION_JS"], "Delivered"]).as_element()
-    opt.click()
-    page.keyboard.press("Enter")
+    opt.click()     # AG select editors commit on option click (an extra Enter would start a new edit)
     page.wait_for_function("el => !el.classList.contains('ag-cell-inline-editing')", arg=cell)
     assert execute(page, SCRIPTS["STATE_JS"], cell)["text"] == "Delivered"
     prio = page.query_selector("xpath=//ag-grid-angular[@aria-label='Orders']//*[@row-index]"

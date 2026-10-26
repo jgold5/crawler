@@ -171,7 +171,7 @@ def test_grid_disambiguation_and_collisions(open_orders):
 
     cust = resolve_cell(page, GridTarget(RowRef("C-004"), "Open Qty", "Customers"), cfg_for(), TIMEOUT)
     assert cust.col_id == "quantity" and cust.key_col_id == "customerId"
-    assert cust.template.xpath.startswith("//h2[normalize-space()='Customers']/following::*[@role='grid'][1]//")
+    assert cust.template.xpath.startswith("//h2[normalize-space()='Customers']/following::*[@aria-rowcount][1]//")
     assert "grid-" not in cust.template.xpath, "random per-load host id must not be used"
     assert_verified(page, cust)
     assert describe_cell(page, cust.handle, "customerId")["key"] == "C-004"

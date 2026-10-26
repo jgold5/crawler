@@ -64,7 +64,9 @@ def test_templates_stable_and_scoped(open_orders, ag, layout):
         assert el is not None, (col, cell.template.xpath)
         info = describe_cell(fresh, el)
         assert (info["grid"], info["key"], info["colId"]) == ("Orders", "A-950", cell.col_id)
-    # sort by quantity: rows move, the template still points at A-950
+    # sort by quantity: rows move, the template still points at A-950 (header must be rendered first:
+    # the loop above scrolled the grid right, and headers are column-virtualized too)
+    fresh.evaluate("() => window.ordersGridApi.ensureColumnVisible('quantity')")
     fresh.locator("[aria-label='Orders'] .ag-header-cell[col-id='quantity'] .ag-header-cell-label").click()
     fresh.wait_for_function("() => window.ordersGridApi.getColumnState().some(c => c.colId === 'quantity' && c.sort)")
     show_row_via_api(fresh, "A-950", "quantity")

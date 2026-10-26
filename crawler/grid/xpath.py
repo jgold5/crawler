@@ -38,7 +38,7 @@ def fill_template(xpath: str, values: dict[str, str]) -> str:
 def camel(text: str, default: str = "value") -> str:
     """'Order ID' -> 'orderId', 'Tracking #' -> 'tracking', 'unitPrice' -> 'unitPrice'."""
     # split camelCase humps too, so col-ids like 'unitPrice' survive unchanged
-    words = re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", text or "")
+    words = re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+[a-z]*", text or "")
     if not words:
         return default
     out = words[0].lower() + "".join(w[:1].upper() + w[1:].lower() for w in words[1:])
