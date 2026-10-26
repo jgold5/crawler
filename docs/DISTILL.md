@@ -60,6 +60,9 @@ Python, which also handles Java 17+ syntax that `javalang` can't. Only `.java`, 
 read (only counted).
 
 ## TypeScript UI → crawler config (local only)
+The UI is **Angular + ag-grid-angular**. Read: routing modules / `app.routes.ts` (including lazy
+`loadChildren`/`loadComponent`), components' `.ts` and their `.html` templates
+(`<ag-grid-angular [columnDefs]=...>`, test-ids, `mat-*` controls), and `ColDef[]` declarations.
 Reading the UI source locally gives the crawler what it otherwise has to guess:
 - the router table (Angular `Routes` / React Router) → `pages:` with direct URLs
 - AG Grid `columnDefs` (`colId`/`field`/`headerName`, pinned, editable, `getRowId`) →
