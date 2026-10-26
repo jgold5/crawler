@@ -134,3 +134,21 @@ you send it.
 
 ## Open questions
 - Which date steps compute business dates vs calendar dates (one line each in the step mapping).
+
+## Implementation contracts (build phase A/B)
+- `crawler/english/` (parser): `parse(text) -> list[Line]`; `EnglishError(line_no, message, suggestions)`;
+  `Line(n, text, action, target, kind, value, is_date, business_days, row: RowRef|None, grid, section,
+  nth, verify_op, order, alias, page)`; actions: goto close click right_click double_click fill select check
+  uncheck clear sort verify remember wait_loader. `to_step(line, element_name, cfg) -> str | None`
+  renders the user's existing step phrasing from `crawler/english/steps_out.yaml` (None means flag).
+- Engine (`crawler/js/core.js`, `crawler/resolver.py`, new `crawler/frames.py`, `crawler/ask.py`,
+  `crawler/aliases.py`): resolution takes `Target.kind`; it works on a Playwright `Frame`; evidence
+  includes FA classes, tooltip describedby text, svg data-icon/title, icon synonyms and context;
+  `candidates(frame, target, action, cfg) -> list[CandidateInfo]` for ask mode; crops via `ask.py`;
+  `aliases.yaml` is consulted first.
+- Repo (`crawler/repo/`): `LocatorRepo.load(root, version)`, `.get(page, name)`, `.find(name)`,
+  `.iframe_entry(page)`, `RepoEntry.render(value)`, `.propose(...)`, `.add_entry(...)`, `.new_page(...)`,
+  `diff(edits)`, `apply(edits)`: minimal byte-preserving edits.
+- Fixture app: `tests/site/shell.html?page=<key>` embeds `<key>.html` in
+  `<iframe name="appFrame-<key>">` (same origin), like the real app. `?origin=alt` loads it from
+  `site_url_alt` instead (cross origin). Icons are Font Awesome (vendored), with and without tooltips.

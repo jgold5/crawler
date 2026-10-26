@@ -29,6 +29,16 @@ def site_url() -> str:
 
 
 @pytest.fixture(scope="session")
+def site_url_alt() -> str:
+    """The same tests/site served on a second port: a different origin, for cross-origin iframe tests."""
+    handler = functools.partial(_QuietHandler, directory=str(SITE_DIR))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+@pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as p:
         b = p.chromium.launch()

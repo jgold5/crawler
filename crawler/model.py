@@ -27,6 +27,7 @@ class Target:
     css: str | None = None
     within: str | None = None  # container title: section heading, legend, dialog title, aria-label
     nth: int | None = None     # 1-based tiebreak among equally good matches
+    kind: str | None = None    # role hint from the English: icon|button|link|tab|field|dropdown|checkbox|menu|dialog
 
 
 @dataclass(frozen=True)
