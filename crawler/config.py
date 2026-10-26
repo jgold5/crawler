@@ -63,6 +63,7 @@ class GridDef:
     selector: str | None = None
     key_column: str | None = None  # col-id or header text used to identify rows
     kind: str = "ag-grid"          # ag-grid | html-table (others later)
+    api_expr: str | None = None    # JS expression yielding the grid API if the app exposes it (fast scrolling), e.g. "window.ordersGridApi"
 
 
 @dataclass
