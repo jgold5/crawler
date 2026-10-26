@@ -1,0 +1,1 @@
+{"page":"recallsPage","extends":"globexBase","menuPath":"Lending > Recalls","elements":{"Recall Qty":{"type":"textfield","css":"input[name=\"recallQty\"]"},"Submit Recall":{"type":"button","xpath":"//button[text()=\"Submit to Initech\"]"}}}

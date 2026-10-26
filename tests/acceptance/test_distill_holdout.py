@@ -164,3 +164,23 @@ def test_java_constants_are_not_hosts_but_real_hosts_are(tmp_path):
     c = _Checker([])
     c.raw("A.java", 'String a = "api.corp.io"; b = svc.internal.local; c = Locale.US;\n')
     assert len(c.problems) == 2, c.problems
+
+
+PAGE_SECRETS = SECRETS + ["Marge Capital", "Burns Holdings", "Borrow Rate", "Rebate Rate", "Loan Id", "CUSIP",
+                          "Counterparty", "Recall Qty", "Submit Recall", "Lending", "Borrows", "securitiesBorrow",
+                          "recallsPage", "loanId", "rebateRate", "recallQty", "emea", "7731", "tok_9f8e"]
+
+
+def test_page_definitions_no_leaks_structure_kept(tmp_path):
+    out = Path(distill_mod.distill(HOLDOUT, tmp_path / "fp", DENY,
+                                   pages=["src/test/resources/pages/**/*.yaml", "src/test/resources/pages/**/*.json",
+                                          "src/test/resources/pages/**/*.properties"]))
+    text = {p: p.read_text() for p in out.rglob("*") if p.is_file()}
+    leaks = [(p.name, s) for p, t in text.items() for s in PAGE_SECRETS if s.lower() in t.lower()]
+    assert not leaks, leaks
+    pages = sorted((out / "pages").glob("*.yaml"))
+    assert len(pages) == 3                                  # 2 yaml + 1 json; the .properties is never read
+    allp = "\n".join(p.read_text() for p in pages)
+    assert allp.count("extends: Page") == 2                 # inheritance links preserved via placeholders
+    assert "//mat-select[" in allp and "@formcontrolname=" in allp   # Angular vocabulary kept
+    assert "defaultColumn: Column" in allp and "clients:" in allp

@@ -9,7 +9,7 @@ def _words(s: str) -> frozenset[str]:
 # Placeholders the redactors emit inside string literals / step text.
 PLACEHOLDERS = _words("""
 v text int number url email path xpath css secret string Name value doc p regex date json html selector name
-attr param
+attr param tag
 """)
 VALUE_SUBTYPES = _words("auto-id hashed-class state-class semantic-class number word kebab camel")
 
@@ -34,6 +34,14 @@ parent preceding preceding-sibling self
 XPATH_OPERATOR_NAMES = _words("and or div mod")
 
 # Attribute names that are kept verbatim in locator shapes. Anything else becomes "data-custom".
+# Angular / Angular Material / AG Grid attribute names: framework vocabulary, not app details.
+FRAMEWORK_ATTRS = _words("""
+formcontrolname formgroupname formarrayname formcontrol ngmodel routerlink routerlinkactive mattooltip matinput
+matsuffix matprefix matbadge cdkdrag cdkdroplist ref comp-id col-id row-id row-index row-business-key
+""")
+# Custom elements from UI libraries (Angular Material, CDK, AG Grid, PrimeNG, NG-ZORRO, Kendo, DevExtreme, Ionic).
+FRAMEWORK_TAG_RX = r"(?:mat|cdk|mdc|ag|ng|p|nz|kendo|dx|ion)-[a-z0-9]+(?:-[a-z0-9]+)*|router-outlet"
+
 SAFE_ATTRS = _words("""
 data-testid data-test data-test-id data-qa data-cy data-automation-id role id name class type placeholder col-id
 row-id row-index title href value for alt src label disabled checked selected readonly tabindex target rel lang

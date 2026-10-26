@@ -10,7 +10,7 @@ from collections import Counter
 
 from crawler.config import DEFAULT_UNSTABLE_CLASS_PATTERNS, DEFAULT_UNSTABLE_ID_PATTERNS
 
-from .vocab import (ARIA_ROLES, INPUT_TYPES, CSS_PSEUDOS, GENERIC_STEMS, HTML_TAGS, PLACEHOLDERS, ROLE_WORDS, SAFE_ATTRS, SAFE_WORDS,
+from .vocab import (FRAMEWORK_ATTRS, FRAMEWORK_TAG_RX, ARIA_ROLES, INPUT_TYPES, CSS_PSEUDOS, GENERIC_STEMS, HTML_TAGS, PLACEHOLDERS, ROLE_WORDS, SAFE_ATTRS, SAFE_WORDS,
                     TAG_WORDS, VALUE_SUBTYPES, XPATH_AXES, XPATH_FUNCS, XPATH_OPERATOR_NAMES)
 
 SENTINEL = "\x00"   # stands for a non-literal operand inside a concatenated string template
@@ -237,7 +237,7 @@ def _attr_ok(name: str, deny) -> bool:
     """Known-safe names, aria-*, and data-* whose words are all generic (data-row-key yes, data-acme-id no)."""
     if deny and deny(name):
         return False
-    if name in SAFE_ATTRS or re.fullmatch(r"aria-[a-z]+", name):
+    if name in SAFE_ATTRS or name in FRAMEWORK_ATTRS or re.fullmatch(r"aria-[a-z]+", name):
         return True
     m = re.fullmatch(r"data-([a-z0-9]+(?:-[a-z0-9]+)*)", name)
     return bool(m) and all(w in _ATTR_WORDS for w in m.group(1).split("-"))
@@ -267,9 +267,12 @@ def _xp_tokens(s: str):
     return out
 
 
+_TAG_SENTINEL = "zzcustomtag"  # lets an already-redacted `<tag>` re-redact to itself (check() fixed-point test)
+
+
 def redact_xpath(s: str, stats: Counter | None = None, deny=None) -> str | None:
     """XPath with every literal value replaced by a typed placeholder; names filtered. None if not an xpath."""
-    toks = _xp_tokens(s)
+    toks = _xp_tokens(s.replace("<tag>", _TAG_SENTINEL))
     if toks is None:
         return None
     sig = [t for t in toks if t[0] != "ws"]
@@ -333,10 +336,10 @@ def redact_xpath(s: str, stats: Counter | None = None, deny=None) -> str | None:
                 if text not in XPATH_AXES:
                     return None
                 out.append(text)
-            elif text in HTML_TAGS:
+            elif text in HTML_TAGS or re.fullmatch(FRAMEWORK_TAG_RX, text):
                 out.append(text)
             else:
-                out.append("*")
+                out.append("<tag>")  # app-specific custom element; not "*", which would misreport the original
                 if stats is not None:
                     stats["custom tag names"] += 1
         prev.append((kind, text))
@@ -404,6 +407,7 @@ def _unq(v: str) -> str:
 
 
 def redact_css(s: str, strict: bool, stats: Counter | None = None, deny=None) -> str | None:
+    s = s.replace("<tag>", _TAG_SENTINEL)
     pos, out = 0, []
     selectorish = False
     s = s.strip()
@@ -470,12 +474,12 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None, deny=None) ->
         elif kind in ("star", "sent"):
             out.append("*")
         else:  # ident = tag name
-            if text in HTML_TAGS:
+            if text in HTML_TAGS or re.fullmatch(FRAMEWORK_TAG_RX, text):
                 out.append(text)
             elif strict:
                 return None
             else:
-                out.append("*")
+                out.append("<tag>")
                 if stats is not None:
                     stats["custom tag names"] += 1
     if strict and not selectorish:

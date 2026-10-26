@@ -769,6 +769,8 @@ class PageAdapter:
         """Locator by shape (xpath / css), else None."""
         if self._early(s):
             return None
+        if LOC_PREFIX_RX.fullmatch(s.strip()) and not s.lstrip().startswith(("/", "(", ".")):
+            return self._locator(s, "auto", kctx)        # "css=#x", "xpath://div": kind from the prefix
         t, _ = _params(s)
         k = redact_literal(t)[1]
         if k in ("xpath", "css"):
@@ -785,8 +787,9 @@ class PageAdapter:
         t, styles = _params(s)
         if not self.final:
             return "<xpath>", f"locator:{kind}"
-        segs = [p for p in kctx.path if p not in ("[]", "<name>")]
-        label = segs[-2] if len(segs) >= 2 else (segs[-1] if segs else "page")
+        segs = [p for p in kctx.path if p not in ("[]", "<name>")
+                and not (_lw(p) in LOCATOR_KIND or _lw(p) in VALUE_KEYS or _lw(p) in STRATEGY_KEYS)]
+        label = segs[-1] if segs else "page"
         owner = f"{kctx.page}.{kctx.owner or label}"
         shape = None
         for lc in self.collectors:

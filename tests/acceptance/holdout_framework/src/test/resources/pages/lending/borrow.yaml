@@ -1,0 +1,24 @@
+page: securitiesBorrow
+extends: globexBase
+menuPath: Lending > Initech Borrows > New Borrow
+elements:
+  CUSIP: {type: textfield, xpath: "//input[@formcontrolname='cusip']"}
+  Borrow Rate: {type: textfield, xpath: "//label[normalize-space()='Borrow Rate (bps)']/following::input[1]"}
+  Counterparty:
+    type: dropdown
+    xpath: "//mat-select[@aria-label='Counterparty']"
+    options: [Marge Capital LLC, Burns Holdings]
+grids:
+  Open Borrows:
+    defaultColumn: Loan Id
+    columns:
+      - {name: Loan Id, colId: loanId, type: text}
+      - {name: Rebate Rate, colId: rebateRate, type: number}
+    rowXpath: "//div[@role='row'][.//div[@col-id='loanId' and normalize-space()='{row}']]"
+clients:
+  globex-emea:
+    note: |
+      Contact 10.42.7.19 or qa-oncall@globexbank.com
+      password: Gl0bex!Spring2026
+    elements:
+      CUSIP: {xpath: "//input[@id='cusip-emea-7731']"}

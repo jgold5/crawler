@@ -1,0 +1,6 @@
+# owner: hank.scorpio@globexbank.com
+page: globexBase
+iframe: "//iframe[@src='https://uat.globexbank.internal/embed']"
+elements:
+  Loader: {type: spinner, css: "div.globex-loader"}
+  Sign Out: {type: button, xpath: "//a[normalize-space()='Sign out of Globex']"}
