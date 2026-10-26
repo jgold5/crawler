@@ -242,3 +242,19 @@ def check(out: Path, denylist: list[str] = ()) -> list[str]:
         elif rel.endswith(".yaml"):
             c.yaml_file(rel, text)
     return c.problems
+
+
+def scan_text(rel: str, text: str, denylist: list[str] = (), grammar: bool = False) -> list[str]:
+    """Leak-scan one text: denylist terms, URLs/hosts, emails, IPs, secret shapes (the byte scan check() runs
+    on every bundle file). With grammar=True, also apply the bundle format rules for .java/.feature/.yaml
+    by file name. Problems never contain the offending value."""
+    c = _Checker(denylist)
+    c.raw(rel, text)
+    if grammar:
+        if rel.endswith(".java"):
+            c.java(rel, text)
+        elif rel.endswith(".feature"):
+            c.feature(rel, text)
+        elif rel.endswith(".yaml"):
+            c.yaml_file(rel.rsplit("/", 1)[-1], text)
+    return c.problems

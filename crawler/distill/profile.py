@@ -14,8 +14,9 @@ from .vocab import ROLE_WORDS, TEST_ID_ATTRS, VERBS
 T = javalang.tree
 SUFFIXES = ["PageObject", "Page", "Screen", "View", "PO", "Section", "Component", "Dialog", "Modal", "Panel", "Form"]
 STEP_SUFFIXES = ["StepDefinitions", "StepDefs", "Stepdefs", "Steps", "Glue", "Definitions"]
-WAIT_RX = re.compile(r"(?i)^(wait|await)|until|visible|clickable|ready|loaded|spinner|loader|present|stale")
-GRID_RX = re.compile(r"(?i)grid|cell|row|column")
+WAIT_WORDS = {"wait", "await", "until", "visible", "clickable", "ready", "loaded", "spinner", "loader", "present",
+              "stale", "invisible", "disappear"}
+GRID_WORDS = {"grid", "cell", "cells", "row", "rows", "column", "columns"}
 
 
 def _is_upper(name: str) -> bool:
@@ -171,14 +172,18 @@ def wait_and_grid_stats(units: list[Unit], policy: Policy, locs: list[dict], raw
     ec = Counter()
     explicit = sleeps = implicit = 0
     wait_helpers, grid_helpers = set(), set()
+    def words(n):
+        return {w.lower() for w in split_words(n)}
     for u in units:
         for ci in u.classes:
-            if GRID_RX.search(ci.name):
+            if _has_steps(ci):
+                continue
+            if words(ci.name) & GRID_WORDS:
                 grid_helpers.add(policy.type_name(ci.name, ci.scope))
             for m in ci.methods:
-                if not m.is_ctor and WAIT_RX.search(m.name):
+                if not m.is_ctor and words(m.name) & WAIT_WORDS:
                     wait_helpers.add(policy.member(m.name, "method"))
-                if not m.is_ctor and GRID_RX.search(m.name):
+                if not m.is_ctor and words(m.name) & GRID_WORDS:
                     grid_helpers.add(policy.member(m.name, "method"))
         if u.cu is None or u.mode != "ast":
             continue

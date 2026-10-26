@@ -83,6 +83,7 @@ class ResolvedCell:
     fragile: bool = False
     layout: str = ""                 # "split" (AG Grid <= 35) | "unified" (36+)
     api_used: bool = False
+    api_source: str | None = None    # "api_expr" | "angular" (ng.getComponent) | None (DOM scrolling)
     notes: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
     spec: dict = field(default_factory=dict)   # what to re-run to find this cell again
@@ -192,6 +193,8 @@ def resolve_cell(page, target: GridTarget, cfg: SiteConfig, timeout_ms: int) -> 
         if concrete != t["xpath"] or not _verify(page, concrete, el):
             continue  # JS and Python disagree: never emit it
         score = (40.0 if by_index else _ANCHOR_SCORE.get(t["anchor"], 80.0)) - min(10.0, len(concrete) / 40.0)
+        if candidates:  # JS already ordered them best-first (anchor strength, form, length)
+            score = min(score, candidates[-1].score - 0.1)
         candidates.append(Candidate(xpath=concrete, strategy=strategy, score=round(score, 1)))
         if template is None:
             template = LocatorTemplate(xpath=tpl, params=[param], example={param: example_value})
@@ -211,7 +214,7 @@ def resolve_cell(page, target: GridTarget, cfg: SiteConfig, timeout_ms: int) -> 
         grid_count=int(res.get("gridCount") or 1), col_header=res.get("colHeader") or res["colId"],
         key_col_id=res.get("keyColId"), key_value=res.get("keyValue"), row_index=res.get("rowIndex"),
         control=res.get("control"), control_tag=res.get("controlTag"), strategy=strategy, fragile=by_index,
-        layout=res.get("layout", ""), api_used=bool(res.get("apiUsed")), notes=notes, timings=timings,
+        layout=res.get("layout", ""), api_used=bool(res.get("apiUsed")), api_source=res.get("apiSource"), notes=notes, timings=timings,
         spec=dict(spec, column=target.column.strip()),
     )
 

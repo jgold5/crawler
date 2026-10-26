@@ -77,11 +77,14 @@ class Anonymizer:
         return lw in GENERIC_STEMS or lw in VERBS or lw in ROLE_WORDS or w.isdigit()
 
     def _anon(self, name: str, kind: str) -> str:
-        if len(name) <= 2 or re.fullmatch(r"[A-Z]", name):
+        if not name.isascii() or not split_words(name):
+            n = self._stem_id([name])
+            self.count += 1
+            return {"type": f"Type{n}", "ann": f"Type{n}", "method": f"item{n}", "param": f"arg{n}",
+                    "local": f"arg{n}"}.get(kind, f"item{n}")
+        if len(name) <= 2:
             return name
         words = split_words(name)
-        if not words:
-            return name
         style = style_of(name)
         lower = [w.lower() for w in words]
         i = 0
@@ -121,7 +124,7 @@ class Anonymizer:
         return join_words(verbs + [f"{pre}{n}"] + roles, style)
 
     def package_segment(self, seg: str) -> str:
-        if self.keep or seg.lower() in PACKAGE_GENERIC or len(seg) <= 2:
+        if self.keep or (seg.isascii() and (seg.lower() in PACKAGE_GENERIC or len(seg) <= 2)):
             return self.rename(seg).lower()
         return self.rename(f"pkg{self._stem_id([seg])}")
 

@@ -69,7 +69,8 @@ result results return right role row rows save saved scenario screen scroll sear
 selected send set settings should show shown sign size skip sort sorted start status step submit submitted
 success successful successfully summary switch tab table tabs text that the then there these this time title to
 toast toggle top total true type uncheck under unique up update updated upload url user username users valid
-value values verify view visible wait warning when where which will window with within without yes you your
+value values verify view visible wait warning when where which will window with within without yes you your api ui id ok csv pdf json xml html sql http https into onto over across via am shows tick
+untick approve approved deny denied opens enters types clicks sees selects chooses hovers waits appears
 """)
 
 # --- identifier anonymization -------------------------------------------------------------------------------
@@ -130,7 +131,9 @@ JAVA_LANG_TYPES = _words("""
 String Integer Long Short Byte Double Float Boolean Character Object Number Math System Thread Runnable Exception
 RuntimeException Error Throwable IllegalArgumentException IllegalStateException UnsupportedOperationException
 NullPointerException InterruptedException StringBuilder StringBuffer Class Enum Iterable Void Override Deprecated
-SuppressWarnings FunctionalInterface SafeVarargs CharSequence Comparable AutoCloseable Record
+SuppressWarnings FunctionalInterface SafeVarargs CharSequence Comparable AutoCloseable Record ThreadLocal
+InheritableThreadLocal Runtime Process ProcessBuilder ClassLoader StackTraceElement Cloneable Appendable
+IndexOutOfBoundsException NumberFormatException ClassCastException ArithmeticException AssertionError
 """)
 
 # Methods/fields of well-known APIs (JDK, Selenium, Cucumber, JUnit/TestNG/AssertJ) kept verbatim.

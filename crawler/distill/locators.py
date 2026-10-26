@@ -59,7 +59,7 @@ def _css_metrics(value: str, shape: str) -> dict:
             "positional_indexes": len(re.findall(r":nth-", shape)), "uses_text_fn": ":contains(" in shape,
             "uses_normalize_space": False, "uses_contains_class": bool(re.search(r"\[class\*=", shape)),
             "absolute": bool(re.match(r"\s*(html|body)\b", shape)), "descendant_wildcards": shape.count("*"),
-            "predicates": shape.count("["), "attrs_used": _attrs(shape),
+            "predicates": shape.count("["), "attrs_used": _attrs(shape, "css"),
             "is_template": SENTINEL in value or "%s" in value}
 
 
@@ -70,8 +70,11 @@ def _simple_metrics(value: str, shape: str) -> dict:
             "is_template": "<param>" in shape}
 
 
-def _attrs(shape: str) -> list[str]:
-    names = re.findall(r"@([\w-]+|<attr>)", shape) + re.findall(r"\[([\w-]+|<attr>)(?=[~|^$*]?=|\])", shape)
+def _attrs(shape: str, kind: str = "xpath") -> list[str]:
+    if kind == "xpath":
+        names = re.findall(r"@([\w-]+|<attr>)", shape)
+    else:
+        names = re.findall(r"\[([A-Za-z][\w-]*|<attr>)(?=[~|^$*]?=|\])", shape)
     return sorted(set(names))
 
 
@@ -98,6 +101,7 @@ class LocatorCollector:
         self.entries: dict[tuple[str, str], dict] = {}
         self.order: list[tuple[str, str]] = []
         self.lengths: list[int] = []
+        self.resolve = None
 
     # ------------------------------------------------------------------ recording
     def add(self, kind: str, value: str, owner: str, hint: str | None = None) -> None:
@@ -144,34 +148,48 @@ class LocatorCollector:
             self.klass(ci)
 
     def klass(self, ci: ClassInfo) -> None:
-        hints: dict[str, str] = {}
         body = ci.node.body or []
         if ci.kind == "enum":
             body = list(ci.node.body.declarations or []) if ci.node.body else []
         members = [m for m in body if isinstance(m, (T.FieldDeclaration, T.MethodDeclaration,
                                                      T.ConstructorDeclaration))]
-        # pass 1: By.*(CONSTANT) tells us what a String constant is
+        consts: dict[str, str] = {}
+        for f in ci.fields.values():
+            if f.init is not None and f.type_name == "String":
+                t = string_template(f.init)
+                if t is not None:
+                    consts[f.name] = t
+        self.resolve = consts.get
+        # pass 1: constants used inside By.*(...) / String.format(...) are recorded where they are used
+        hints: dict[str, str] = {}
+        consumed: set[str] = set()
         for m in members:
             for _, n in m:
-                if isinstance(n, T.MethodInvocation) and n.qualifier in ("By", "org.openqa.selenium.By") \
-                        and n.member in BY_HINTS and n.arguments and isinstance(n.arguments[0], T.MemberReference):
-                    hints[n.arguments[0].member] = BY_HINTS[n.member]
+                if isinstance(n, T.MethodInvocation) and n.arguments and (
+                        (n.qualifier in ("By", "org.openqa.selenium.By") and n.member in BY_HINTS)
+                        or is_string_format(n)):
+                    for _, r in n.arguments[0]:
+                        if isinstance(r, T.MemberReference) and not r.qualifier and r.member in consts:
+                            consumed.add(r.member)
+                            if n.member in BY_HINTS:
+                                hints.setdefault(r.member, BY_HINTS[n.member])
         for m in members:
             if isinstance(m, T.FieldDeclaration):
                 for d in m.declarators:
                     own = self.owner(ci, d.name)
                     for a in m.annotations or []:
                         self.annotation(a, own)
-                    if d.initializer is not None:
-                        self.walk(d.initializer, own, hints.get(d.name) if d.name in ci.fields else None)
+                    if d.initializer is not None and d.name not in consumed:
+                        self.walk(d.initializer, own, hints.get(d.name))
             else:
-                own = self.owner(ci, ci.name if isinstance(m, T.ConstructorDeclaration) else m.name,
-                                 "type" if isinstance(m, T.ConstructorDeclaration) else "method")
                 if isinstance(m, T.ConstructorDeclaration):
                     own = self.owner(ci, None) + ".<init>"
+                else:
+                    own = self.owner(ci, m.name, "method")
                 for stmt in m.body or []:
                     if isinstance(stmt, javalang.ast.Node):
                         self.walk(stmt, own, None)
+        self.resolve = None
 
     def annotation(self, a, owner: str) -> None:
         simple = a.name.rsplit(".", 1)[-1]
@@ -206,18 +224,18 @@ class LocatorCollector:
             if node.qualifier in ("By", "org.openqa.selenium.By") and node.member in BY_HINTS and node.arguments:
                 h = BY_HINTS[node.member]
                 a0 = node.arguments[0]
-                t0 = string_template(a0)
+                t0 = string_template(a0, self.resolve)
                 if t0 is None and is_string_format(a0) and a0.arguments:
-                    t0 = string_template(a0.arguments[0])
+                    t0 = string_template(a0.arguments[0], self.resolve)
                 if t0 is not None:
                     self.add(KIND_OF_HINT[h], t0, owner)
-                elif not isinstance(a0, T.MemberReference):
+                else:
                     self.add(KIND_OF_HINT[h], SENTINEL, owner)
                 for a in node.arguments[1:]:
                     self.walk(a, owner, None)
                 return
             if is_string_format(node) and node.arguments:
-                t0 = string_template(node.arguments[0])
+                t0 = string_template(node.arguments[0], self.resolve)
                 if t0 is not None:
                     k = hint and KIND_OF_HINT.get(hint) or classify_literal(t0)
                     if k in ("xpath", "css"):

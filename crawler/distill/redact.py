@@ -496,8 +496,10 @@ def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None
     if _NUM_RX.fullmatch(plain):
         return "<int>", "number"
     if looks_like_xpath(s):
-        if re.fullmatch(r"/[\w\-./{}%:\x00]*", s) and not all(
-                seg in HTML_TAGS or seg == "" for seg in re.split(r"/+", s.strip("/"))):
+        structural = bool(re.search(r"[\[@]|::|\(\)|^\s*\(|//", s))
+        all_tags = all(seg in HTML_TAGS or seg in ("", "*", ".", "..")
+                       for seg in re.split(r"/+", s.strip().strip("/")))
+        if not structural and not all_tags and re.fullmatch(r"[^\s\[\]@()]+", s):
             return "<path>", "path"
         r = redact_xpath(s, stats, deny)
         if r is not None:
@@ -572,7 +574,7 @@ class PhraseRedactor:
             elif kind == "q":
                 qc, inner = tok[0], tok[1:-1]
                 if is_placeholder(inner) or re.fullmatch(r"<[A-Za-z][\w -]*>", inner):
-                    out.append(qc + self._ph(inner) + qc)
+                    out.append(qc + self._ph(inner[1:-1]) + qc)
                 elif re.fullmatch(r"\{[^{}\s]*\}", inner):
                     out.append(qc + self(inner, mode) + qc)
                 elif mode == "pattern" and not re.search(r"[^\W\d_]", re.sub(r"\\.", "", inner)):

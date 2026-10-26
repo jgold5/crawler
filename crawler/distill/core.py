@@ -67,7 +67,9 @@ def _walk(src: Path, exclude: set[Path]) -> tuple[list[Path], list[Path], Counte
             if p.is_symlink():
                 other["symlinks"] += 1
                 continue
-            if f.endswith(".java") and f != "module-info.java" and f != "package-info.java":
+            if f in ("module-info.java", "package-info.java"):
+                other["java module/package info"] += 1
+            elif f.endswith(".java"):
                 java.append(p)
             elif f.endswith(".feature"):
                 feats.append(p)
@@ -126,6 +128,7 @@ def distill(src: Path, out: Path, denylist: list[str] = (), rename_packages_to: 
             keep_identifiers: bool = False) -> Path:
     src = Path(src).resolve()
     out = Path(out).resolve()
+    rename_packages_to = rename_packages_to or "com.example"
     if not src.is_dir():
         raise NotADirectoryError(f"{src} is not a directory")
     if out == src or out in src.parents:

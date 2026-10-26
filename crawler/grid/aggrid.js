@@ -372,17 +372,30 @@
     });
     return out;
   }
+  function validApi(api) {
+    return !!api && typeof api.forEachNode === "function" && !(api.isDestroyed && api.isDestroyed());
+  }
+  // Angular dev/QA builds expose window.ng; ng.getComponent(<ag-grid-angular>) is the AgGridAngular
+  // component and its .api is the grid API. Used automatically when no api_expr is configured.
+  function angularApi(w) {
+    var ng = window.ng, host = w.closest("ag-grid-angular");
+    if (!host || !ng || typeof ng.getComponent !== "function") return null;
+    try { var cmp = ng.getComponent(host); return cmp && validApi(cmp.api) ? cmp.api : null; } catch (e) { return null; }
+  }
   // `apis` holds values Playwright evaluated for each GridDef.api_expr (CSP-safe); eval is a fallback.
-  function getApi(def, notes, apis) {
-    if (!def || !def.apiExpr) return null;
-    var api = null;
-    if (apis && Object.prototype.hasOwnProperty.call(apis, def.name)) api = apis[def.name];
-    else {
-      try { api = (0, eval)(def.apiExpr); } catch (e) { notes.push("api_expr " + def.apiExpr + " failed: " + e.message); return null; }
+  function getApi(w, def, notes, apis, src) {
+    if (def && def.apiExpr) {
+      var api = null;
+      if (apis && Object.prototype.hasOwnProperty.call(apis, def.name)) api = apis[def.name];
+      else {
+        try { api = (0, eval)(def.apiExpr); } catch (e) { notes.push("api_expr " + def.apiExpr + " failed: " + e.message); }
+      }
+      if (validApi(api)) { src.api = "api_expr"; return api; }
+      notes.push("api_expr " + def.apiExpr + " did not yield an AG Grid API; trying Angular, then scrolling");
     }
-    if (!api || typeof api.forEachNode !== "function") { notes.push("api_expr " + def.apiExpr + " is not an AG Grid API; scrolling instead"); return null; }
-    if (api.isDestroyed && api.isDestroyed()) return null;
-    return api;
+    var ng = angularApi(w);
+    if (ng) { src.api = "angular"; return ng; }
+    return null;
   }
   function apiValue(api, node, colId) {
     var v;
@@ -552,6 +565,7 @@
   function anchorsFor(w, js) {
     var out = [], ge = ariaGrid(w);
     var badId = rx(js.unstableIdPatterns), okId = rx(js.stableIdAllow), badText = rx(js.unstableTextPatterns);
+    var badClass = rx(js.unstableClassPatterns);
     var stableId = function (id) { return any(okId, id) || !any(badId, id); };
     hostChain(w).forEach(function (e) {
       var tag = e.tagName.toLowerCase();
@@ -562,6 +576,12 @@
       if (e.id && stableId(e.id)) out.push({ xp: "//" + tag + "[@id=" + lit(e.id) + "]", strategy: "id", rank: 1 });
       var al = e.getAttribute("aria-label");
       if (al && norm(al) && !any(badText, al)) out.push({ xp: "//" + tag + "[@aria-label=" + lit(al) + "]", strategy: "aria-label", rank: 2 });
+      // dev-set classes on the host (e.g. <ag-grid-angular class="orders-grid">); AG Grid's own
+      // ag-* classes (themes, layout) are shared by every grid and never used
+      Array.prototype.forEach.call(e.classList || [], function (cl) {
+        if (/^ag-/.test(cl) || any(badClass, cl)) return;
+        out.push({ xp: "//" + tag + "[contains(concat(' ', normalize-space(@class), ' '), " + lit(" " + cl + " ") + ")]", strategy: "class", rank: 3 });
+      });
     });
     var h = headingFor(w);
     if (h && ge) {
@@ -717,7 +737,8 @@
     }
     if (loading(w)) return fail("Grid " + gridTitle(desc) + " still shows its loading overlay after " + spec.timeoutMs + " ms");
     timings.ready = Math.round(now() - t0);
-    var api = getApi(def, notes, apis);
+    var apiSrc = { api: null };
+    var api = getApi(w, def, notes, apis, apiSrc);
     // 3. columns
     var cols = await columns(w, api, deadline, timings);
     var colSpec = spec.column, control = spec.control || null, mc = matchColumn(cols, colSpec);
@@ -800,7 +821,7 @@
       keyColId: keyCol ? keyCol.colId : null, keyHeader: keyCol ? (keyCol.header || keyCol.colId) : null, keyHow: keyHow,
       keyValue: spec.index == null ? norm(spec.keyValue) : null, index: spec.index,
       control: control, controlTag: ctl ? ctl.tagName.toLowerCase() : null,
-      apiUsed: stats.api, scrollSteps: stats.steps, hScrollSteps: stats.hsteps, revisits: stats.revisits, gridCount: allGrids().length,
+      apiUsed: stats.api, apiSource: stats.api ? apiSrc.api : null, scrollSteps: stats.steps, hScrollSteps: stats.hsteps, revisits: stats.revisits, gridCount: allGrids().length,
       timings: timings, notes: notes
     };
     if (spec.noTemplates) { timings.total = Math.round(now() - t0); timings.frames = frames - frames0; return { result: base, el: ctl || cell }; }

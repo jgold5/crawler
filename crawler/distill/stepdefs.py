@@ -216,7 +216,8 @@ class Inference:
             return EMPTY
         if m == "navigate":
             return Val(nav=True)
-        if (m == "get" and qualifier and "driver" in qualifier.lower()) or (m == "to" and recv.nav):
+        if (m == "get" and len(args) == 1 and qualifier and qualifier.split(".")[-1][:1].islower()
+                and "driver" in qualifier.lower()) or (m == "to" and recv.nav):
             effects.append(Effect("goto", value=av))
             return EMPTY
         if m.startswith("assert") or (qualifier or "").split(".")[-1] in ("Assert", "Assertions"):
@@ -249,7 +250,8 @@ class Inference:
                         roles.setdefault("value", v)
                 for ef in effects[before:]:
                     ef.grid = True
-                effects.insert(before, Effect("grid", roles=roles, verb=first, grid=True))
+                if roles:
+                    effects.insert(before, Effect("grid", roles=roles, verb=first, grid=True))
             if first in ("check", "tick", "toggle", "uncheck", "untick"):
                 for ef in effects[before:]:
                     if ef.action == "click":
@@ -410,7 +412,10 @@ class Catalog:
             pattern = self.phrase(d.raw, "pattern")
             params = pattern_params(d)
             jtypes = [t for t, _ in d.method.params]
-            effects = self.inf.analyze(d.method) if d.method.node.body is not None else []
+            try:
+                effects = self.inf.analyze(d.method) if d.method.node.body is not None else []
+            except (RecursionError, Exception):  # noqa: BLE001 - one odd step def never stops the run
+                effects = []
             action = self._primary(effects)
             acts = []
             for ef in effects:
@@ -465,8 +470,8 @@ class Catalog:
         if "goto" in kinds:
             return "goto"
         if any(e.grid for e in effects):
-            grid = [e for e in effects if e.action == "grid"]
-            verb = grid[0].verb if grid else ""
+            g = Catalog._grid_effect(effects)
+            verb = g.verb if g else ""
             return "grid_fill" if ("fill" in kinds or verb in FILL_VERBS) else "grid_click"
         for k in ("select", "check", "uncheck", "fill", "hover", "expect_text", "click"):
             if k in kinds:
@@ -477,7 +482,7 @@ class Catalog:
         out = {"value_param": None, "target_param": None}
         main = next((e for e in effects if e.action == action.replace("grid_", "") and e.action != "grid"), None)
         if action.startswith("grid"):
-            g = next((e for e in effects if e.action == "grid"), None)
+            g = self._grid_effect(effects)
             if g:
                 out["value_param"] = self._num(g.roles.get("value"))
                 out["target_param"] = self._num(g.roles.get("row"))
@@ -488,6 +493,11 @@ class Catalog:
         return out
 
     @staticmethod
+    def _grid_effect(effects):
+        grids = [e for e in effects if e.action == "grid"]
+        return max(grids, key=lambda e: len(e.roles)) if grids else None
+
+    @staticmethod
     def _num(v: Val | None) -> int | None:
         return next(iter(v.taints)) if v is not None and len(v.taints) == 1 else None
 
@@ -496,7 +506,7 @@ class Catalog:
             return None
         out: list[tuple[str, dict, str]] = []
         if action.startswith("grid"):
-            g = next((e for e in effects if e.action == "grid"), None)
+            g = self._grid_effect(effects)
             if not g:
                 return None
             row, col = self._value(g.roles.get("row", EMPTY)), self._value(g.roles.get("column", EMPTY))

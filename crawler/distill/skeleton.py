@@ -33,15 +33,20 @@ def java_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
 
 
-def string_template(e) -> str | None:
-    """Literal string or a '+' concatenation containing one, with non-literal parts as SENTINEL."""
+def string_template(e, resolve=None) -> str | None:
+    """Literal string or a '+' concatenation containing one, with non-literal parts as SENTINEL.
+
+    `resolve(name)` may return the template of a same-class String constant referenced by name."""
     if isinstance(e, T.Literal) and isinstance(e.value, str) and e.value.startswith('"'):
         if e.selectors:
             return None
         return unescape_java(e.value[1:-1])
+    if resolve is not None and isinstance(e, T.MemberReference) and e.qualifier in (None, "") \
+            and not e.selectors:
+        return resolve(e.member)
     if isinstance(e, T.BinaryOperation) and e.operator == "+":
-        left = string_template(e.operandl)
-        right = string_template(e.operandr)
+        left = string_template(e.operandl, resolve)
+        right = string_template(e.operandr, resolve)
         if left is None and right is None:
             return None
         return (left if left is not None else SENTINEL) + (right if right is not None else SENTINEL)
@@ -252,11 +257,14 @@ class Renderer:
                 if pair.name == "how" and isinstance(pair.value, T.MemberReference):
                     how = HOW_HINTS.get(pair.value.member)
             parts = []
+            kept = "." not in a.name and self.p.type_kept(a.name, self.scope) or \
+                "." in a.name and self.p.qualified(a.name) == a.name
             for pair in el:
                 hint = None
                 if simple in FINDBY_ANNOTATIONS:
                     hint = FINDBY_HINTS.get(pair.name) or (how if pair.name == "using" else None)
-                parts.append(f"{self.p.member(pair.name, 'method')} = {self.expr(pair.value, hint)}")
+                pname = self.p.rename(pair.name) if kept else self.p.member(pair.name, "method")
+                parts.append(f"{pname} = {self.expr(pair.value, hint)}")
             return f"@{name}({', '.join(parts)})"
         return f"@{name}({self.expr(el)})"
 
@@ -373,8 +381,8 @@ class Renderer:
                 kept = bool(n.qualifier) and self.qual_kept(n.qualifier)
                 name = self.p.rename(n.member) if kept else self.p.member(n.member, "method")
                 q = n.qualifier or ""
-                if q and q.split(".")[-1][:1].isupper() and "." not in q:
-                    name = f"{self.p.type_name(q, self.scope)}.{name}"
+                if q and q[:1].isupper() and "." not in q:
+                    name = f"{self.qual(q)}.{name}"
                 for a in n.arguments or []:
                     if isinstance(a, T.MethodInvocation) and a.qualifier == "By" and a.member in BY_HINTS:
                         name += f"(By.{a.member})"

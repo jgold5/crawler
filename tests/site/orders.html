@@ -34,15 +34,17 @@
       <button type="button" id="btn-1720" class="tb-btn">Export</button>
       <span id="ordersMessage" role="status"></span>
     </div>
-    <!-- aria-label on the grid host; no getRowId on this grid (row-ids are 0..n, meaningless) -->
-    <div id="ordersGrid" class="grid-host" aria-label="Orders" style="height: 480px"></div>
+    <!-- Angular-style host (ag-grid-angular) with a dev-set class and aria-label, plus Angular's
+         generated _ngcontent attribute. No getRowId on this grid (row-ids are 0..n, meaningless). -->
+    <ag-grid-angular class="grid-host orders-grid" aria-label="Orders" _ngcontent-ng-c2817364=""
+                     style="display: block; height: 480px"></ag-grid-angular>
   </section>
 
   <section class="panel">
     <h2>Customers</h2>
     <div class="toolbar">Accounts with open orders</div>
     <!-- generated per page load (like ExtJS/GWT counters): must never be used in a locator -->
-    <div class="grid-host customers-host" style="height: 280px"></div>
+    <div class="grid-host" style="height: 280px"></div>
   </section>
 </main>
 
@@ -138,7 +140,8 @@
     Array.prototype.forEach.call(document.querySelectorAll(".grid-host"), function (el) { el.classList.add("ag-theme-quartz"); });
   }
 
-  var ordersApi = agGrid.createGrid(document.getElementById("ordersGrid"), {
+  var ordersHost = document.querySelector("ag-grid-angular.orders-grid");
+  var ordersApi = agGrid.createGrid(ordersHost, {
     columnDefs: orderCols,
     defaultColDef: { sortable: true, resizable: true },
     // NOTE: no getRowId on purpose.
@@ -149,7 +152,18 @@
   });
   window.ordersGridApi = ordersApi;
 
-  var customersHost = document.querySelector(".customers-host");
+  // Simulate an Angular dev/QA build: window.ng.getComponent(<ag-grid-angular>) returns the
+  // AgGridAngular component, whose .api is the grid API. ?ng=0 simulates a prod build (no window.ng).
+  ordersHost.__ngComponent = { api: ordersApi, gridOptions: {} };
+  if (params.get("ng") !== "0") {
+    window.ng = window.ng || {};
+    window.ng.getComponent = function (el) {
+      if (!(el instanceof Element)) throw new Error("Expecting instance of DOM Element");
+      return el.__ngComponent || null;
+    };
+  }
+
+  var customersHost = document.querySelector("section:last-of-type .grid-host");
   customersHost.id = "grid-" + (1000 + Math.floor(Math.random() * 9000));
   var customersApi = agGrid.createGrid(customersHost, {
     columnDefs: [
