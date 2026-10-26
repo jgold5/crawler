@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trades</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/fontawesome.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/solid.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/regular.min.css">
+<link rel="stylesheet" href="mat.css">
+<script src="hostile.js"></script>
+</head>
+<body class="mat-typography">
+<!--
+  Angular Material + AG Grid look-alike page with Font Awesome 6 webfont icons (see INVENTORY.md "Icon pages").
+  Embedded by shell.html?page=trades in <iframe name="appFrame-trades">, or opened directly.
+-->
+<app-root><main class="page" id="main"></main></app-root>
+<div class="cdk-overlay-container"></div>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var main = document.getElementById('main');
+  main.id = H.newId();
+
+  function iconBtn(fa, extra) {
+    return '<button type="button" mat-icon-button class="mdc-icon-button mat-mdc-icon-button mat-unthemed mat-mdc-button-base {{c:IconButton.root}}" {{ng}}' +
+      (extra || '') + '><span class="mat-mdc-button-persistent-ripple mdc-icon-button__ripple"></span>' +
+      '<i class="' + fa + '" aria-hidden="true"></i><span class="mat-mdc-focus-indicator"></span></button>';
+  }
+  function tip(key) { return ' aria-describedby="cdk-describedby-message-ng-1-{{n:' + key + '}}"'; }
+  function tipMsg(key, textValue) {
+    return '<div id="cdk-describedby-message-ng-1-{{n:' + key + '}}" aria-hidden="true">' + textValue + '</div>';
+  }
+
+  var OPEN = [['T-1', 'Acme', 100], ['T-2', 'Globex', 250], ['T-3', 'Initech', 75]];
+  var CLOSED = [['C-1', 'Umbrella', 40], ['C-2', 'Hooli', 60]];
+
+  H.load(main, function (c) {
+    c.appendChild(H.frag(
+      '<div class="page-header {{c:Page.header}}" {{ng}}>' +
+      ' <h1 class="{{c:Typography.h1}}">Trades</h1>' +
+      ' <div class="page-actions {{c:Page.actions}}" role="toolbar">' +
+      iconBtn('fa-solid fa-magnifying-glass', ' aria-label="Search trades"') +
+      iconBtn('fa-solid fa-gear fa-fw', ' title="Preferences"') +
+      iconBtn('fa-regular fa-circle-question') +
+      iconBtn('fa-solid fa-ellipsis-vertical', ' aria-haspopup="menu" aria-expanded="false" data-menu="more"') +
+      '  <a href="#help" class="help-link {{c:Link.root}}">Help</a>' +
+      '  <button type="button" mat-flat-button class="mdc-button mat-mdc-unelevated-button btn-primary {{c:Button.primary}}" id="{{rid}}" data-open="trade-entry">' +
+      '<i class="fa-solid fa-plus"></i><span class="mdc-button__label">New Trade</span></button>' +
+      ' </div>' +
+      '</div>' +
+      '<div class="notice {{c:Notice.root}}" role="note"><span>Market data is delayed by 15 minutes.</span>' +
+      iconBtn('fa-solid fa-xmark', ' data-dismiss="notice"') + '</div>' +
+      // Open Trades: mat-card + toolbar of icon buttons + AG Grid with pencil/trash per row
+      '<mat-card class="mat-mdc-card mdc-card {{c:Card.root}}" {{ng}}>' +
+      ' <mat-card-header class="mat-mdc-card-header"><div class="mat-mdc-card-header-text">' +
+      '  <mat-card-title class="mat-mdc-card-title">Open Trades</mat-card-title></div></mat-card-header>' +
+      ' <mat-card-content class="mat-mdc-card-content">' +
+      '  <div class="card-toolbar {{c:Toolbar.root}}" role="toolbar">' +
+      iconBtn('fa-solid fa-arrows-rotate') +
+      iconBtn('fa-solid fa-filter', tip('filter')) +
+      iconBtn('fa-solid fa-bolt', tip('quick')) +
+      iconBtn('fa-solid fa-file-export') +
+      '  </div>' +
+      '  <ag-grid-angular class="ag-theme-quartz {{c:Grid.root}}" {{ng}}><div class="ag-root-wrapper" role="presentation">' +
+      '   <div class="ag-root ag-layout-auto-height" role="treegrid" aria-rowcount="4">' +
+      '    <div class="ag-header" role="presentation"><div class="ag-header-row" role="row" aria-rowindex="1">' +
+      '     <div class="ag-header-cell" role="columnheader" col-id="tradeId">Trade Id</div>' +
+      '     <div class="ag-header-cell" role="columnheader" col-id="counterparty">Counterparty</div>' +
+      '     <div class="ag-header-cell" role="columnheader" col-id="qty">Qty</div>' +
+      '     <div class="ag-header-cell" role="columnheader" col-id="actions"></div></div></div>' +
+      '    <div class="ag-center-cols-container" role="rowgroup">' +
+      OPEN.map(function (r, i) {
+        return '<div class="ag-row ag-row-' + (i % 2 ? 'odd' : 'even') + '" role="row" row-index="' + i + '" row-id="' + r[0] + '" aria-rowindex="' + (i + 2) + '">' +
+          '<div class="ag-cell" role="gridcell" col-id="tradeId" tabindex="-1">' + r[0] + '</div>' +
+          '<div class="ag-cell" role="gridcell" col-id="counterparty" tabindex="-1">' + r[1] + '</div>' +
+          '<div class="ag-cell" role="gridcell" col-id="qty" tabindex="-1">' + r[2] + '</div>' +
+          '<div class="ag-cell" role="gridcell" col-id="actions" tabindex="-1">' +
+          iconBtn('fa-solid fa-pen-to-square', ' data-row="' + r[0] + '"') + iconBtn('fa-regular fa-trash-can', ' data-row="' + r[0] + '"') +
+          '</div></div>';
+      }).join('') +
+      '    </div></div></div></ag-grid-angular>' +
+      ' </mat-card-content>' +
+      '</mat-card>' +
+      // Closed Trades: plain section, identical refresh icon (ambiguous without context)
+      '<section class="panel {{c:Panel.root}}" {{ng}}>' +
+      ' <div class="panel-header {{c:Panel.header}}"><h3 class="{{c:Typography.h3}}">Closed Trades</h3>' +
+      '  <div class="panel-toolbar {{c:Toolbar.root}}" role="toolbar">' + iconBtn('fa-solid fa-arrows-rotate') + '</div></div>' +
+      ' <table class="trade-table {{c:Table.root}}"><thead><tr><th>Trade Id</th><th>Counterparty</th><th>Qty</th><th></th></tr></thead><tbody>' +
+      CLOSED.map(function (r) {
+        return '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + '</td><td>' + iconBtn('fa-regular fa-eye') + '</td></tr>';
+      }).join('') +
+      ' </tbody></table>' +
+      ' <div class="form-row inline {{c:FormRow.root}}"><input type="text" aria-label="Filter" placeholder="Filter…" class="{{c:Input.root}}" id="{{rid}}">' +
+      '  <button type="button" class="{{c:Button.text}}" id="{{rid}}"><span>Filter</span></button></div>' +
+      '</section>' +
+      // CDK AriaDescriber messages (matTooltip): hidden, in the DOM before any hover
+      '<div class="cdk-describedby-message-container cdk-visually-hidden" aria-hidden="true" style="visibility:hidden">' +
+      tipMsg('filter', 'Filter trades') + tipMsg('quick', 'Quick book') + '</div>'));
+    document.body.appendChild(c.querySelector('.cdk-describedby-message-container'));
+
+    c.querySelector('[data-dismiss=notice]').addEventListener('click', function () { c.querySelector('.notice').remove(); });
+    c.querySelector('[data-open=trade-entry]').addEventListener('click', openTradeEntry);
+    c.querySelector('[data-menu=more]').addEventListener('click', function (e) { e.stopPropagation(); toggleMenu(this); });
+    c.querySelectorAll('[data-row]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        H.toast((b.querySelector('.fa-trash-can') ? 'Deleted ' : 'Editing ') + b.getAttribute('data-row'));
+      });
+    });
+    c.querySelectorAll('.card-toolbar button, .panel-toolbar button').forEach(function (b) {
+      b.addEventListener('click', function () { H.toast(b.querySelector('.fa-arrows-rotate') ? 'Refreshed' : 'Done'); });
+    });
+  });
+
+  var overlay = document.querySelector('.cdk-overlay-container');
+
+  function toggleMenu(trigger) {
+    var open = overlay.querySelector('.mat-mdc-menu-panel');
+    if (open) { closeMenu(trigger); return; }
+    var r = trigger.getBoundingClientRect();
+    var panel = H.frag(
+      '<div class="mat-mdc-menu-panel {{c:Menu.panel}}" role="menu" tabindex="-1" id="mat-menu-panel-{{n:menu}}" {{ng}}>' +
+      ' <button type="button" mat-menu-item role="menuitem" class="mat-mdc-menu-item mat-focus-indicator"><i class="fa-solid fa-file-csv"></i><span>Export CSV</span></button>' +
+      ' <button type="button" mat-menu-item role="menuitem" class="mat-mdc-menu-item mat-focus-indicator"><i class="fa-solid fa-print"></i><span>Print</span></button>' +
+      '</div>').firstElementChild;
+    panel.style.left = Math.max(8, r.right - 170) + 'px';
+    panel.style.top = (r.bottom + 4) + 'px';
+    overlay.appendChild(panel);
+    trigger.setAttribute('aria-expanded', 'true');
+    panel.addEventListener('click', function () { closeMenu(trigger); H.toast('Exported'); });
+    document.addEventListener('click', function off() { closeMenu(trigger); document.removeEventListener('click', off); });
+  }
+  function closeMenu(trigger) {
+    var p = overlay.querySelector('.mat-mdc-menu-panel');
+    if (p) p.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function openTradeEntry() {
+    if (overlay.querySelector('mat-dialog-container')) return;
+    var frag = H.frag(
+      '<div class="cdk-overlay-backdrop cdk-overlay-dark-backdrop cdk-overlay-backdrop-showing"></div>' +
+      '<div class="cdk-global-overlay-wrapper" dir="ltr"><div class="cdk-overlay-pane mat-mdc-dialog-panel" id="cdk-overlay-{{n:pane}}">' +
+      ' <mat-dialog-container tabindex="-1" class="mat-mdc-dialog-container mdc-dialog cdk-dialog-container" role="dialog" aria-modal="true"' +
+      '  aria-labelledby="mat-mdc-dialog-title-{{n:dlg}}" id="mat-mdc-dialog-{{n:dlg}}">' +
+      '  <div class="mdc-dialog__container"><div class="mat-mdc-dialog-surface mdc-dialog__surface">' +
+      '   <app-trade-entry {{ng}}>' +
+      '    <div class="dialog-header {{c:Dialog.header}}">' +
+      '     <h2 mat-dialog-title class="mat-mdc-dialog-title mdc-dialog__title" id="mat-mdc-dialog-title-{{n:dlg}}">Trade Entry</h2>' +
+      '     <button type="button" mat-icon-button mat-dialog-close class="mdc-icon-button mat-mdc-icon-button mat-unthemed mat-mdc-button-base {{c:IconButton.root}}">' +
+      '<span class="mat-mdc-button-persistent-ripple mdc-icon-button__ripple"></span><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>' +
+      '    </div>' +
+      '    <mat-dialog-content class="mat-mdc-dialog-content mdc-dialog__content">' +
+      '     <div class="form-row {{c:FormRow.root}}"><label for="mat-input-{{n:cp}}">Counterparty</label><input matinput id="mat-input-{{n:cp}}" class="mat-mdc-input-element"></div>' +
+      '     <div class="form-row {{c:FormRow.root}}"><label for="mat-input-{{n:qty}}">Quantity</label><input matinput type="number" id="mat-input-{{n:qty}}" class="mat-mdc-input-element"></div>' +
+      '    </mat-dialog-content>' +
+      '    <mat-dialog-actions class="mat-mdc-dialog-actions mdc-dialog__actions">' +
+      '     <button type="button" mat-button class="mdc-button mat-mdc-button {{c:Button.text}}" data-act="cancel"><span class="mdc-button__label">Cancel</span></button>' +
+      '     <button type="button" mat-flat-button class="mdc-button mat-mdc-unelevated-button btn-primary {{c:Button.primary}}" data-act="submit"><span class="mdc-button__label">Submit Trade</span></button>' +
+      '    </mat-dialog-actions>' +
+      '   </app-trade-entry>' +
+      '  </div></div>' +
+      ' </mat-dialog-container>' +
+      '</div></div>');
+    var nodes = Array.prototype.slice.call(frag.childNodes);
+    nodes.forEach(function (n) { overlay.appendChild(n); });
+    function close() { nodes.forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); }); }
+    overlay.querySelector('[mat-dialog-close]').addEventListener('click', close);
+    overlay.querySelector('[data-act=cancel]').addEventListener('click', close);
+    overlay.querySelector('[data-act=submit]').addEventListener('click', function () { close(); H.toast('Trade booked'); });
+    overlay.querySelector('mat-dialog-container').addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  }
+})();
+</script>
+</body>
+</html>

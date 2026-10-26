@@ -1,13 +1,20 @@
-"""Resolve a human Target ("Email", within "Billing") to one element in the page.
+"""Resolve a human Target ("Email", within "Billing") to one element in the page or frame.
 
-Matching runs in the page (``window.__crawler.resolve``) and is polled with
-``page.wait_for_function`` until it finds something or the timeout expires (no fixed sleeps).
-Equally good matches are never guessed between: ResolveError lists them.
+Matching runs in the document (``window.__crawler.resolve``) and is polled with
+``wait_for_function`` until it finds something or the timeout expires (no fixed sleeps).
+``page`` may be a Playwright Page or a Frame (see crawler.frames.frame_for for iframes).
+
+Evidence (docs/FLOWS.md "How an element is identified"): label/aria/title/placeholder, Material tooltip
+text (aria-describedby), visible text, Font Awesome icon names (v4/v5/v6/SVG) through the icon synonym
+table, and context (`within`: dialog title, card/panel heading, grid name, toolbar). Tiers: exact, then
+case/whitespace-insensitive, then word overlap, then synonyms; an inexact (fuzzy or synonym) match is used
+only when it is the single reasonable candidate in scope. Equally good matches are never guessed between:
+ResolveError lists them. ``aliases`` (crawler.aliases.AliasStore) is consulted first when given.
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -51,12 +58,19 @@ class Resolved:
     matched_by: str         # name source: label|aria-label|text|placeholder|...|xpath|css
     score: float            # 0..1
     description: str        # e.g. 'button "Save" in "Security"'
+    tier: str = "exact"     # exact | fuzzy | icon (synonym) | alias
+    context: str = ""       # nearest container title ("Open Trades")
+    location: str = ""      # 'toolbar of "Open Trades", 1st icon'
+    evidence: list[str] = field(default_factory=list)  # ['fa-arrows-rotate', 'no tooltip']
+    alias: str | None = None        # the aliases.yaml XPath used, if resolved through an alias
+    stale_alias: str | None = None  # why a recorded alias was not used (it no longer matches exactly one element)
 
 
 def _spec(target: Target, action: str, diagnose: bool = False) -> dict:
     return {
         "query": target.query, "source": target.source, "xpath": target.xpath, "css": target.css,
         "within": target.within, "nth": target.nth, "action": action, "diagnose": diagnose,
+        "kind": getattr(target, "kind", None),
     }
 
 
@@ -73,6 +87,8 @@ def _what(target: Target) -> str:
         s += f" within {target.within!r}"
     if target.nth:
         s += f" nth={target.nth}"
+    if getattr(target, "kind", None):
+        s += f" (kind {target.kind})"
     return s
 
 
@@ -84,6 +100,12 @@ def _is_transient(e: Exception) -> bool:
 def _raise_for(info: dict, target: Target, action: str) -> None:
     status = info.get("status")
     what = _what(target)
+    if status == "ambiguous" and info.get("reason") == "inexact":
+        raise ResolveError(
+            f"{action} {what}: no exact match, and {info.get('count')} elements match inexactly (word overlap or "
+            f"icon synonym); an inexact match is used only when it is the single candidate. Reword the name, or add "
+            f"`within:` (dialog/section/grid title) or `nth:`",
+            info.get("alternatives", []))
     if status == "ambiguous":
         raise ResolveError(
             f"{action} {what}: {info.get('count') or len(info.get('alternatives', []))} elements match equally well; "
@@ -96,14 +118,26 @@ def _raise_for(info: dict, target: Target, action: str) -> None:
 
 def _resolved(jh, info: dict) -> Resolved:
     return Resolved(handle=jh.get_property("el").as_element(), matched_by=info.get("matchedBy", ""),
-                    score=float(info.get("score", 0.0)), description=info.get("description", ""))
+                    score=float(info.get("score", 0.0)), description=info.get("description", ""),
+                    tier=info.get("tier", "exact"), context=info.get("context", "") or "",
+                    location=info.get("location", "") or "", evidence=list(info.get("evidence") or []))
 
 
-def resolve(page, target: Target, action: str, cfg: SiteConfig, timeout_ms: int) -> Resolved:
-    """Find the element a Target means. Polls until found or timeout (no fixed sleeps).
+def resolve(page, target: Target, action: str, cfg: SiteConfig, timeout_ms: int, *,
+            aliases=None, page_key: str | None = None) -> Resolved:
+    """Find the element a Target means in ``page`` (a Page or a Frame). Polls until found or timeout.
 
     Never guesses between equally good matches: raises ResolveError listing them.
+    With ``aliases`` (an AliasStore) and ``page_key``, a recorded answer for (page_key, target) is tried first
+    and re-verified; a stale alias falls back to normal resolution and is reported in ``stale_alias``.
     """
+    if aliases is not None and page_key:
+        from .aliases import resolve_with_aliases
+        return resolve_with_aliases(page, target, action, cfg, timeout_ms, aliases, page_key)
+    return _resolve(page, target, action, cfg, timeout_ms)
+
+
+def _resolve(page, target: Target, action: str, cfg: SiteConfig, timeout_ms: int) -> Resolved:
     if not (target.query or target.xpath or target.css):
         raise ResolveError(f"{action}: target has no query, xpath or css")
     spec = _spec(target, action)

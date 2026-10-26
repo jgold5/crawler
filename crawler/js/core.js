@@ -709,15 +709,77 @@
         add('@href=' + lit(href), 'href', 60);
       }
     }
+    // Icon identity on the clickable (FA classes are stable by construction: not subject to class patterns).
+    iconsOf(el).slice(0, 2).forEach(function (ic) {
+      var ip = iconPred(ic, el);
+      if (ip) add(ip, 'icon', 70);
+    });
+    TOOLTIP_ATTRS.forEach(function (a) {
+      var v = attr(el, a);
+      if (v && stableText(v)) add('@' + a + '=' + lit(v), 'tooltip', 74);
+    });
+    if (t === 'iframe' || t === 'frame') iframePreds(el).forEach(function (x) { add(x.p, x.s, x.w); });
     if (t === 'input' && el.hasAttribute('type')) add('@type=' + lit(attr(el, 'type')), 'type', inputType(el) === 'text' ? 35 : 50);
     if (t === 'button' && el.hasAttribute('type')) add('@type=' + lit(attr(el, 'type')), 'type', 45);
     var r = attr(el, 'role');
     if (r && /^[a-z ]+$/.test(r)) add('@role=' + lit(r), 'role', 40);
-    var classes = (el.getAttribute('class') || '').split(/[ \t\r\n]+/).filter(stableClass);
+    var classes = (el.getAttribute('class') || '').split(/[ \t\r\n]+/).filter(function (c) {
+      return stableClass(c) && !isFaNoise(c) && !(c.lastIndexOf('fa-', 0) === 0 && iconsOf(el).length);
+    });
     classes.slice(0, 3).forEach(function (c) {
       add("contains(concat(' ',normalize-space(@class),' '),' " + c + " ')", 'class', 40);
     });
     out.sort(function (a, b) { return b.w - a.w; });
+    return out;
+  }
+
+  var CLASS_HAS = function (c) { return "contains(concat(' ',normalize-space(@class),' '),' " + c + " ')"; };
+
+  /** Predicate (relative to the clickable el) that pins icon ic, e.g. .//i[contains(...,' fa-arrows-rotate ')]. */
+  function iconPred(ic, el) {
+    var n = ic.node;
+    if (ic.glyph) return '';
+    if (ic.svg && n.hasAttribute('data-icon')) {
+      return n === el ? '@data-icon=' + lit(ic.name) : ".//*[local-name()='svg'][@data-icon=" + lit(ic.name) + ']';
+    }
+    if (ic.mat) {
+      var mp = ic.mat === 'text' ? 'normalize-space()=' + lit(text(n)) : '@' + ic.mat + '=' + lit(ic.name);
+      return n === el ? mp : './/mat-icon[' + mp + ']';
+    }
+    if (!ic.cls) return '';
+    if (n === el) return CLASS_HAS(ic.cls);
+    var tag = isHtml(n) ? tagOf(n) : "*[local-name()='" + n.localName + "']";
+    return './/' + tag + '[' + CLASS_HAS(ic.cls) + ']';
+  }
+
+  /** Leading stable part of a name/id with a random tail: 'appFrame-trades-k3j9x2' -> 'appFrame-trades'. */
+  function stableHead(v) {
+    var parts = String(v).split(/([-_.:])/), out = '';
+    for (var i = 0; i < parts.length; i += 2) {
+      var seg = parts[i];
+      var bad = !seg || /^\d+$/.test(seg) || /\d{3,}/.test(seg) || (/\d/.test(seg) && /[a-z]/i.test(seg) && seg.length >= 5) ||
+                /^[0-9a-f]{6,}$/i.test(seg) || anyRx(RX.id, seg);
+      if (bad) break;
+      out += (i ? parts[i - 1] : '') + seg;
+    }
+    return out.length >= 4 && out !== v ? out : '';
+  }
+
+  /** Extra predicates for an iframe: stable name/id head (page key) and the src path's file name. */
+  function iframePreds(el) {
+    var out = [];
+    ['name', 'id'].forEach(function (a) {
+      var v = attr(el, a);
+      if (!v || stableId(v)) return;
+      var h = stableHead(v);
+      if (h) out.push({ p: 'contains(@' + a + ',' + lit(h) + ')', s: a, w: a === 'name' ? 82 : 78 });
+    });
+    var src = attr(el, 'src').split(/[?#]/)[0];
+    var file = src.split('/').filter(Boolean).pop() || '';
+    if (file && !/^(about:|javascript:|data:|blob:)/i.test(src) && /^[\w.-]{3,60}$/.test(file) && stableText(file) &&
+        !/\d{3,}/.test(file) && file.indexOf(':') < 0) {
+      out.push({ p: 'contains(@src,' + lit(file) + ')', s: 'src', w: 62 });
+    }
     return out;
   }
 
@@ -752,15 +814,23 @@
       return ht0 + 'normalize-space()=' + lit(ht) + ']';
     }
     for (var c = a.firstElementChild; c; c = c.nextElementSibling) {
-      if (isHeading(c)) { var hp = headPred(c); if (hp) { add('//' + t + '[' + hp + ']', 78, 'heading'); break; } }
+      if (isTitle(c)) { var hp = headPred(c); if (hp) { add('//' + t + '[' + hp + ']', 78, 'heading'); break; } }
     }
     // Grandchild heading only through a wrapper that holds just the title (header, hgroup, title div).
     c = a.firstElementChild;
-    if (c && !isHeading(c)) {
+    if (c && !isTitle(c)) {
       var g = c.firstElementChild;
-      if (g && isHeading(g) && (c.children.length === 1 || /^(header|hgroup)$/.test(c.localName))) {
+      if (g && isTitle(g) && (c.children.length === 1 || /^(header|hgroup|mat-card-header)$/.test(c.localName))) {
         var gp = headPred(g);
         if (gp) add('//' + t + '[' + tagOf(c) + '/' + gp + ']', 74, 'heading');
+      }
+    }
+    // A card/panel/dialog whose title sits deeper (mat-card > mat-card-header > div > mat-card-title).
+    if (isA(a, CONTAINER_SEL)) {
+      var ot = ownTitle(a);
+      if (ot && (!c || (ot !== c && ot.parentElement !== a))) {
+        var op = headPred(ot);
+        if (op) add('//' + t + '[.//' + op + ']', 72, 'heading');
       }
     }
     return out;
@@ -862,6 +932,15 @@
       var lbv = attr(el, 'aria-labelledby');
       if (stableId(lbv) && add('//' + t + '[@aria-labelledby=' + lit(lbv) + ']', 'aria-labelledby', 79)) anyUnique = true;
     }
+    // Material tooltip: aria-describedby -> hidden cdk-describedby message (random id, stable text)
+    tooltipsOf(el).forEach(function (tt) {
+      if (tt.source !== 'tooltip' || !tt.el || attr(el, 'aria-describedby').split(/\s+/).length !== 1) return;
+      var tx = tt.text;
+      if (tx.length > 80 || !stableText(tx)) return;
+      var tinner = '//' + tagOf(tt.el) + '[normalize-space()=' + lit(tx) + ']';
+      if (add('//' + t + '[@aria-describedby=' + tinner + '/@id]', 'tooltip', 73,
+              refUnique.bind(null, t, 'aria-describedby', tinner, 'id', el))) anyUnique = true;
+    });
 
     // 7: pairs of own predicates when nothing single is unique
     if (!anyUnique) {
@@ -953,7 +1032,7 @@
     click: 'button,a,summary,label,input[type=button],input[type=submit],input[type=reset],input[type=image],' +
            'input[type=checkbox],input[type=radio],[role=button],[role=link],[role=tab],[role=menuitem],' +
            '[role=menuitemcheckbox],[role=menuitemradio],[role=option],[role=checkbox],[role=radio],[role=switch],' +
-           '[role=treeitem],[onclick],[tabindex]'
+           '[role=treeitem],[onclick],[ng-click],[data-ng-click],[routerlink],[mat-menu-item],[mat-dialog-close],[tabindex]'
   };
   POOL_SEL.uncheck = POOL_SEL.check;
   POOL_SEL.hover = POOL_SEL.click + ',[aria-haspopup],[title]';
@@ -974,18 +1053,28 @@
     return true;
   }
 
-  /** Containers for a `within` title: [{root, after, before}] (after/before bound flat sections). */
-  function findContainers(title) {
+  /** Title/heading elements of container a that belong to it (not to a nested container). */
+  function titlesIn(a) {
+    var ts = a.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading],' + TITLE_SEL), out = [];
+    for (var i = 0; i < ts.length; i++) {
+      var c = ts[i].parentElement && closestOf(ts[i].parentElement, CONTAINER_SEL);
+      if (c === a || !c || !a.contains(c)) out.push(ts[i]);
+    }
+    return out;
+  }
+
+  /** Containers whose title matches `title`: [{root, title, after, before}]. */
+  function findContainersRaw(title) {
     var q = canon(title), scored = [];
     var els = document.querySelectorAll(
-      'h1,h2,h3,h4,h5,h6,legend,caption,summary,[role=heading],[aria-label],[aria-labelledby]');
+      'h1,h2,h3,h4,h5,h6,legend,caption,summary,[role=heading],[aria-label],[aria-labelledby],' + TITLE_SEL);
     for (var i = 0; i < els.length; i++) {
       var e = els[i];
       if (!isHtml(e)) continue;
       var name, self = false;
       if (e.hasAttribute('aria-label') && !isClickable(e) && !FORM_TAGS[e.localName]) { name = attr(e, 'aria-label'); self = true; }
       else if (e.hasAttribute('aria-labelledby') && !isClickable(e) && !FORM_TAGS[e.localName]) { name = labelledbyText(e); self = true; }
-      else if (isHeading(e) || e.localName === 'summary') name = text(e);
+      else if (isTitle(e) || e.localName === 'summary') name = text(e);
       else continue;
       var s = match(q, canon(name));
       if (s >= THRESHOLD) scored.push({ el: e, s: s, self: self });
@@ -999,6 +1088,13 @@
       if (h.localName === 'legend') { out.push({ root: h.closest('fieldset') || h.parentElement, title: h }); return; }
       if (h.localName === 'caption') { out.push({ root: h.closest('table') || h.parentElement, title: h }); return; }
       if (h.localName === 'summary') { out.push({ root: h.closest('details') || h.parentElement, title: h }); return; }
+      // A card/panel/dialog title names the whole card (mat-card-title, .panel-title, [mat-dialog-title], or the
+      // only heading of a section/card).
+      var box = h.parentElement && closestOf(h.parentElement, CONTAINER_SEL);
+      if (box && box !== document.body && (isA(h, TITLE_SEL) || titlesIn(box).length === 1)) {
+        out.push({ root: box, title: h });
+        if (isA(h, TITLE_SEL)) return;
+      }
       var a = h.parentElement;
       while (a && a !== document.body && a.children.length === 1) a = a.parentElement;
       if (!a) return;
@@ -1023,6 +1119,33 @@
     return out;
   }
 
+  // "the Trade Entry dialog", "Open Trades grid", "Open Trades toolbar": a trailing role word narrows the container.
+  var ROLE_WORDS = {
+    dialog: 'dialog', modal: 'dialog', popup: 'dialog', window: 'dialog', grid: 'grid', table: 'grid',
+    toolbar: 'toolbar', panel: '', section: '', card: '', tab: '', form: '', page: '', area: '', box: ''
+  };
+
+  function findContainers(title) {
+    var q = canon(title).replace(/^the /, '');
+    var m = /^(.*\S) ([a-z]+)$/.exec(q);
+    if (m && ROLE_WORDS.hasOwnProperty(m[2])) {
+      var kind = ROLE_WORDS[m[2]], res = findContainersRaw(m[1]);
+      if (kind === 'dialog') res = res.filter(function (c) { return !!closestOf(c.root, DIALOG_SEL); });
+      else if (kind === 'grid') res = res.filter(function (c) { return isA(c.root, GRID_SEL) || !!c.root.querySelector(GRID_SEL); });
+      else if (kind === 'toolbar') {
+        var tbs = [];
+        res.forEach(function (c) {
+          var list = c.root.querySelectorAll(TOOLBAR_SEL);
+          if (isA(c.root, TOOLBAR_SEL)) tbs.push(c);
+          for (var i = 0; i < list.length; i++) if (inContainer(list[i], c)) tbs.push({ root: list[i], title: c.title });
+        });
+        res = tbs;
+      }
+      if (res.length) return res;
+    }
+    return findContainersRaw(q);
+  }
+
   function inContainer(el, c) {
     if (!c.root.contains(el)) return false;
     if (c.after && !(c.after.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
@@ -1030,13 +1153,49 @@
     return true;
   }
 
-  function collect(sel, containers, action) {
+  // Target.kind -> role pool (icon is special: elements named by icon evidence).
+  var KIND_SEL = {
+    button: 'button,input[type=button],input[type=submit],input[type=reset],input[type=image],[role=button],' +
+            'a:not([href]),a[href="#"],a[href^="javascript:"],a.btn,[mat-button],[mat-icon-button],[mat-raised-button],' +
+            '[mat-flat-button],[mat-stroked-button],[mat-fab],[mat-mini-fab]',
+    link: 'a[href],[role=link]',
+    tab: '[role=tab],.mat-mdc-tab,.mat-tab-label',
+    checkbox: 'input[type=checkbox],input[type=radio],[role=checkbox],[role=radio],[role=switch],mat-checkbox,mat-slide-toggle',
+    dropdown: 'select,[role=combobox],[role=listbox],[aria-haspopup=listbox],mat-select',
+    field: 'input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):' +
+           'not([type=image]):not([type=hidden]),textarea,select,[contenteditable]:not([contenteditable=false]),' +
+           '[role=textbox],[role=searchbox],[role=spinbutton],[role=combobox]',
+    menu: '[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[aria-haspopup=menu],[aria-haspopup=true],' +
+          '[mat-menu-item],.mat-mdc-menu-item,[mat-menu-trigger-for],[matmenutriggerfor]',
+    dialog: '[role=dialog],[role=alertdialog],dialog,mat-dialog-container'
+  };
+  function kindOk(el, kind) {
+    if (!kind) return true;
+    if (kind === 'icon') return iconsOf(el).length > 0;
+    var sel = KIND_SEL[kind];
+    if (!sel) return true;
+    if (isA(el, sel)) return true;
+    // a link that is really a button (no real href) still counts as a button
+    return kind === 'button' && el.localName === 'a' && !attr(el, 'href');
+  }
+
+  function collect(sel, containers, action, kind) {
     var seen = new Set(), out = [];
+    if (kind && KIND_SEL[kind] && sel !== '*') sel += ',' + KIND_SEL[kind];
+    var icons = action === 'click' || action === 'hover' || kind === 'icon';
     containers.forEach(function (c) {
       var list = c.root.querySelectorAll(sel);
       for (var i = 0; i < list.length; i++) {
         var e = list[i];
         if (!seen.has(e) && inContainer(e, c) && inPool(e, action)) { seen.add(e); out.push(e); }
+      }
+      if (!icons) return;
+      // icon clickables without clickable markup (Angular (click) on an <i>/<span>/<svg>): the icon's owner
+      var ics = c.root.querySelectorAll(ICON_SEL);
+      for (var j = 0; j < ics.length; j++) {
+        if (!iconOf(ics[j])) continue;
+        var o = iconOwner(ics[j]);
+        if (o && !seen.has(o) && isHtml(o) && inContainer(o, c)) { seen.add(o); out.push(o); }
       }
     });
     return out;
@@ -1047,24 +1206,61 @@
     return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
   }
 
+  /** Drop matches that contain another match, and labels whose control matched too; document order. */
+  function dedupe(list) {
+    var out = list.filter(function (m) { return !list.some(function (o) { return o !== m && m.el.contains(o.el); }); });
+    out = out.filter(function (m) {
+      return !(m.el.localName === 'label' && m.el.control && out.some(function (o) { return o.el === m.el.control; }));
+    });
+    out.sort(function (a, b) { return docOrder(a.el, b.el); });
+    return out;
+  }
+
   function pickTies(matches) {
     if (!matches.length) return [];
     matches.sort(function (a, b) { return b.score - a.score; });
     var best = matches[0].score;
-    var ties = matches.filter(function (m) { return m.score >= best - TIE; });
-    ties = ties.filter(function (m) { return !ties.some(function (o) { return o !== m && m.el.contains(o.el); }); });
-    ties = ties.filter(function (m) {
-      return !(m.el.localName === 'label' && m.el.control && ties.some(function (o) { return o.el === m.el.control; }));
-    });
-    ties.sort(function (a, b) { return docOrder(a.el, b.el); });
-    return ties;
+    return dedupe(matches.filter(function (m) { return m.score >= best - TIE; }));
   }
 
   function found(m, action) {
-    return {
+    var r = {
       status: 'found', el: m.el, matchedBy: m.source === 'label-text' ? 'text' : m.source, score: Math.round(m.score * 1000) / 1000,
-      description: summary(m.el, m.name), name: m.name, action: action
+      description: summary(m.el, m.name), name: m.name, action: action, tier: m.tier || 'exact',
+      context: containerTitle(m.el), location: locationOf(m.el), evidence: evidenceOf(m.el)
     };
+    if (m.kindFallback) r.note = 'no ' + m.kindFallback + ' matched; this element is not a ' + m.kindFallback;
+    return r;
+  }
+
+  /** Best name of e for canonical query q: {el, score, source, name, tier: exact|fuzzy|icon}. */
+  function bestName(e, q, source, anyText) {
+    var ns = names(e, { anyText: anyText, source: source });
+    var best = null;
+    for (var i = 0; i < ns.length; i++) {
+      var n = ns[i], mm, tier;
+      if (n.source === 'icon') { var im = iconMatch(q, n.name); mm = im.m; tier = im.tier; }
+      else { mm = match(q, canon(n.name)); tier = mm === 1 ? 'exact' : 'fuzzy'; }
+      var s = n.weight * mm;
+      if (!best || s > best.score + 1e-9 || (Math.abs(s - best.score) < 1e-9 && tier === 'exact' && best.tier !== 'exact')) {
+        best = { el: e, score: s, source: n.source, name: n.source === 'icon' ? '' : n.name, tier: tier,
+                 icon: n.source === 'icon' ? n.name : '' };
+      }
+    }
+    return best;
+  }
+
+  /** Every pool element with a positive match, best first (no visibility filtering). */
+  function scan(spec, action, containers, q) {
+    var pool = collect(POOL_SEL[action] || POOL_SEL.locate, containers, action, spec.kind);
+    var out = [];
+    pool.forEach(function (e) {
+      if (!kindOk(e, spec.kind)) return;
+      var b = bestName(e, q, spec.source, action === 'locate');
+      if (b && b.score > 0) out.push(b);
+    });
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out;
   }
 
   function resolveDirect(spec, containers) {
@@ -1117,29 +1313,32 @@
     if (spec.xpath || spec.css) return resolveDirect(spec, containers);
     if (!spec.query) return { status: 'error', message: 'target needs a query, xpath or css' };
     containers = containers || [{ root: document.body }];
+    var r = resolveQuery(spec, action, containers);
+    if (r.status === 'none' && spec.kind) {
+      // Nothing of that kind: other elements are accepted only as the single inexact candidate.
+      var r2 = resolveQuery(Object.assign({}, spec, { kind: null, kindFallback: spec.kind }), action, containers);
+      if (r2.status !== 'none') return r2;
+      r.reason = r.reason || 'no ' + spec.kind + ' matches';
+    }
+    return r;
+  }
 
+  function resolveQuery(spec, action, containers) {
     var q = canon(spec.query);
-    var anyText = action === 'locate';
-    var pool = collect(POOL_SEL[action] || POOL_SEL.locate, containers, action);
+    var all = scan(spec, action, containers, q);
     var matches = [], hidden = [], near = [];
-    pool.forEach(function (e) {
-      var ns = names(e, { anyText: anyText, source: spec.source });
-      var best = null;
-      for (var i = 0; i < ns.length; i++) {
-        var s = ns[i].weight * match(q, canon(ns[i].name));
-        if (!best || s > best.score) best = { el: e, score: s, source: ns[i].source, name: ns[i].name };
-      }
-      if (!best || best.score <= 0) return;
-      if (best.score < THRESHOLD) { if (spec.diagnose && best.score >= 0.25) near.push(best); return; }
-      matches.push(best);
+    all.forEach(function (b) {
+      if (spec.kindFallback) { b.tier = 'fuzzy'; b.kindFallback = spec.kindFallback; }
+      if (b.score >= THRESHOLD) matches.push(b);
+      else if (spec.diagnose && b.score >= 0.25) near.push(b);
     });
-    // Visibility is the expensive part: check best-first, only while still within the tie window.
-    matches.sort(function (a, b) { return b.score - a.score; });
-    var vis = [], topVisible = -1;
+    // Visibility is the expensive part: check best-first, only while still within the tie window
+    // (an inexact best match needs every reasonable candidate checked: it must be the only one).
+    var vis = [], topVisible = -1, topTier = 'exact';
     for (var mi = 0; mi < matches.length; mi++) {
       var m = matches[mi];
-      if (topVisible >= 0 && m.score < topVisible - TIE && !spec.diagnose) break;
-      if (usable(m.el)) { vis.push(m); if (topVisible < 0) topVisible = m.score; }
+      if (topVisible >= 0 && m.score < topVisible - TIE && topTier === 'exact' && !spec.diagnose) break;
+      if (usable(m.el)) { vis.push(m); if (topVisible < 0) { topVisible = m.score; topTier = m.tier; } }
       else if (spec.diagnose) hidden.push(m);
     }
     matches = vis;
@@ -1157,9 +1356,10 @@
           if (tc.length > 300 || canon(tc) !== q) continue;
           var inner = false;
           for (var ch = e.firstElementChild; ch; ch = ch.nextElementSibling) if (canon(ch.textContent) === q) { inner = true; break; }
-          if (inner || !visible(e)) continue;
+          if (inner || !visible(e) || !kindOk(e, spec.kind)) continue;
           if (matches.some(function (m) { return m.el.contains(e) || e.contains(m.el); })) continue;
-          fb.push({ el: e, score: 0.9, source: 'text', name: text(e) });
+          fb.push({ el: e, score: 0.9, source: 'text', name: text(e), tier: spec.kindFallback ? 'fuzzy' : 'exact',
+                    kindFallback: spec.kindFallback });
         }
       });
       matches = matches.concat(fb);
@@ -1176,6 +1376,13 @@
         })
       };
     }
+    var inexact = !ties.some(function (m) { return m.tier === 'exact'; });
+    var reason = '';
+    if (inexact) {
+      // A fuzzy or synonym match is accepted only if it is the single reasonable candidate in scope.
+      ties = dedupe(matches.slice());
+      reason = 'inexact';
+    }
     if (spec.nth) {
       if (spec.nth > ties.length) {
         return { status: 'error', message: 'nth=' + spec.nth + ' but only ' + ties.length + ' equally good match(es)',
@@ -1187,11 +1394,55 @@
       var descs = ties.slice(0, 10).map(function (m) { return summary(m.el, m.name); });
       var dup = {};
       descs.forEach(function (d) { dup[d] = (dup[d] || 0) + 1; });
-      descs = descs.map(function (d, i) { return dup[d] > 1 ? d + ' (nth: ' + (i + 1) + ')' : d; });
+      descs = descs.map(function (d, i) {
+        if (dup[d] <= 1) return d;
+        var loc = locationOf(ties[i].el);
+        return d + ' (' + (loc && loc !== 'page' ? loc + '; ' : '') + 'nth: ' + (i + 1) + ')';
+      });
       if (ties.length > 10) descs.push('... and ' + (ties.length - 10) + ' more');
-      return { status: 'ambiguous', alternatives: descs, count: ties.length, score: Math.round(ties[0].score * 1000) / 1000 };
+      return { status: 'ambiguous', alternatives: descs, count: ties.length, reason: reason,
+               score: Math.round(ties[0].score * 1000) / 1000 };
     }
     return found(ties[0], action);
+  }
+
+  /**
+   * Ask mode: every reasonable candidate for spec (best first, at most `limit`), with evidence and location.
+   * When nothing matches by name, unlabeled icon clickables in scope are offered instead.
+   * Returns {items: [{el, score, tier, description, evidence, context, location, name}], reason}.
+   */
+  function rank(spec, limit) {
+    limit = limit || 9;
+    try {
+      var action = spec.action || 'locate';
+      if (action === 'uncheck') action = 'check';
+      var containers = spec.within ? findContainers(spec.within) : [{ root: document.body }];
+      if (!containers.length) containers = [{ root: document.body }];
+      var q = canon(spec.query || '');
+      var list = q ? scan(spec, action, containers, q).filter(function (b) { return b.score >= 0.25 && usable(b.el); }) : [];
+      if (!list.length && spec.kind) {
+        list = scan(Object.assign({}, spec, { kind: null }), action, containers, q)
+          .filter(function (b) { return b.score >= 0.25 && usable(b.el); });
+      }
+      var reason = list.length ? 'name' : 'unlabeled';
+      if (!list.length) {
+        collect(POOL_SEL.click, containers, 'click', 'icon').forEach(function (e) {
+          if (iconsOf(e).length && !labelOf(e) && usable(e)) list.push({ el: e, score: 0, tier: 'none', name: '', source: 'icon' });
+        });
+      }
+      list = list.filter(function (m) { return !list.some(function (o) { return o !== m && m.el.contains(o.el); }); });
+      list.sort(function (a, b) { return (b.score - a.score) || docOrder(a.el, b.el); });
+      return {
+        reason: reason,
+        items: list.slice(0, limit).map(function (b) {
+          return { el: b.el, score: Math.round(b.score * 1000) / 1000, tier: b.tier, name: b.name || describe(b.el),
+                   description: summary(b.el, b.name), evidence: evidenceOf(b.el), context: containerTitle(b.el),
+                   location: locationOf(b.el) };
+        })
+      };
+    } catch (e) {
+      return { reason: 'error: ' + (e && e.message || e), items: [] };
+    }
   }
 
   // ------------------------------------------------------------------ public api
@@ -1217,7 +1468,19 @@
     stableClass: stableClass,
     stableText: stableText,
     visible: visible,
-    resolve: resolve
+    resolve: resolve,
+    rank: rank,
+    icons: function (el) {
+      el = htmlTarget(el);
+      return el ? iconsOf(el).map(function (i) { return { name: i.name, label: iconLabel(i), word: iconWord(i.name) }; }) : [];
+    },
+    iconMatch: iconMatch,
+    iconWord: iconWord,
+    isFaNoise: isFaNoise,
+    evidence: function (el) { el = htmlTarget(el); return el ? evidenceOf(el) : []; },
+    location: function (el) { el = htmlTarget(el); return el ? locationOf(el) : ''; },
+    fingerprint: function (el) { el = htmlTarget(el); return el ? fingerprint(el) : null; },
+    findContainers: function (t) { return findContainers(t).map(function (c) { return c.root; }); }
   };
   configure(BOOT);
   Object.defineProperty(W, '__crawler', { value: api, configurable: true, writable: true, enumerable: false });

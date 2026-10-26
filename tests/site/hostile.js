@@ -12,6 +12,9 @@
  *   {{c:key}}   hashed class, the same for `key` within one page load
  *   {{rid}}     a fresh anonymous random id
  *   {{v}}       the per-load Vue scoped attribute
+ *   {{ng}}      the per-load Angular emulated-encapsulation attribute (_ngcontent-ng-c1234567890)
+ *   {{n:key}}   an Angular-style counter id suffix, the same for `key` within one render call
+ *               (mat-mdc-dialog-title-3, cdk-describedby-message-ng-1-7): stable-looking, but changes
  */
 (function () {
   'use strict';
@@ -54,11 +57,15 @@
   }
 
   var vAttr = 'data-v-' + rs(6, '0123456789abcdef');
+  var ngAttr = '_ngcontent-ng-c' + (1000000000 + rnd(2000000000));
+  var counter = rnd(20);
 
   function tpl(s) {
-    var local = {};
+    var local = {}, nums = {};
     return s
       .replace(/\{\{id:([\w.-]+)\}\}/g, function (m, k) { return local[k] || (local[k] = newId()); })
+      .replace(/\{\{n:([\w.-]+)\}\}/g, function (m, k) { return nums[k] != null ? nums[k] : (nums[k] = String(counter++)); })
+      .replace(/\{\{ng\}\}/g, function () { return ngAttr; })
       .replace(/\{\{c:([\w.-]+)\}\}/g, function (m, k) { return cls(k); })
       .replace(/\{\{rid\}\}/g, function () { return newId(); })
       .replace(/\{\{v\}\}/g, function () { return vAttr; });
@@ -140,6 +147,6 @@
 
   window.Hostile = {
     rnd: rnd, pick: pick, rs: rs, newId: newId, cls: cls, tpl: tpl, frag: frag,
-    sprinkle: sprinkle, styles: styles, load: load, toast: toast, esc: esc, icons: ICONS, vAttr: vAttr
+    sprinkle: sprinkle, styles: styles, load: load, toast: toast, esc: esc, icons: ICONS, vAttr: vAttr, ngAttr: ngAttr
   };
 })();

@@ -1,0 +1,54 @@
+/* mat.css: Angular Material / Bootstrap look-alike styles for the icon pages (trades, blotter, risk,
+   positions) and the shell. Element and stable-class selectors only. */
+.mat-typography { font: 14px/1.45 Roboto, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.page-actions { display: flex; align-items: center; gap: 4px; }
+.mat-mdc-icon-button, .icon-btn, .btn-xs {
+  width: 36px; height: 36px; padding: 0; border-radius: 50%; border: none; background: transparent;
+  display: inline-flex; align-items: center; justify-content: center; color: #3b4458; cursor: pointer;
+}
+.mat-mdc-icon-button:hover, .icon-btn:hover { background: rgba(0,0,0,.06); }
+.mdc-button { border-radius: 4px; padding: 6px 14px; }
+.mat-mdc-card { display: block; background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.12); padding: 14px 16px; margin-bottom: 16px; }
+.mat-mdc-card-header { display: flex; align-items: center; }
+.mat-mdc-card-title { font-size: 16px; font-weight: 600; }
+.card-toolbar, .panel-toolbar { display: flex; gap: 2px; margin: 4px 0 8px; }
+.notice { display: flex; align-items: center; justify-content: space-between; background: #fff7e0; border: 1px solid #f0d58a; border-radius: 8px; padding: 2px 4px 2px 12px; margin-bottom: 12px; }
+.trade-table { width: 100%; border-collapse: collapse; }
+.trade-table th, .trade-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eef0f4; }
+ag-grid-angular { display: block; border: 1px solid #dde2ec; border-radius: 6px; }
+ag-grid-angular .ag-header-row, ag-grid-angular .ag-row { display: grid; grid-template-columns: 90px 1fr 80px 100px; align-items: center; min-height: 36px; border-bottom: 1px solid #eef0f4; }
+ag-grid-angular .ag-header-cell, ag-grid-angular .ag-cell { padding: 0 8px; }
+ag-grid-angular .ag-header-row { font-weight: 600; background: #f7f8fb; }
+.cdk-visually-hidden { border: 0; clip: rect(0 0 0 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; outline: 0; left: 0; }
+.cdk-overlay-container { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
+.cdk-overlay-container:empty { display: none; }
+.cdk-overlay-backdrop { position: absolute; inset: 0; background: rgba(15,20,30,.45); pointer-events: auto; }
+.cdk-global-overlay-wrapper { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.cdk-overlay-pane { pointer-events: auto; }
+.mat-mdc-dialog-container { display: block; background: #fff; border-radius: 12px; width: 420px; padding: 8px 20px 16px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.dialog-header { display: flex; align-items: center; justify-content: space-between; }
+.mat-mdc-dialog-title { font-size: 18px; margin: 8px 0; }
+.mat-mdc-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.mat-mdc-menu-panel { position: absolute; background: #fff; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 4px 0; min-width: 160px; pointer-events: auto; }
+.mat-mdc-menu-item { display: flex; width: 100%; border: none; border-radius: 0; background: transparent; padding: 8px 14px; gap: 10px; }
+/* Bootstrap 3 look-alike (blotter) */
+.panel-default { background: #fff; border: 1px solid #dde2ec; border-radius: 6px; margin-bottom: 16px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #dde2ec; background: #f7f8fb; }
+.panel-title { margin: 0; font-size: 15px; }
+.panel-body { padding: 10px 12px; }
+.btn-group { display: flex; gap: 2px; }
+.alert { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; background: #e7f1fb; border: 1px solid #b8d4ef; }
+.close { border: none; background: transparent; font-size: 20px; line-height: 1; padding: 0 4px; }
+.link-icon { cursor: pointer; padding: 4px; }
+/* Shell */
+.shell-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 16px; background: #1d2330; color: #fff; }
+.shell-toolbar .mat-mdc-icon-button { color: #fff; }
+.shell-title { font-weight: 600; }
+.shell-spacer { flex: 1; }
+.shell-body { display: flex; height: calc(100vh - 48px); }
+.shell-nav { width: 180px; padding: 12px; background: #fff; border-right: 1px solid #dde2ec; }
+.shell-nav a { display: block; padding: 6px 8px; text-decoration: none; border-radius: 6px; }
+.shell-nav a[aria-current="page"] { background: #eef2fb; font-weight: 600; }
+.shell-content { flex: 1; position: relative; }
+.shell-content iframe { border: 0; width: 100%; height: 100%; display: block; }
