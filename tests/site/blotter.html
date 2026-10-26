@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blotter</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/fontawesome.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/solid.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/regular.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/v4-shims.min.css">
+<link rel="stylesheet" href="mat.css">
+<script src="hostile.js"></script>
+</head>
+<body>
+<!-- Font Awesome 4 class names (fa fa-refresh, fa-trash-o), Bootstrap 3 / AngularJS markup. See INVENTORY.md. -->
+<main class="page" id="main"></main>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var main = document.getElementById('main');
+  main.id = H.newId();
+  var ROWS = [['B-1', 'EURUSD', '1,000,000'], ['B-2', 'GBPUSD', '500,000']];
+  H.load(main, function (c) {
+    c.appendChild(H.frag(
+      '<h1 class="{{c:Typography.h1}}">Blotter</h1>' +
+      '<div class="alert alert-info {{c:Alert.root}}" role="alert"><span>Positions are as of the last close.</span>' +
+      ' <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>' +
+      '<div class="panel panel-default {{c:Panel.root}}">' +
+      ' <div class="panel-heading {{c:Panel.heading}}"><h3 class="panel-title">Positions</h3>' +
+      '  <div class="btn-group {{c:BtnGroup.root}}">' +
+      '   <a class="btn btn-default btn-xs" href="javascript:void(0)" ng-click="vm.reload()"><i class="fa fa-refresh fa-fw"></i></a>' +
+      '   <button type="button" class="btn btn-default btn-xs" title="Download positions"><i class="fa fa-download"></i></button>' +
+      '  </div></div>' +
+      ' <div class="panel-body"><table class="trade-table {{c:Table.root}}"><thead><tr><th>Id</th><th>Pair</th><th>Notional</th><th></th></tr></thead><tbody>' +
+      ROWS.map(function (r) {
+        return '<tr ng-repeat="p in vm.rows"><td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + '</td><td>' +
+          '<a href="" ng-click="vm.edit(p)" class="link-icon"><i class="fa fa-pencil"></i></a> ' +
+          '<a href="" ng-click="vm.remove(p)" class="link-icon"><i class="fa fa-trash-o"></i></a></td></tr>';
+      }).join('') +
+      ' </tbody></table></div>' +
+      '</div>'));
+    c.querySelector('[data-dismiss=alert]').addEventListener('click', function () { c.querySelector('.alert').remove(); });
+    c.querySelector('[ng-click="vm.reload()"]').addEventListener('click', function () { H.toast('Reloaded'); });
+  });
+})();
+</script>
+</body>
+</html>

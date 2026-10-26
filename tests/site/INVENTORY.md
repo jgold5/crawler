@@ -94,6 +94,77 @@ Sections render asynchronously, each behind its own spinner.
 
 Behavior: Save buttons go `disabled` + `aria-busy` for 200–500 ms, then show the toast "Saved". Dialog Cancel or Escape closes it. Dialog Delete closes it and shows the toast "Account scheduled for deletion". API-key Delete shows the toast "Key revoked".
 
+## Shell (`shell.html`): every page inside an iframe, like the real app
+
+`shell.html?page=<key>` renders app chrome (toolbar with a bell and an unlabeled user icon, a page nav)
+and, after a fake XHR, `<iframe name="appFrame-<key>" src="<key>.html?v=<random>">` with a random id and
+hashed class. A hidden `<iframe name="keepalive">` sits next to it, so `//iframe` alone is never unique.
+
+| Parameter | Effect |
+|---|---|
+| `page=<key>` | `trades` (default), `blotter`, `risk`, `positions`, `orders` (orders needs `auth` in that origin) |
+| `origin=alt&alt=<url>` | the iframe loads `<url>/<key>.html`: cross origin (tests pass the `site_url_alt` fixture) |
+| `suffix=1` | the iframe name gets a random tail: `appFrame-trades-k3yn1i7` |
+
+| Element (parent document) | Ideal locator |
+|---|---|
+| app iframe | `//iframe[@name='appFrame-trades']` |
+| app iframe, `suffix=1` | `//iframe[contains(@name,'appFrame-trades')]` (random tail cut) |
+| fallback | `//iframe[contains(@src,'trades.html')]` (random `?v=` dropped) |
+
+## Icon pages (Font Awesome, vendored in `vendor/fontawesome/`, see its `VERSION`)
+
+No page needs auth; all render after a fake XHR with hostile ids/classes. Each ideal XPath matches exactly one
+element on a fresh load (dialog rows: while the dialog is open); it is what the engine emits first. Icons have no text; the
+locator targets the clickable, anchored on the icon identity (never `fa-lg`/`fa-fw`/`fa-solid`/`fas`...).
+
+### trades.html (FA 6 webfont, Angular Material + AG Grid markup)
+
+| Element | Trick | Ideal locator |
+|---|---|---|
+| Search (header) | `fa-magnifying-glass`, aria-label "Search trades" | `//button[@aria-label='Search trades']` |
+| Preferences (header) | `fa-gear fa-fw`, `title` only | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-gear ')]]` (or `//button[@title='Preferences']`) |
+| Help icon (header) | `fa-regular fa-circle-question`, no label; a "Help" link next to it | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-circle-question ')]]` |
+| More menu (header) | `fa-ellipsis-vertical`, no label; opens `[role=menu]` in `.cdk-overlay-container` | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-ellipsis-vertical ')]]` |
+| New Trade | `fa-plus` + text | `//button[normalize-space()='New Trade']` |
+| Notice dismiss (x) | `fa-xmark`, no label (a 2nd x while the dialog is open) | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-xmark ')]]` (dialog closed) |
+| Refresh (Open Trades) | `mat-card-title` 3 levels down; **identical** refresh in Closed Trades | `//mat-card[.//mat-card-title[normalize-space()='Open Trades']]//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]` |
+| Filter (Open Trades) | matTooltip "Filter trades": `aria-describedby` → hidden `cdk-describedby-message-ng-1-N` (counter id) | `//button[@aria-describedby=//div[normalize-space()='Filter trades']/@id]` |
+| Quick book (Open Trades) | tooltip only (`fa-bolt` says nothing) | `//button[@aria-describedby=//div[normalize-space()='Quick book']/@id]` |
+| Export icon (Open Trades) | `fa-file-export`, no label | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-file-export ')]]` |
+| Edit / delete per row | `fa-pen-to-square` / `fa-regular fa-trash-can` in each `ag-grid-angular` row (T-1..T-3) | grid row template (grid module); the resolver needs row context or `nth` |
+| Refresh (Closed Trades) | `<h3>` in a header div with the toolbar | `//div[h3[normalize-space()='Closed Trades']]//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]` |
+| Filter button / Filter input (Closed Trades) | text button "Filter" and `input[aria-label=Filter]` vs the filter icon | `//button[normalize-space()='Filter']`, `//input[@aria-label='Filter']` |
+| Dialog "Trade Entry" (rows below: while open) | `mat-dialog-container[role=dialog]` labelled by `h2[mat-dialog-title]` with counter id `mat-mdc-dialog-title-N` | `//mat-dialog-container[@aria-labelledby=//h2[normalize-space()='Trade Entry']/@id]` |
+| Dialog x | `fa-xmark`, `mat-dialog-close`, no label | `//div[h2[normalize-space()='Trade Entry']]//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-xmark ')]]` |
+| Submit Trade / Cancel / Quantity | "submit" is an inexact but unique name | `//button[normalize-space()='Submit Trade']`, `//input[@id=//label[normalize-space()='Quantity']/@for]` |
+
+### blotter.html (FA 4 class names, Bootstrap 3 / AngularJS)
+
+| Element | Trick | Ideal locator |
+|---|---|---|
+| Refresh (Positions panel) | `<a href="javascript:void(0)" ng-click><i class="fa fa-refresh fa-fw">` | `//a[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-refresh ')]]` |
+| Download | `fa fa-download`, `title="Download positions"` | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-download ')]]` (or `//button[@title='Download positions']`) |
+| Alert close | Bootstrap `button.close` with `&times;` + aria-label "Close" | `//button[@aria-label='Close']` |
+| Edit / delete per row | `fa fa-pencil` / `fa fa-trash-o` links (2 rows) | row context needed |
+
+### risk.html (FA 5 class names)
+
+| Element | Trick | Ideal locator |
+|---|---|---|
+| Refresh | `fas fa-sync-alt fa-lg` | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-sync-alt ')]]` |
+| More | bare `<i class="fas fa-ellipsis-h">` with a click handler: only its pointer cursor says it is clickable | `//i[contains(concat(' ',normalize-space(@class),' '),' fa-ellipsis-h ')]` |
+| Delete (Limits row) | `far fa-trash-alt` | `//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-trash-alt ')]]` |
+| Close | `<span class="fas fa-times" role="button" tabindex="0">` | `//span[contains(concat(' ',normalize-space(@class),' '),' fa-times ')]` |
+
+### positions.html (FA 6 SVG mode: the JS swaps `<i>` for `<svg data-icon class="svg-inline--fa">`)
+
+| Element | Trick | Ideal locator |
+|---|---|---|
+| Refresh | `svg[data-icon=arrows-rotate]` | `//button[.//*[local-name()='svg'][@data-icon='arrows-rotate']]` |
+| Save layout | `<i title="Save layout">` becomes svg `<title>` (part of the button's string-value) | `//button[normalize-space()='Save layout']` |
+| Close | `svg[data-icon=xmark]` | `//button[.//*[local-name()='svg'][@data-icon='xmark']]` |
+
 ## Must never appear in an emitted locator
 
-Any `@id` value, `css-*` / `sc-*` / `*__xxxxx` classes, `data-v-*`, "Welcome back, …", "You have N notifications", "Last updated …", "Last sign-in …", amounts, order numbers on the dashboard card, the version string, the API key suffix, and absolute paths.
+Any `@id` value, `_ngcontent-*` / `data-v-*` attributes, `cdk-describedby-message-*` / `mat-mdc-dialog-title-*` counter ids, the shell's random iframe name tail and `?v=` src, `css-*` / `sc-*` / `*__xxxxx` classes, `data-v-*`, "Welcome back, …", "You have N notifications", "Last updated …", "Last sign-in …", amounts, order numbers on the dashboard card, the version string, the API key suffix, and absolute paths.

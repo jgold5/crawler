@@ -286,7 +286,8 @@ def test_stale_generated_files_removed(tmp_path):
     keep.write_text("class Handwritten {}")
     gen(tmp_path, [R()])
     names = sorted(p.name for p in (tmp_path / "java/com/example/pages").iterdir())
-    assert names == ["Handwritten.java", "LoginPage.java", "XPathLiteral.java"]
+    support = sorted(p.name for p in (Path(__file__).parents[1] / "crawler/emit/support").glob("*.java"))
+    assert names == sorted(["Handwritten.java", "LoginPage.java", "XPathLiteral.java", *support])
 
 
 # ---------------------------------------------------------------- determinism

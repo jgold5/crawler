@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acmeish Trading</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/fontawesome.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/solid.min.css">
+<link rel="stylesheet" href="mat.css">
+<script src="hostile.js"></script>
+</head>
+<body class="mat-typography">
+<!--
+  App chrome that embeds every page in an iframe, like the real app.
+
+    shell.html?page=<key>                      <iframe name="appFrame-<key>" src="<key>.html?v=<random>">  (same origin)
+    shell.html?page=<key>&origin=alt&alt=<url>  the iframe loads <url>/<key>.html instead (cross origin;
+                                               tests pass the site_url_alt fixture as <url>)
+    &suffix=1                                  name gets a random tail: appFrame-<key>-<random>
+
+  The iframe appears after a fake XHR (200-800 ms), gets a random id and hashed class, and a hidden
+  "keepalive" iframe sits next to it so //iframe alone is never unique.
+-->
+<header class="shell-header">
+  <div class="shell-toolbar" role="banner">
+    <span class="shell-title">Acmeish Trading</span>
+    <span class="shell-spacer"></span>
+    <button type="button" mat-icon-button class="mdc-icon-button mat-mdc-icon-button" aria-label="Notifications"><i class="fa-solid fa-bell"></i></button>
+    <button type="button" mat-icon-button class="mdc-icon-button mat-mdc-icon-button"><i class="fa-solid fa-circle-user"></i></button>
+  </div>
+</header>
+<div class="shell-body">
+  <nav class="shell-nav" aria-label="Pages"></nav>
+  <div class="shell-content" id="content"></div>
+</div>
+<iframe name="keepalive" src="about:blank" hidden></iframe>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var params = new URLSearchParams(location.search);
+  var key = params.get('page') || 'trades';
+  if (!/^[a-z][a-z0-9-]*$/.test(key)) key = 'trades';
+  var alt = params.get('alt') || '';
+  var base = '';
+  if (params.get('origin') === 'alt') {
+    if (!/^https?:\/\/[^\s"'<>]+$/.test(alt)) throw new Error('shell.html: origin=alt needs &alt=<http url>');
+    base = alt.replace(/\/+$/, '') + '/';
+  }
+
+  var PAGES = [['trades', 'Trades'], ['blotter', 'Blotter'], ['risk', 'Risk'], ['positions', 'Positions'], ['orders', 'Orders']];
+  var nav = document.querySelector('.shell-nav');
+  PAGES.forEach(function (p) {
+    var a = document.createElement('a');
+    var q = new URLSearchParams(location.search);
+    q.set('page', p[0]);
+    a.href = 'shell.html?' + q.toString();
+    a.textContent = p[1];
+    if (p[0] === key) a.setAttribute('aria-current', 'page');
+    nav.appendChild(a);
+  });
+
+  var content = document.getElementById('content');
+  content.id = H.newId();
+  H.load(content, function (c) {
+    var f = document.createElement('iframe');
+    f.name = 'appFrame-' + key + (params.get('suffix') ? '-' + H.rs(6, 'abcdefghijklmnopqrstuvwxyz0123456789') + H.rnd(10) : '');
+    f.id = H.newId();
+    f.className = 'app-frame ' + H.cls('Shell.frame');
+    f.src = base + key + '.html?v=' + Date.now().toString(36) + H.rnd(1000);
+    c.appendChild(f);
+  });
+})();
+</script>
+</body>
+</html>

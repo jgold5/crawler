@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Risk</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/fontawesome.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/solid.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/regular.min.css">
+<link rel="stylesheet" href="mat.css">
+<script src="hostile.js"></script>
+</head>
+<body>
+<!-- Font Awesome 5 class names (fas fa-sync-alt, far fa-trash-alt), icon clickables without button markup. -->
+<main class="page" id="main"></main>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var main = document.getElementById('main');
+  main.id = H.newId();
+  H.load(main, function (c) {
+    c.appendChild(H.frag(
+      '<div class="page-header {{c:Page.header}}"><h1 class="{{c:Typography.h1}}">Risk</h1>' +
+      ' <div class="page-actions {{c:Page.actions}}">' +
+      '  <button type="button" class="icon-btn {{c:IconButton.root}}" id="{{rid}}"><i class="fas fa-sync-alt fa-lg"></i></button>' +
+      // Angular (click) binding on a bare icon: no attribute marks it clickable, only its cursor
+      '  <i class="fas fa-ellipsis-h link-icon {{c:Icon.more}}" id="{{rid}}"></i>' +
+      ' </div></div>' +
+      '<section class="panel {{c:Panel.root}}"><h2 class="{{c:Typography.h2}}">Limits</h2>' +
+      ' <table class="trade-table {{c:Table.root}}"><tbody>' +
+      '  <tr><td>Desk A</td><td>80%</td><td><button type="button" class="icon-btn {{c:IconButton.root}}"><i class="far fa-trash-alt"></i></button></td></tr>' +
+      ' </tbody></table>' +
+      ' <span class="fas fa-times link-icon {{c:Icon.close}}" role="button" tabindex="0"></span>' +
+      '</section>'));
+    c.querySelector('.fa-sync-alt').parentNode.addEventListener('click', function () { H.toast('Recalculated'); });
+    c.querySelector('.fa-ellipsis-h').addEventListener('click', function () { H.toast('More'); });
+  });
+})();
+</script>
+</body>
+</html>

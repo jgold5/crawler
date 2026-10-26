@@ -265,7 +265,7 @@
 
   function pointer(el) { try { return getComputedStyle(el).cursor === 'pointer'; } catch (e) { return false; } }
 
-  /** The element an icon names: nearest clickable ancestor-or-self (4 levels), else a pointer-cursor icon itself. */
+  /** The element an icon names: nearest clickable ancestor-or-self (5 levels up), else a pointer-cursor icon itself. */
   function iconOwner(n) {
     var a = n;
     for (var d = 0; a && d < 5; d++, a = a.parentElement) {
@@ -610,7 +610,7 @@
     }
     if (dlg && parts.length && parts[0].indexOf('dialog') !== 0 && dt && dt !== ct) parts[0] += ' in dialog "' + dt + '"';
     var scope = row || tb;
-    if (scope && iconsOf(el).length) {
+    if (scope && iconsOf(el).length && !displayText(el)) {
       var sibs = Array.prototype.filter.call(scope.querySelectorAll('*'), function (e) {
         return isHtml(e) && isClickable(e) && iconsOf(e).length > 0;
       });
@@ -641,6 +641,18 @@
     return ev;
   }
 
+  /** Name for a new XML entry: best evidence + context ('Refresh Open Trades', 'Close Trade Entry', 'Save'). */
+  function suggestName(el) {
+    var label = labelOf(el);
+    var ics = iconsOf(el);
+    if (label && (!ics.length || displayText(el) || label.length <= 40)) return label;
+    if (!ics.length) return describe(el);
+    var w = iconWord(ics[0].name);
+    w = w.charAt(0).toUpperCase() + w.slice(1);
+    var ct = containerTitle(el);
+    return ct ? w + ' ' + ct : w;
+  }
+
   /** What an element looked like when an alias was recorded (re-checked when the alias is used). */
   function fingerprint(el) {
     return {
@@ -667,9 +679,11 @@
       var v = attr(el, a);
       if (v && stableText(v) && /^[A-Za-z_][\w.-]*$/.test(a)) add('@' + a + '=' + lit(v), 'test-id', 100);
     });
-    if (el.id && stableId(el.id)) add('@id=' + lit(el.id), 'id', 90);
+    var frameEl = t === 'iframe' || t === 'frame';
+    // an iframe name/id with a random tail (appFrame-trades-k3j9x2) is only used through its stable head
+    if (el.id && stableId(el.id) && !(frameEl && stableHead(el.id))) add('@id=' + lit(el.id), 'id', 90);
     var nm = attr(el, 'name');
-    if (nm && stableId(nm) && t !== 'a' && t !== 'form') add('@name=' + lit(nm), 'name', 85);
+    if (nm && stableId(nm) && t !== 'a' && t !== 'form' && !(frameEl && stableHead(nm))) add('@name=' + lit(nm), 'name', 85);
     if (t === 'input' && INPUT_BUTTON[inputType(el)] && attr(el, 'value') && stableText(attr(el, 'value'))) {
       add('@value=' + lit(attr(el, 'value')), 'value', 75);
     }
@@ -762,6 +776,8 @@
       if (bad) break;
       out += (i ? parts[i - 1] : '') + seg;
     }
+    // a generator prefix (rc_select_17, mat-input-3, cdk-overlay-2) is not a stable head
+    if (anyRx(RX.id, out)) return '';
     return out.length >= 4 && out !== v ? out : '';
   }
 
@@ -770,8 +786,7 @@
     var out = [];
     ['name', 'id'].forEach(function (a) {
       var v = attr(el, a);
-      if (!v || stableId(v)) return;
-      var h = stableHead(v);
+      var h = v && stableHead(v);
       if (h) out.push({ p: 'contains(@' + a + ',' + lit(h) + ')', s: a, w: a === 'name' ? 82 : 78 });
     });
     var src = attr(el, 'src').split(/[?#]/)[0];
@@ -959,12 +974,15 @@
     var anchors = anchorsOf(el, 3);
     // A.xp selects exactly A.el, so `${A.xp}//rest` selects what `.//rest` selects from A.el.
     function rel(A, path) { return function () { return uniqueIs('.' + path, el, A.el); }; }
+    // Icon clickables are anchored on their icon identity (or a better own predicate), not on @type/bare tag.
+    var iconEl = preds.some(function (p) { return p.s === 'icon'; });
     anchors.forEach(function (A) {
       preds.slice(0, 5).forEach(function (pr) {
+        if (iconEl && pr.w < 60) return;
         var path = '//' + t + '[' + pr.p + ']';
         add(A.xp + path, 'anchored', anchoredWeight(A.w, pr.w), rel(A, path));
       });
-      add(A.xp + '//' + t, 'anchored', anchoredWeight(A.w, 25), rel(A, '//' + t));
+      if (!iconEl) add(A.xp + '//' + t, 'anchored', anchoredWeight(A.w, 25), rel(A, '//' + t));
       var list = all('.//' + t, A.el), k = list.indexOf(el);
       if (k >= 0 && list.length > 1) {
         add('(' + A.xp + '//' + t + ')[' + (k + 1) + ']', 'anchored', 30, function () { return list[k] === el; });
@@ -1480,6 +1498,7 @@
     evidence: function (el) { el = htmlTarget(el); return el ? evidenceOf(el) : []; },
     location: function (el) { el = htmlTarget(el); return el ? locationOf(el) : ''; },
     fingerprint: function (el) { el = htmlTarget(el); return el ? fingerprint(el) : null; },
+    suggestName: function (el) { el = htmlTarget(el); return el ? suggestName(el) : ''; },
     findContainers: function (t) { return findContainers(t).map(function (c) { return c.root; }); }
   };
   configure(BOOT);

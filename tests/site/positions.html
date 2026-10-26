@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Positions</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="mat.css">
+<!-- Font Awesome 6 SVG mode: the JS replaces each <i class="fa-..."> with <svg data-icon="..." class="svg-inline--fa"> -->
+<script src="vendor/fontawesome/js/fontawesome.min.js"></script>
+<script src="vendor/fontawesome/js/solid.min.js"></script>
+<script src="hostile.js"></script>
+</head>
+<body>
+<main class="page" id="main"></main>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var main = document.getElementById('main');
+  main.id = H.newId();
+  H.load(main, function (c) {
+    c.appendChild(H.frag(
+      '<div class="page-header {{c:Page.header}}"><h1 class="{{c:Typography.h1}}">Positions</h1>' +
+      ' <div class="page-actions {{c:Page.actions}}" role="toolbar">' +
+      '  <button type="button" class="icon-btn {{c:IconButton.root}}" id="{{rid}}"><i class="fa-solid fa-arrows-rotate"></i></button>' +
+      '  <button type="button" class="icon-btn {{c:IconButton.root}}" id="{{rid}}"><i class="fa-solid fa-floppy-disk" title="Save layout"></i></button>' +
+      '  <button type="button" class="icon-btn {{c:IconButton.root}}" id="{{rid}}"><i class="fa-solid fa-xmark"></i></button>' +
+      ' </div></div>' +
+      '<section class="panel {{c:Panel.root}}"><h2 class="{{c:Typography.h2}}">Summary</h2><p>3 open positions.</p></section>'));
+    c.querySelector('.page-actions').addEventListener('click', function () { H.toast('Done'); });
+  });
+})();
+</script>
+</body>
+</html>

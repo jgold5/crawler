@@ -7,6 +7,10 @@ Two ways to get it into a page:
 
 Both are safe to combine: the script re-configures an existing engine of the same version
 instead of redefining it.
+
+Every frame has its own ``window``: inject per frame (``ensure_engine(frame, cfg)``, or
+``crawler.frames.ensure_engines(page, cfg)`` for all of them). An init script added to the context runs
+in every frame, cross-origin ones included.
 """
 from __future__ import annotations
 
@@ -50,9 +54,9 @@ def engine_script(cfg: SiteConfig) -> str:
 
 
 def ensure_engine(page, cfg: SiteConfig) -> None:
-    """Idempotently make ``window.__crawler`` available in the page's main frame.
+    """Idempotently make ``window.__crawler`` available in ``page``'s document.
 
-    ``page`` may also be a Frame (anything with ``evaluate``).
+    ``page`` may be a Page (its main frame) or a Frame (any iframe, same- or cross-origin).
     """
     if page.evaluate(_CHECK_JS, engine_key(cfg)):
         return

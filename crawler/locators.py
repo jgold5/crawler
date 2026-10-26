@@ -1,7 +1,14 @@
 """Locator candidates for an element: short, verified XPaths, best first.
 
-Generation and verification run in the page (``window.__crawler.candidates``); every candidate
-returned here matched exactly one element, the given one, at generation time.
+Generation and verification run in the document (``window.__crawler.candidates``); every candidate
+returned here matched exactly one element, the given one, at generation time. ``page`` may be a Page or
+a Frame; for an element inside an iframe the XPaths are relative to that frame's document (the iframe
+element's own locators come from ``crawler.frames.iframe_candidates``).
+
+Icon clickables are anchored on the icon's identity, never on the ``<i>``/``<svg>`` itself:
+``//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]`` or
+``//button[.//*[local-name()='svg'][@data-icon='arrows-rotate']]``, scoped by a card/dialog/section
+anchor when not unique. Material tooltips give ``//button[@aria-describedby=//div[normalize-space()='X']/@id]``.
 """
 from __future__ import annotations
 
@@ -44,7 +51,14 @@ def verify(page, xpath: str, handle=None) -> bool:
 
 
 def describe(page, handle, cfg: SiteConfig) -> str:
-    """Best single human name of an element (label, aria-label, text, placeholder...)."""
+    """Best single human name of an element (label, aria-label, text, placeholder...; icon-only: "Refresh")."""
     target = _frame_of(page, handle)
     ensure_engine(target, cfg)
     return handle.evaluate("el => window.__crawler.describe(el)")
+
+
+def suggest_name(page, handle, cfg: SiteConfig) -> str:
+    """Name for a new XML entry: best evidence + context, e.g. "Refresh Open Trades", "Close Trade Entry"."""
+    target = _frame_of(page, handle)
+    ensure_engine(target, cfg)
+    return handle.evaluate("el => window.__crawler.suggestName(el)")

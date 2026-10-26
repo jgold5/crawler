@@ -39,11 +39,17 @@ def site_url_alt() -> str:
 
 
 @pytest.fixture(scope="session")
-def browser():
+def pw():
+    """The one Playwright instance for the whole run (the sync API can't nest a second one)."""
     with sync_playwright() as p:
-        b = p.chromium.launch()
-        yield b
-        b.close()
+        yield p
+
+
+@pytest.fixture(scope="session")
+def browser(pw):
+    b = pw.chromium.launch()
+    yield b
+    b.close()
 
 
 @pytest.fixture
