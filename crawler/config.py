@@ -68,8 +68,11 @@ class GridDef:
 
 @dataclass
 class AuthDef:
-    flow: str | None = None                       # name of the login flow
-    storage_state: str = ".crawler/auth.json"    # cache of cookies + localStorage
+    """Auth has exactly one mechanism: borrow the session from the user's logged-in Chrome over CDP.
+
+    The harvested cookies + localStorage are cached here and reused by every headless context until stale.
+    """
+    storage_state: str = ".crawler/auth.json"
     max_age_minutes: int = 60
 
 
@@ -112,6 +115,7 @@ class SiteConfig:
     runs: int = 2
     parallel: int = 4
     headless: bool = True
+    cdp_endpoint: str = "http://localhost:9222"  # the user's logged-in Chrome; we borrow its session (see nav/connect.py)
     timeout_ms: int = 10_000
     viewport: dict[str, int] = field(default_factory=lambda: {"width": 1440, "height": 900})
     root: str = "."  # directory of site.yaml; relative paths resolve against it
