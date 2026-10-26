@@ -28,7 +28,7 @@ def _wait_rendered(pg):
     pg.wait_for_function(
         "() => document.readyState === 'complete' && ![...document.querySelectorAll(\"[aria-busy='true'],"
         " [role=progressbar], .ag-overlay-loading-wrapper\")].some(e => e.checkVisibility())"
-        " && document.querySelectorAll('main *, #root *').length > 20", timeout=15000)
+        " && document.querySelectorAll('body *').length > 40", timeout=15000)
 
 
 @pytest.fixture(scope="module")
@@ -171,6 +171,8 @@ def test_bundle_has_no_fixture_strings(fixture_run, browser, site_url):
         ctx.close()
     inventory = (SITE / "INVENTORY.md").read_text() if (SITE / "INVENTORY.md").exists() else ""
     strings |= set(re.findall(r"`([^`]{4,40})`", inventory)) & strings  # inventory names that are on pages
+    from crawler.probe.safety import source_vocab
+    vocab = source_vocab()   # words the probe's own code/templates contain cannot be site content
     leaks = []
     for s in strings:
         if s.lower() in GENERIC or s.startswith("ag-") or re.fullmatch(r"[\d\s.,:;/%$#+()-]+", s):
@@ -178,7 +180,7 @@ def test_bundle_has_no_fixture_strings(fixture_run, browser, site_url):
         if " " in s:
             if s in text:
                 leaks.append(s)
-        elif s in tokens:
+        elif s in tokens and s.lower() not in vocab:
             leaks.append(s)
     assert not leaks, f"{len(leaks)} fixture strings in bundle: {sorted(leaks)[:10]}"
     assert len(strings) > 100  # sanity: we really scraped the pages

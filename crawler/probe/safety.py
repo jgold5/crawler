@@ -262,34 +262,32 @@ def content_leaks(bundle_text: str, sentinels: Iterable[str], exempt: Iterable[s
     return hits
 
 
-def _distill_check(out: Path, denylist: list[str]) -> list[str]:
-    """Run crawler.distill.check if available. Returns problems (empty list if clean or unavailable)."""
+def _distill_check(out: Path, names: Iterable[str], denylist: list[str]) -> list[str]:
+    """Run M1f's raw-text scanner (denylist terms, URLs, emails, IPs, host names, secret shapes) over each file.
+
+    `crawler.distill.check.check()` validates a framework-profile bundle (it rejects unknown file names), so
+    the per-file scanner is used: a public `scan_text(rel, text, denylist)` if present, else the checker's
+    `raw()` pass. Missing module -> no extra findings (our own scans still run). Any other error fails closed.
+    """
     try:
         from crawler.distill import check as dcheck  # type: ignore
-    except Exception:
+    except ImportError:
         return []
-    fn = getattr(dcheck, "check", None) or getattr(dcheck, "check_bundle", None) or (
-        dcheck if callable(dcheck) else None)
-    if fn is None:
-        return []
-    for call in (lambda: fn(out, denylist=denylist), lambda: fn(out, denylist), lambda: fn(out)):
-        try:
-            res = call()
-        except TypeError:
-            continue
-        except Exception as e:  # check itself raising means "found something"
-            return [f"distill check failed: {type(e).__name__}"]
-        if res in (None, True) or res == [] or res == ():
-            return []
-        if res is False:
-            return ["distill check reported a problem"]
-        if isinstance(res, (list, tuple)):
-            return [f"distill check: {len(res)} finding(s)"]
-        ok = getattr(res, "ok", None)
-        if ok is not None:
-            return [] if ok else ["distill check reported a problem"]
-        return []
-    return []
+    problems: list[str] = []
+    try:
+        scan_text = getattr(dcheck, "scan_text", None)
+        checker = None if scan_text else dcheck._Checker(list(denylist))
+        for name in names:
+            text = (out / name).read_text(encoding="utf-8")
+            if scan_text:
+                problems += list(scan_text(name, text, list(denylist)) or [])
+            else:
+                checker.raw(name, text)
+        if checker is not None:
+            problems += checker.problems
+    except Exception as e:
+        return [f"distill scanner failed ({type(e).__name__})"]
+    return [f"distill scan: {p}" for p in problems]
 
 
 def delete_bundle(out: Path, names: Iterable[str]) -> None:
@@ -331,7 +329,7 @@ def scan_bundle(out: Path, files: dict[str, T | None], denylist: Iterable[str], 
     n = len(content_leaks("\n".join(texts), sentinels, exempt))  # the strings themselves are never printed
     if n:
         problems.append(f"{n} string(s) observed on the site appear in the bundle")
-    problems += _distill_check(out, deny)
+    problems += _distill_check(out, list(files), deny)
     if problems:
         delete_bundle(out, files)
         raise ProbeLeakError("probe output failed the leak scan; bundle deleted:\n  " + "\n  ".join(problems))
