@@ -1,0 +1,25 @@
+{
+  "page": "tradeBlotter",
+  "extends": "basePage",
+  "menuPath": ["Trading", "Blotter"],
+  "iframe": "blotterFrame",
+  "elements": {
+    "Counterparty": {"type": "dropdown", "css": "select[name='counterparty']"},
+    "Trade Date": {"type": "date", "xpath": "//input[@placeholder='Trade Date']"},
+    "Refresh": {"type": "button", "by": "css", "value": "button[data-qa='refresh-{grid}']"}
+  },
+  "grids": {
+    "Trades": {
+      "css": "div.ag-root-wrapper",
+      "defaultColumn": "Trade Date",
+      "columns": [
+        {"name": "Trade Date", "type": "date"},
+        {"name": "Counterparty", "type": "text"},
+        {"name": "Notional", "type": "currency"}
+      ]
+    }
+  },
+  "clients": {
+    "globexPrime": {"iframe": "blotterFrameV2", "comment": "contact ops.desk@globexbank.com"}
+  }
+}

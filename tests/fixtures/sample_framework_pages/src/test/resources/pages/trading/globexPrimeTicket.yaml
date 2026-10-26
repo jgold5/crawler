@@ -1,0 +1,10 @@
+page: globexPrimeTicket
+extends: tradeEntry
+menuPath: Trading > Prime Ticket
+elements:
+  Trade Date:
+    type: date
+    xpath: "//input[@name='primeTradeDate']"
+  Approve:
+    type: button
+    css: "button[data-qa='approve-{{ticketId}}']"

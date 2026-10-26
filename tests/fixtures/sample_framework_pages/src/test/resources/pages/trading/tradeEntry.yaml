@@ -1,0 +1,59 @@
+# Trade entry screen. Test env: https://trading.globexbank.internal/app (10.42.7.19)
+# svc account password: S3cr3tPa55word
+page: tradeEntry
+extends: basePage
+title: Trade Entry
+menuPath: Trading > Equities > Trade Entry
+url: https://trading.globexbank.internal/app/trade-entry
+iframe:
+  xpath: "//iframe[@id='tradeEntryFrame']"
+login:
+  username: svc_trading
+  password: S3cr3tPa55word
+  apiKey: AKIAIOSFODNN7EXAMPLE
+  host: 10.42.7.19
+  contact: ops.desk@globexbank.com
+elements:
+  Trade Date:
+    type: date
+    xpath: "//input[@id='tradeDateInput']"
+    label: Trade Date
+  Counterparty:
+    type: dropdown
+    css: "#cpty-select > .mui-4"
+    options: [Goldman Sachs, Morgan Stanley]
+  Borrow Rate:
+    type: textfield
+    xpath: "//label[text()='Borrow Rate']/following-sibling::input"
+    timeout: 45
+  Settlement Date:
+    type: date
+    id: settlementDate
+  GlobexCustomBlotter:
+    type: link
+    xpath: "//a[@data-globex-id='blotter']"
+  Trade Row:
+    type: row
+    xpath: "//div[@role='row'][.//div[@col-id='tradeId' and text()='{row}']]"
+    params: [row]
+  Notional Cell:
+    type: cell
+    xpath: "//div[@row-index='%s']//div[@col-id='notional']"
+grids:
+  Trades:
+    xpath: "//div[@ref='eGridDiv']"
+    defaultColumn: Trade Date
+    rowKey: Trade Id
+    columns:
+      Trade Date: {type: date, colId: tradeDate}
+      Trade Id: {type: text, colId: tradeId}
+      Counterparty: {type: text, colId: cpty}
+      Notional: {type: currency, colId: notional}
+      Borrow Rate: {type: percent, colId: borrowRate}
+overrides:
+  globexPrime:
+    elements:
+      Counterparty:
+        css: "#cpty-select-v2"
+  client2:
+    menuPath: Trading > Trade Entry

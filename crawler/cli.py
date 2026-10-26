@@ -35,7 +35,11 @@ def _denylist(deny: tuple[str, ...], deny_file: str | None) -> list[str]:
               help="If the leak check fails, print the flagged values here (local terminal only; don't paste them).")
 @click.option("--check", "check_only", type=click.Path(exists=True, file_okay=False),
               help="Only re-scan an existing bundle for leaks.")
-def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_leaks, check_only) -> None:
+@click.option("--pages", "pages", multiple=True, metavar="GLOB",
+              help="Also read page-definition files (.yaml/.yml/.json) matching GLOB, relative to SRC or absolute "
+                   "(e.g. 'src/test/resources/pages/**/*.yaml'). Repeatable. Off by default; files named like "
+                   "credentials/secrets/.env/.properties are never read.")
+def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_leaks, check_only, pages) -> None:
     """Make a redacted profile of your UI automation framework. Runs offline; nothing leaves your machine.
 
     SRC is the root of your Selenium/Cucumber repo. Review the bundle before sharing it.
@@ -43,6 +47,8 @@ def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_le
     from crawler.distill import check, distill as run_distill
     from crawler.distill.check import explain
     from crawler.distill.core import DistillLeakError
+    from crawler.distill.pages import DistillWarning
+    import warnings
 
     terms = _denylist(deny, deny_file)
     if check_only:
@@ -57,10 +63,14 @@ def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_le
         raise click.UsageError("SRC is required unless --check is given.")
     if not terms:
         click.echo("warning: no --deny terms given; add your company/product names and domains.", err=True)
+    caught: list = []
     try:
-        bundle = run_distill(Path(src), Path(out), terms, rename_packages_to=package_prefix,
-                             keep_identifiers=keep_identifiers)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DistillWarning)
+            bundle = run_distill(Path(src), Path(out), terms, rename_packages_to=package_prefix,
+                                 keep_identifiers=keep_identifiers, pages=list(pages))
     except DistillLeakError as e:
+        _echo_warnings(caught, DistillWarning)
         click.echo("Leak check failed, so nothing was written. Flagged:", err=True)
         for line in (e.details if show_leaks else e.problems):
             click.echo(f"  {line}", err=True)
@@ -68,7 +78,14 @@ def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_le
             click.echo("Re-run with --show-leaks to see the flagged values on this terminal "
                        "(don't paste those values anywhere; paste only the lines above).", err=True)
         raise SystemExit(2)
+    _echo_warnings(caught, DistillWarning)
     click.echo(f"wrote {bundle}  (open PROFILE.md first; review everything before sharing)")
+
+
+def _echo_warnings(caught, category) -> None:
+    for w in caught or []:
+        if issubclass(w.category, category):
+            click.echo(f"warning: {w.message}", err=True)
 
 
 @main.command()

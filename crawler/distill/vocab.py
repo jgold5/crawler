@@ -196,3 +196,33 @@ hasNext keySet values entrySet getKey getValue containsKey join builder now plus
 XPATH CSS ID NAME CLASS_NAME LINK_TEXT PARTIAL_LINK_TEXT TAG_NAME ENTER TAB ESCAPE RETURN BACK_SPACE DELETE
 ARROW_DOWN ARROW_UP CONTROL SHIFT FILE BYTES BASE64 HOW USING out err length class this super
 """)
+
+# --- page-definition files (pages.py) -----------------------------------------------------------------------
+# Generic schema vocabulary for per-page locator files. A mapping key made only of these words (camelCase /
+# snake / kebab compounds, plurals allowed) is schema and kept verbatim; so is an enum-like value. Never add
+# business words here: anything outside this list becomes a placeholder.
+PAGE_SCHEMA_WORDS = _words("""
+page base extend extends parent inherit inherits inherited inheritance menu path iframe frame element field
+locator xpath css selector id name type by how using value grid column default key row header col sort sortable
+editable cell template param wait timeout visible optional dropdown option textfield text button checkbox radio
+date label tab modal dialog container child children client profile override variant common component section
+url route title class tag link partial index position description desc required enabled disabled hidden
+readonly read only write mandatory multi multiple single select selection input textarea area number numeric
+integer int decimal float double string boolean bool currency percent percentage time datetime timestamp
+calendar picker datepicker timepicker lookup autocomplete combo combobox list listbox table icon image img
+toggle switch item menuitem nav navigation breadcrumb root before after next previous prev first last top
+bottom left right footer body main content panel window popup overlay spinner loader loading load ready state
+status mode format pattern regex mask placeholder hint tooltip message error warning info width height size
+min max length limit count order group filter search source target action event click hover submit save
+cancel close open expand collapse scroll drag drop upload download file locale language lang alias ref
+reference include import extra config setting property attribute attr data meta version schema kind category
+role aria test testid qa automation strategy locate find finder wrapper scope context display displayed shown
+show hide formatter renderer editor pinned filterable resizable flex align alignment style is has on of to in
+at for with and or no not all any per auto custom new primary secondary unique use dynamic static arg var
+variable map mapping def definition true false yes null none expected actual result heading caption note
+comment help enable disable check uncheck checked unchecked selected focus clear tenant brand global shared
+local wildcard dom shadow handle into within inside under above below ancestor descendant sibling following
+preceding contains equals starts ends match exact case ignore trim normalize retry poll polling interval delay
+ms millis seconds sec step screen view form region block card tree node level depth expandable subheader
+total subtotal summary pagination pager paging home anchor href method api endpoint uri query keyword
+""")

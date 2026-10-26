@@ -18,7 +18,7 @@ import pytest
 
 from crawler.grid import resolve_cell
 from crawler.model import GridTarget, RowRef
-from test_grid_support import (SEED_BOTTOM, TIMEOUT, cfg_for, describe_cell, open_orders,  # noqa: F401
+from test_grid_support import (SEED_BOTTOM, SEED_OTHER, TIMEOUT, cfg_for, describe_cell, open_orders,  # noqa: F401
                                rendered_keys, show_row_via_api)
 
 JAVA = Path(__file__).parent.parent / "crawler" / "emit" / "support" / "AgGrid.java"
@@ -149,10 +149,10 @@ def test_scroll_row_into_view_script(open_orders, ag, mode):
                  for col in ("Quantity", "Region", "Edit")}
     index_cell = resolve_cell(crawl, GridTarget(RowRef(index=777), "Status", "Orders"), cfg, TIMEOUT)
 
-    page = open_orders(mode, ag=ag)                       # fresh load, random shuffle
+    page = open_orders(mode, seed=SEED_OTHER, ag=ag)      # fresh load, another shuffle
+    assert "A-950" not in rendered_keys(page)
     root = page.query_selector("ag-grid-angular")         # gridRoot = the Angular host element
     for col, cell in templates.items():
-        assert "A-950" not in rendered_keys(page) or col != "Quantity"
         el = execute_async(page, SCRIPTS["SCROLL_JS"], root, cell.candidates[0].xpath, 15000)
         assert not isinstance(el, dict), el
         info = describe_cell(page, el)

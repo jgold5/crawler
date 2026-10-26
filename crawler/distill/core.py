@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from .idents import Anonymizer
 from .javasrc import read_source, scan, string_values, stub_source
 from .jmodel import Policy, Scope, Unit, common_prefix, index_unit, make_scope
 from .locators import LocatorCollector
+from . import pages as pages_mod
 from .profile import conventions, render_md, test_id_attrs, wait_and_grid_stats
 from .redact import EMAIL_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hosts_in, registrable_label
 from .skeleton import Renderer, render_tokens
@@ -51,7 +53,7 @@ def _category(p: Path) -> str:
     return "other"
 
 
-def _walk(src: Path, exclude: set[Path]) -> tuple[list[Path], list[Path], Counter]:
+def _walk(src: Path, exclude: set[Path], consumed: set[Path] = frozenset()) -> tuple[list[Path], list[Path], Counter]:
     java, feats, other = [], [], Counter()
     for root, dirs, files in os.walk(src, followlinks=False):
         rp = Path(root)
@@ -68,6 +70,8 @@ def _walk(src: Path, exclude: set[Path]) -> tuple[list[Path], list[Path], Counte
             if p.is_symlink():
                 other["symlinks"] += 1
                 continue
+            if consumed and p.resolve() in consumed:
+                continue  # selected page-definition file: read by the pages adapter
             if f in ("module-info.java", "package-info.java"):
                 other["java module/package info"] += 1
             elif f.endswith(".java"):
@@ -118,7 +122,7 @@ def _prepare_out(out: Path) -> None:
     if not entries:
         out.rmdir()
         return
-    if entries <= (ALLOWED_TOP | {"skeleton", "features"}) and ("PROFILE.md" in entries or "profile.yaml" in entries):
+    if entries <= (ALLOWED_TOP | {"skeleton", "features", "pages"}) and ("PROFILE.md" in entries or "profile.yaml" in entries):
         shutil.rmtree(out)
         return
     raise FileExistsError(f"{out} exists and does not look like a previous framework-profile bundle; "
@@ -126,7 +130,9 @@ def _prepare_out(out: Path) -> None:
 
 
 def distill(src: Path, out: Path, denylist: list[str] = (), rename_packages_to: str = "com.example",
-            keep_identifiers: bool = False) -> Path:
+            keep_identifiers: bool = False, pages: list[str] = ()) -> Path:
+    """pages: glob patterns (relative to src, or absolute) of page-definition files (.yaml/.yml/.json) to read.
+    Off by default; matched files whose names look like credentials/secrets/.env/.properties are never read."""
     src = Path(src).resolve()
     out = Path(out).resolve()
     rename_packages_to = rename_packages_to or "com.example"
@@ -140,7 +146,8 @@ def distill(src: Path, out: Path, denylist: list[str] = (), rename_packages_to: 
     if tmp.exists():
         shutil.rmtree(tmp)
     try:
-        terms = _build(src, tmp, list(denylist or []), rename_packages_to, keep_identifiers, {out, tmp})
+        terms = _build(src, tmp, list(denylist or []), rename_packages_to, keep_identifiers, {out, tmp},
+                       list(pages or []))
         problems = check(tmp, terms)
         if problems:
             from .check import explain
@@ -153,9 +160,13 @@ def distill(src: Path, out: Path, denylist: list[str] = (), rename_packages_to: 
     return out
 
 
-def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bool, exclude: set[Path]) -> list[str]:
+def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bool, exclude: set[Path],
+           page_globs: list[str] = ()) -> list[str]:
     stats: Counter = Counter()
-    java_files, feature_files, not_read = _walk(src, exclude)
+    page_sel, page_counts, page_warns = pages_mod.select(src, page_globs, exclude) if page_globs else ([], Counter(), [])
+    for w in page_warns:
+        warnings.warn(w, pages_mod.DistillWarning, stacklevel=3)
+    java_files, feature_files, not_read = _walk(src, exclude, {p.resolve() for _, p in page_sel})
     files = {"java_parsed": 0, "java_stub_fallback": 0, "java_token_fallback": 0, "java_skipped": 0,
              "features_parsed": 0, "features_skipped": 0}
 
@@ -199,6 +210,10 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
             continue
         texts.append(text)
         feature_docs.append(doc)
+
+    page_docs, page_texts = pages_mod.load(page_sel, page_counts) if page_sel else ([], [])
+    texts += page_texts
+    del page_texts
 
     # ---- naming context
     pkgs = [u.scope.package for u in units if u.scope.package]
@@ -287,6 +302,24 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
             js_calls.update(calls)
             if calls:
                 js_objects.update(policy.member(o, "field") for o in re.findall(r"\bwindow\.([A-Za-z_$][\w$]*)", v))
+    dump = dict(sort_keys=False, allow_unicode=False, width=120, default_flow_style=False)
+    page_md = None
+    if page_globs:  # ---- page-definition files (opt-in)
+        plc = LocatorCollector(policy, Counter())
+        adapter = pages_mod.PageAdapter(rename.denied, (lc, plc))
+        outs = adapter.run(page_docs)
+        if page_docs:
+            (dst / "pages").mkdir()
+        for i, (doc, o) in enumerate(zip(page_docs, outs), 1):
+            (dst / "pages" / f"Page{i}.yaml").write_text(pages_mod.dump_page(i, len(page_docs), doc, o),
+                                                         encoding="utf-8")
+        page_schema = adapter.schema(page_docs, page_counts)
+        (dst / "pages-schema.yaml").write_text(
+            "# Schema inferred from the page-definition files (key paths with names collapsed to <name>).\n"
+            + yaml.safe_dump(page_schema, **dump), encoding="utf-8")
+        page_md = pages_mod.md_section(page_schema, plc.summary() if plc.entries else None)
+        files["pages_read"] = len(page_docs)
+        files["pages_not_read"] = sum(page_counts.values())
     loc_items = lc.items()
     loc_summary = lc.summary()
 
@@ -334,7 +367,6 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
                  "attribute_names": loc_summary["attribute_names"], "waits": waits, "grid": grid}
     profile = {"java": java, "stats": stats_out, "cucumber": cucumber, "naming": naming, "files": files,
                "facts": facts, "keep_identifiers": keep}
-    dump = dict(sort_keys=False, allow_unicode=False, width=120, default_flow_style=False)
     (dst / "profile.yaml").write_text(
         "# Detected conventions. `java:` uses exactly the keys of crawler.config.JavaDef.\n"
         + yaml.safe_dump({k: profile[k] for k in ("java", "stats", "cucumber", "naming", "files")}, **dump),
@@ -347,6 +379,6 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
         + yaml.safe_dump({"steps": cat.entries}, **dump), encoding="utf-8")
     (dst / "step-mappings.draft.yaml").write_text(mapping_yaml(cat), encoding="utf-8")
     md = {**profile, "locator_summary": loc_summary, "waits": waits, "grid": grid, "cucumber": cucumber,
-          "removed": removed, "review": sorted(set(cat.review))}
+          "removed": removed, "review": sorted(set(cat.review)), "pages_md": page_md}
     (dst / "PROFILE.md").write_text(render_md(md), encoding="utf-8")
     return terms

@@ -1,0 +1,23 @@
+# Securities Lending > Borrow Rates (rates feed from 10.42.7.19)
+page: borrowRates
+extends: tradeBlotter
+menuPath: Securities Lending / Borrow Rates
+elements:
+  Borrow Rate:
+    type: textfield
+    xpath: "//input[@aria-label='Borrow Rate']"
+  Counterparty:
+    type: dropdown
+    xpath: "//div[@data-field='counterparty']//input"
+  Rate Row:
+    type: row
+    xpath: "//div[@role='row' and @row-id='${rowId}']"
+grids:
+  Rate Sheet:
+    css: "#borrow-rate-grid .ag-center-cols-container"
+    defaultColumn: Borrow Rate
+    columns: [Counterparty, Borrow Rate, Trade Date]
+    columnTypes:
+      Borrow Rate: percent
+      Trade Date: date
+      Counterparty: text

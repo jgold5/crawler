@@ -104,7 +104,8 @@ class LocatorCollector:
         self.resolve = None
 
     # ------------------------------------------------------------------ recording
-    def add(self, kind: str, value: str, owner: str, hint: str | None = None) -> None:
+    def add(self, kind: str, value: str, owner: str, hint: str | None = None, source: str = "java") -> str:
+        """Record one locator; returns its redacted shape. source: java | page-file."""
         deny = self.p.rename.denied
         if kind == "xpath":
             shape = redact_literal(value, "xpath", None, deny)[0]
@@ -122,12 +123,14 @@ class LocatorCollector:
         key = (kind, shape)
         self.lengths.append(metrics["length"])
         if key not in self.entries:
-            self.entries[key] = {"kind": kind, "shape": shape, "count": 0, "owners": set(),
+            self.entries[key] = {"kind": kind, "shape": shape, "count": 0, "owners": set(), "sources": set(),
                                  "metrics": metrics, "flags": _flags(kind, shape, metrics)}
             self.order.append(key)
         e = self.entries[key]
         e["count"] += 1
         e["owners"].add(owner)
+        e["sources"].add(source)
+        return shape
 
     def owner(self, ci: ClassInfo | None, member: str | None, kind: str = "field") -> str:
         cls = self.p.type_name(ci.name, ci.scope) if ci else "Type0"
@@ -262,7 +265,7 @@ class LocatorCollector:
             owners = sorted(e["owners"])
             out.append({"kind": e["kind"], "shape": e["shape"], "count": e["count"],
                         "owners": owners[:5] + ([f"+{len(owners) - 5} more"] if len(owners) > 5 else []),
-                        "metrics": e["metrics"], "flags": e["flags"]})
+                        "sources": sorted(e["sources"]), "metrics": e["metrics"], "flags": e["flags"]})
         out.sort(key=lambda x: (-x["count"], x["kind"], x["shape"]))
         return out
 

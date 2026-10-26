@@ -11,12 +11,19 @@ import javalang
 import yaml
 
 from .features import parse_feature
+from .pages import SCHEMA_STAT_KEYS, page_key_ok, page_value_ok, schema_value_ok
 from .redact import (EMAIL_RX, IP_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hosts_in, is_placeholder_seq,
                      literal_is_clean, redact_literal, secret_shapes, type_value)
 from .skeleton import COMMENT_PREFIXES, STEP_ANNOTATIONS
 from .javasrc import unescape_java
 
-ALLOWED_TOP = {"profile.yaml", "PROFILE.md", "steps.yaml", "step-mappings.draft.yaml", "locators.yaml"}
+ALLOWED_TOP = {"profile.yaml", "PROFILE.md", "steps.yaml", "step-mappings.draft.yaml", "locators.yaml",
+               "pages-schema.yaml"}
+PAGE_FILE_RX = re.compile(r"(?:pages/)?Page\d+\.yaml")
+PAGE_HEADER_RX = re.compile(r"# Page definition \d+ of \d+, redacted\. Same structure as the source (?:yaml|json) "
+                            r"file; names are placeholders, comments dropped\.\n")
+_STD_TAGS = {f"tag:yaml.org,2002:{t}" for t in ("str", "int", "float", "bool", "null")}
+_BAD = object()
 _STR_IN_LINE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)\'')
 
 
@@ -183,7 +190,71 @@ class _Checker:
             if "docString" in st and st["docString"].get("content") != "<doc>":
                 self.add(rel, ln, "doc string kept")
 
+    def _yaml_scalars(self, rel: str, text: str, key_ok, value_ok, what: str) -> None:
+        """Every scalar (keys and values), with its line, through the grammar for this file."""
+        try:
+            roots = list(yaml.compose_all(text, Loader=yaml.SafeLoader))
+        except yaml.YAMLError:
+            self.add(rel, None, "yaml does not parse")
+            return
+        loader = yaml.SafeLoader("")
+
+        def walk(node, is_key: bool) -> None:
+            if isinstance(node, yaml.MappingNode):
+                for kn, vn in node.value:
+                    walk(kn, True)
+                    walk(vn, False)
+                return
+            if isinstance(node, yaml.SequenceNode):
+                for x in node.value:
+                    walk(x, False)
+                return
+            ln = node.start_mark.line + 1
+            if node.tag not in _STD_TAGS:
+                self.add(rel, ln, f"non-standard yaml tag in {what}", str(node.value))
+                return
+            try:
+                v = loader.construct_object(node, deep=True)
+            except Exception:  # noqa: BLE001
+                v = _BAD
+            if not (key_ok if is_key else value_ok)(v):
+                self.add(rel, ln, f"{what} {'key' if is_key else 'value'} outside grammar", str(node.value))
+        for r in roots:
+            if r is not None:
+                walk(r, False)
+
+    def page_file(self, rel: str, text: str) -> None:
+        def value_ok(v):
+            if v is None or isinstance(v, bool):
+                return True
+            if isinstance(v, int):
+                return 0 <= v <= 10
+            return isinstance(v, str) and page_value_ok(v)
+        self._yaml_scalars(rel, text, page_key_ok, value_ok, "page file")
+        m = PAGE_HEADER_RX.match(text)
+        try:
+            docs = list(yaml.safe_load_all(text[m.end():] if m else text))
+        except yaml.YAMLError:
+            return
+        from .pages import _Dumper
+        kw = dict(Dumper=_Dumper, sort_keys=False, allow_unicode=False, default_flow_style=False, width=120)
+        canon = yaml.dump(docs[0], **kw) if len(docs) == 1 else yaml.dump_all(docs, **kw)
+        if not m or text[m.end():] != canon:
+            self.add(rel, None, "page file not in canonical form (comments or hand edits)")
+
     def yaml_file(self, rel: str, text: str) -> None:
+        if PAGE_FILE_RX.fullmatch(rel):
+            self.page_file(rel, text)
+            return
+        if rel == "pages-schema.yaml":
+            def key_ok(k):
+                return k is None or isinstance(k, (bool, int)) or (isinstance(k, str) and (
+                    k in SCHEMA_STAT_KEYS or schema_value_ok(k)))
+
+            def value_ok(v):
+                return v is None or isinstance(v, (bool, int, float)) or (isinstance(v, str) and schema_value_ok(v))
+            self._yaml_scalars(rel, text, key_ok, value_ok, "pages schema")
+            return
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
@@ -258,7 +329,7 @@ def _run(out: Path, denylist) -> "_Checker":
             c.add("<path>", None, "denylisted term in a file name")
         top = rel.split("/", 1)[0]
         ok = rel in ALLOWED_TOP or (top == "skeleton" and rel.endswith(".java")) or \
-            (top == "features" and rel.endswith(".feature"))
+            (top == "features" and rel.endswith(".feature")) or (top == "pages" and PAGE_FILE_RX.fullmatch(rel))
         if not ok:
             c.add(rel, None, "unexpected file in bundle")
             continue

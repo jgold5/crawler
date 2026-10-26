@@ -243,6 +243,8 @@ def render_md(p: dict) -> str:
     a("3. Read the step phrases listed under *Review these step phrases* below, and `steps.yaml`.")
     a("4. Open `features/` and `step-mappings.draft.yaml`: unquoted words in step text are kept.")
     a("5. Search the folder for your company, product, customer and project names one more time.")
+    if p.get("pages_md"):
+        a("6. Skim `pages/` and `pages-schema.yaml`: only generic schema words and placeholders should remain.")
     a("")
     a("## Overview")
     a("")
@@ -298,6 +300,8 @@ def render_md(p: dict) -> str:
     a(f"- Draft mappings: {c['draft_mappings']} confident, {c['draft_todo']} left as TODO")
     a(f"- Unused step definitions (no matching feature step): {c['unused']}")
     a("")
+    if p.get("pages_md"):
+        L.extend(p["pages_md"])
     a("## What was removed")
     a("")
     a("Counts only; the removed values are not stored anywhere.")

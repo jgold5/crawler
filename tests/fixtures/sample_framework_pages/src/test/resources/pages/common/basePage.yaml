@@ -1,0 +1,17 @@
+# Base page: shared header elements. Owner: ops.desk@globexbank.com
+page: basePage
+iframe: null
+elements:
+  Save:
+    type: button
+    xpath: "//button[normalize-space()='Save']"
+  Cancel:
+    type: button
+    css: "button.btn-secondary[data-qa='cancel']"
+  Search:
+    type: textfield
+    id: globalSearchInput
+  Toast Message:
+    type: label
+    xpath: "//div[contains(@class,'toast')]//span"
+    wait: 10
