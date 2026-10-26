@@ -4,7 +4,6 @@ free string, and a fail-closed leak scan over the written bundle.
 from __future__ import annotations
 
 import re
-import shutil
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -154,8 +153,9 @@ Regex = Str(is_safe_regex, "generalized-regex")
 Selector = Str(lambda v, d: is_safe_selector(v), "generic-selector")
 AttrName = Str(is_safe_attr_name, "data-attribute-name")
 ApiName = Str(lambda v, d: is_safe_api_name(v, d) or v == "<custom>", "api-name")
-ApiExpr = Str(lambda v, d: v.startswith("window.") and is_safe_api_name(v[7:], d), "api-expr")
-Theme = Str(lambda v, d: v in AG_THEMES or v in ("theming-api", "<custom>"), "ag-theme")
+ApiExpr = Str(lambda v, d: v.startswith("window.") and is_safe_api_name(v[7:].removesuffix(".api"), d), "api-expr")
+Theme = Str(lambda v, d: v in AG_THEMES or v in ("theming-api", "theming-api-quartz", "theming-api-alpine",
+                                                    "theming-api-balham", "theming-api-material", "<custom>"), "ag-theme")
 PathShape = Str(lambda v, d: bool(_PATH_SHAPE.match(v)) and len(v) <= 200, "path-shape")
 GridKey = Str(lambda v, d: bool(re.fullmatch(r"grid_\d{1,3}", v)), "grid-key")
 
@@ -234,27 +234,31 @@ def _sentinel_words(s: str) -> Iterable[str]:
             yield w.lower()
 
 
-def content_leaks(bundle_text: str, sentinels: Iterable[str]) -> int:
+def content_leaks(bundle_text: str, sentinels: Iterable[str], exempt: Iterable[str] = ()) -> list[str]:
     """Count page strings (texts, attribute values, ids, classes, URL parts) that surface in the bundle.
 
     Two checks: (1) any bundle word token not in this package's own vocabulary must not be a word seen on
     the site; (2) any multi-word or long site string that is not made only of vocabulary words must not
     appear verbatim. Numeric-only and version-shaped strings are exempt (counts and versions are allowed).
+    `exempt` lists grid-API property names (allowed by design); they are masked for the substring check only.
     """
     vocab = source_vocab()
     bundle_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9_$]+", bundle_text)
                      if len(t) >= 4 and not t.isdigit()}
     foreign = {t for t in bundle_tokens if t not in vocab and not is_version(t)}
-    hits = 0
+    masked = bundle_text
+    for name in sorted(exempt, key=len, reverse=True):
+        masked = masked.replace(name, "<api-name>")
+    hits: list[str] = []
     seen_words: set[str] = set()
     for s in sentinels:
         if not s or _NUMERICISH.match(s) or is_version(s.strip().lstrip("vV")):
             continue
         words = list(_sentinel_words(s))
         seen_words.update(words)
-        if len(s) >= 6 and not all(w in vocab for w in words) and s in bundle_text:
-            hits += 1
-    hits += len(foreign & seen_words)
+        if len(s) >= 6 and not all(w in vocab for w in words) and s in masked:
+            hits.append(s)
+    hits.extend(sorted(foreign & seen_words))
     return hits
 
 
@@ -301,7 +305,8 @@ def delete_bundle(out: Path, names: Iterable[str]) -> None:
         pass
 
 
-def scan_bundle(out: Path, files: dict[str, T | None], denylist: Iterable[str], sentinels: Iterable[str]) -> None:
+def scan_bundle(out: Path, files: dict[str, T | None], denylist: Iterable[str], sentinels: Iterable[str],
+                exempt: Iterable[str] = ()) -> None:
     """Re-read the written bundle and fail closed (delete it, raise) on anything suspicious."""
     import yaml
 
@@ -323,7 +328,7 @@ def scan_bundle(out: Path, files: dict[str, T | None], denylist: Iterable[str], 
         for rx in _SECRETISH:
             if rx.search(text):
                 problems.append(f"{name}: contains a URL/email/token-shaped string")
-    n = content_leaks("\n".join(texts), sentinels)
+    n = len(content_leaks("\n".join(texts), sentinels, exempt))  # the strings themselves are never printed
     if n:
         problems.append(f"{n} string(s) observed on the site appear in the bundle")
     problems += _distill_check(out, deny)

@@ -1,0 +1,149 @@
+"""The fixed output schema. Every value written to site-profile.yaml / site.suggested.yaml is checked
+against these types; a value that does not fit makes the probe fail closed."""
+from __future__ import annotations
+
+from .safety import (ApiExpr, ApiName, AttrName, Bool, Enum, GridKey, Int, List, Map, Num, Obj, Opt, PathShape,
+                     Regex, Selector, Theme, Version)
+from .vocab import (BUTTON_NAME_KINDS, CLASS_SHAPES, COL_ID_SHAPES, DATA_ATTR_KINDS, DOM_LAYOUTS, FRAMEWORKS,
+                    ID_SHAPES, INPUT_LABEL_KINDS, INTERACTIVE_KINDS, LINK_SKIPS, OTHER_GRIDS, READY_BLOCKERS,
+                    ROW_ID_SHAPES, ROW_MODELS, SAFE_SPINNER_WORDS, SPINNER_SIGNALS, VALUE_SHAPES)
+
+SCHEMA_VERSION = 1
+
+_pattern = Obj({"pattern": Regex, "matches": Int(), "literal_prefix": Bool()})
+
+GRID = Obj({
+    "page": Int(),
+    "visible": Bool(),
+    "theme": Opt(Theme),
+    "header_columns": Int(),
+    "group_headers": Int(),
+    "total_columns": Opt(Int()),
+    "pinned_left_cols": Int(),
+    "pinned_right_cols": Int(),
+    "rendered_rows": Int(),
+    "total_rows": Opt(Int()),
+    "row_virtualized": Bool(),
+    "col_virtualized": Opt(Bool()),
+    "row_model": Enum(ROW_MODELS),
+    "dom_layout": Enum(DOM_LAYOUTS),
+    "row_id_shape": Enum(ROW_ID_SHAPES),
+    "get_row_id": Opt(Bool()),
+    "get_row_id_likely": Bool(),
+    "col_id_shapes": Map(Enum(COL_ID_SHAPES), Int()),
+    "editable_columns": Opt(Int()),
+    "editable_cell_hints": Int(),
+    "floating_filters": Bool(),
+    "selection_checkboxes": Bool(),
+    "row_groups": Bool(),
+    "full_width_rows": Bool(),
+    "cell_links": Int(),
+    "cell_buttons": Int(),
+    "cell_inputs": Int(),
+    "api_reachable": Bool(),
+    "api_expr": Opt(ApiExpr),
+})
+
+PROFILE_SCHEMA = Obj({
+    "schema_version": Int(),
+    "probe": Obj({
+        "pages_visited": Int(),
+        "max_pages": Int(),
+        "page_limit_reached": Bool(),
+        "elapsed_s": Num(),
+        "storage_state_used": Bool(),
+        "pages_with_password_field": Int(),
+        "start_page_has_password_field": Bool(),
+        "links": Obj({"seen": Int(), "crawled": Int(), "skipped": Map(Enum(LINK_SKIPS), Int())}),
+        "ready": Obj({"median_ms": Int(), "max_ms": Int(), "timeouts": Int(),
+                      "blocked_by": Map(Enum(READY_BLOCKERS), Int())}),
+    }),
+    "frameworks": Map(Enum(FRAMEWORKS), Obj({"pages": Int(), "version": Opt(Version)})),
+    "ag_grid": Obj({
+        "present": Bool(),
+        "version": Opt(Version),
+        "pages_with_grids": Int(),
+        "grids_total": Int(),
+        "themes": List(Theme),
+        "api_names": List(ApiName),
+        "grids": List(GRID, 200),
+    }),
+    "other_grids": Map(Enum(OTHER_GRIDS), Int()),
+    "test_ids": Obj({
+        "interactive_elements": Int(),
+        "interactive_by_kind": Map(Enum(INTERACTIVE_KINDS), Int()),
+        "interactive_with_any_test_id_pct": Num(),
+        "interactive_with_configured_test_id_pct": Num(),
+        "redacted_attribute_names": Int(),
+        "attributes": Map(AttrName, Obj({
+            "kind": Enum(DATA_ATTR_KINDS),
+            "pages": Int(),
+            "elements": Int(),
+            "interactive": Int(),
+            "interactive_coverage_pct": Num(),
+            "value_shapes": Map(Enum(VALUE_SHAPES), Int()),
+            "values_with_digits_pct": Num(),
+            "unique_value_pct": Num(),
+        })),
+    }),
+    "ids": Obj({
+        "elements": Int(),
+        "with_id": Int(),
+        "with_id_pct": Num(),
+        "shapes": Map(Enum(ID_SHAPES), Int()),
+        "unstable_shaped": Int(),
+        "unstable_covered_by_config": Int(),
+        "unstable_not_covered": Int(),
+        "stable_shaped_but_rejected_by_config": Int(),
+        "suggested_patterns": List(_pattern, 20),
+    }),
+    "classes": Obj({
+        "distinct": Int(),
+        "shapes": Map(Enum(CLASS_SHAPES), Int()),
+        "unstable_shaped": Int(),
+        "unstable_covered_by_config": Int(),
+        "unstable_not_covered": Int(),
+        "suggested_patterns": List(_pattern, 20),
+    }),
+    "a11y": Obj({
+        "inputs": Obj({"total": Int(), "pct": Map(Enum(INPUT_LABEL_KINDS), Num())}),
+        "buttons": Obj({"total": Int(), "pct": Map(Enum(BUTTON_NAME_KINDS), Num())}),
+    }),
+    "spinners": Obj({
+        "transient_seen": Int(),
+        "signals": Map(Enum(SPINNER_SIGNALS), Int()),
+        "class_words": Map(Enum(SAFE_SPINNER_WORDS), Int()),
+        "still_visible_after_ready": Int(),
+        "suggested_selectors": List(Selector, 20),
+    }),
+    "structure": Obj({k: Int() for k in (
+        "elements_total", "elements_in_shadow", "shadow_roots_open", "custom_elements", "iframes",
+        "iframes_same_origin", "iframes_visible", "framesets", "dialogs", "dialogs_open", "dialogs_modal", "forms")}),
+    "stability": Obj({
+        "pages_reloaded": Int(),
+        "id_persist_pct": Map(Enum(ID_SHAPES), Num()),
+        "class_persist_pct": Map(Enum(CLASS_SHAPES), Num()),
+        "stable_shaped_ids_changed": Int(),
+        "stable_shaped_classes_changed": Int(),
+    }),
+    "pages": List(Obj({
+        "index": Int(),
+        "elements": Int(),
+        "interactive": Int(),
+        "ag_grids": Int(),
+        "with_id_pct": Num(),
+        "test_id_coverage_pct": Num(),
+        "ready_ms": Int(),
+        "ready_blocker": Enum(READY_BLOCKERS),
+        "path_shape": Opt(PathShape),
+    }, optional=["path_shape"]), 500),
+    "path_shapes": List(PathShape, 500),
+}, optional=["path_shapes"])
+
+SUGGESTED_SCHEMA = Obj({
+    "test_id_attrs": List(AttrName, 50),
+    "unstable_id_patterns": List(Regex, 50),
+    "unstable_class_patterns": List(Regex, 50),
+    "spinner_selectors": List(Selector, 50),
+    "grids": Map(GridKey, Obj({"kind": Enum({"ag-grid"}), "api_expr": Opt(ApiExpr)})),
+}, optional=["test_id_attrs", "unstable_id_patterns", "unstable_class_patterns", "spinner_selectors", "grids"])

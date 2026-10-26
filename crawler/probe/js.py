@@ -130,6 +130,10 @@ REASON_JS = r"""
 }
 """
 
+SIG_JS = r"""
+() => ({ n: document.getElementsByTagName('*').length })
+"""
+
 IDCLASS_JS = r"""
 () => {
   const ids = [], classes = new Set();
@@ -187,10 +191,16 @@ COLLECT_JS = r"""
   const SKIP_ATTR = new Set(['style', 'd', 'points', 'transform', 'srcset', 'viewBox', 'class']);
   const ids = []; const classes = {}; let withId = 0, withClass = 0;
   const data = {}; const ik = {}; let interactive = 0;
-  const kinds = new Map();
+  const testRe = new RegExp(cfg.testIdRe, 'i');
+  let iwTest = 0, iwCfg = 0;
   for (const el of all) {
-    const k = ikind(el); kinds.set(el, k);
-    if (k) { inc(ik, k); interactive++; }
+    const k = ikind(el);
+    if (k) {
+      inc(ik, k); interactive++;
+      const names = el.getAttributeNames();
+      if (names.some(n => testRe.test(n))) iwTest++;
+      if (cfg.testIdAttrs.some(n => el.hasAttribute(n))) iwCfg++;
+    }
     if (el.id) { withId++; if (ids.length < 5000) ids.push(el.id); }
     const cl = el.getAttribute('class');
     if (cl) {
@@ -448,7 +458,7 @@ COLLECT_JS = r"""
 
   return {
     elements: all.length, inShadow, shadowOpen, customEls, withId, withClass,
-    ids, classes, data, interactive, interactiveKinds: ik, labels, buttons, frameworks: fw, otherGrids: og, ag,
+    ids, classes, data, interactive, interactiveKinds: ik, interactiveWithTestId: iwTest, interactiveWithCfgTestId: iwCfg, labels, buttons, frameworks: fw, otherGrids: og, ag,
     dialogs: dialogs.length, dialogsOpen: dialogs.filter(vis).length,
     dialogsModal: dialogs.filter(d => d.getAttribute('aria-modal') === 'true' || d.tagName === 'DIALOG').length,
     iframes: iframes.length, iframesSameOrigin: iframeSame, iframesVisible: iframes.filter(vis).length,

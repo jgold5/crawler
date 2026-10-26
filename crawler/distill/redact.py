@@ -8,8 +8,10 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from .vocab import (CSS_PSEUDOS, HTML_TAGS, PLACEHOLDERS, SAFE_ATTRS, SAFE_WORDS, XPATH_AXES, XPATH_FUNCS,
-                    XPATH_OPERATOR_NAMES)
+from crawler.config import DEFAULT_UNSTABLE_CLASS_PATTERNS, DEFAULT_UNSTABLE_ID_PATTERNS
+
+from .vocab import (CSS_PSEUDOS, HTML_TAGS, PLACEHOLDERS, SAFE_ATTRS, SAFE_WORDS, VALUE_SUBTYPES, XPATH_AXES,
+                    XPATH_FUNCS, XPATH_OPERATOR_NAMES)
 
 SENTINEL = "\x00"   # stands for a non-literal operand inside a concatenated string template
 
@@ -148,17 +150,87 @@ class Renamer:
         return bool(self.token_rx.search(w))
 
 
+# ----------------------------------------------------------------------------------------------- values
+_STATE_CLASS = [re.compile(p) for p in DEFAULT_UNSTABLE_CLASS_PATTERNS[6:]]
+_HASHED_CLASS = [re.compile(p) for p in DEFAULT_UNSTABLE_CLASS_PATTERNS[:6]]
+_AUTO_ID = [re.compile(p) for p in DEFAULT_UNSTABLE_ID_PATTERNS]
+_PH = r"<(?:[A-Za-z]+|v:[a-z-]+)>"
+PH_TOKEN_RX = re.compile(_PH)
+_PH_SEQ = re.compile(rf"{_PH}(?: {_PH})*")
+_URL_ATTRS = {"href", "src", "action"}
+
+
+def is_placeholder(s: str) -> bool:
+    m = re.fullmatch(r"<([A-Za-z]+)(?::([a-z-]+))?>", s)
+    if not m:
+        return False
+    if m.group(2) is not None:
+        return m.group(1) == "v" and m.group(2) in VALUE_SUBTYPES
+    return m.group(1) in PLACEHOLDERS
+
+
+def is_placeholder_seq(s: str) -> bool:
+    return bool(_PH_SEQ.fullmatch(s)) and all(is_placeholder(x) for x in PH_TOKEN_RX.findall(s))
+
+
+def class_token_type(t: str) -> str:
+    if any(p.search(t) for p in _STATE_CLASS):
+        return "<v:state-class>"
+    if any(p.search(t) for p in _HASHED_CLASS):
+        return "<v:hashed-class>"
+    return "<v:semantic-class>"
+
+
+def type_value(value: str, attr: str | None) -> str:
+    """Typed placeholder for an attribute value (never echoes the value)."""
+    if SENTINEL in value or re.search(r"%(?:\d+\$)?[sd]", value):
+        return "<param>"
+    if is_placeholder_seq(value):
+        return value
+    v = value.strip()
+    if attr == "class":
+        toks = v.split()
+        return " ".join(class_token_type(t) for t in toks) if toks else "<v:word>"
+    if attr in _URL_ATTRS:
+        return "<url>"
+    if re.fullmatch(r"\d+", v):
+        return "<v:number>"
+    if " " in v or not v:
+        return "<text>"
+    if any(p.search(v) for p in _AUTO_ID):
+        return "<v:auto-id>"
+    if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", v):
+        return "<v:kebab>"
+    if re.fullmatch(r"[a-z]+(?:[A-Z][a-z0-9]*)+", v):
+        return "<v:camel>"
+    return "<v:word>"
+
+
+def text_value(value: str) -> str:
+    if SENTINEL in value or re.search(r"%(?:\d+\$)?[sd]", value):
+        return "<param>"
+    if is_placeholder_seq(value):
+        return value
+    return "<text>"
+
+
+def _attr_ok(name: str, deny) -> bool:
+    if deny and deny(name):
+        return False
+    return name in SAFE_ATTRS or bool(re.fullmatch(r"(?:data|aria)-[a-z0-9]+(?:-[a-z0-9]+)*", name))
+
+
 # ----------------------------------------------------------------------------------------------- xpath
 _XP_TOKEN = re.compile(r"""
  (?P<ws>\s+)
 |(?P<str>'[^']*'|"[^"]*")
+|(?P<ph><(?:param|attr)>)
 |(?P<num>\d+(?:\.\d*)?|\.\d+)
 |(?P<sent>\x00|%(?:\d+\$)?[sd])
 |(?P<var>\$[A-Za-z_][\w.-]*)
 |(?P<op>//|::|\.\.|!=|<=|>=|[/\[\]()@,|=<>+*.-])
 |(?P<name>[A-Za-z_][\w-]*)
 """, re.X)
-_AG_CLASS = re.compile(r"\s*ag-[a-z][a-z-]*\s*")
 
 
 def _xp_tokens(s: str):
@@ -172,14 +244,14 @@ def _xp_tokens(s: str):
     return out
 
 
-def redact_xpath(s: str, stats: Counter | None = None) -> str | None:
-    """XPath with every literal value replaced; tag/attr/function names filtered. None if not an xpath."""
+def redact_xpath(s: str, stats: Counter | None = None, deny=None) -> str | None:
+    """XPath with every literal value replaced by a typed placeholder; names filtered. None if not an xpath."""
     toks = _xp_tokens(s)
     if toks is None:
         return None
     sig = [t for t in toks if t[0] != "ws"]
     out: list[str] = []
-    prev: list[tuple[str, str]] = []   # significant tokens so far (original text)
+    prev: list[tuple[str, str]] = []
     prev_is_op: list[bool] = []
     depth_sq = 0
     for kind, text in toks:
@@ -195,16 +267,18 @@ def redact_xpath(s: str, stats: Counter | None = None) -> str | None:
         is_op = False
         if kind == "str":
             ctx, attr = _xp_literal_ctx(prev)
-            if ctx == "v" and attr == "class" and _AG_CLASS.fullmatch(text[1:-1]):
-                out.append("'" + text[1:-1].strip() + "'")
-            else:
-                out.append("'<v>'" if ctx == "v" else "'<text>'")
-                if stats is not None:
-                    stats["xpath values"] += 1
+            inner = text[1:-1]
+            out.append("'" + (type_value(inner, attr) if ctx == "v" else text_value(inner)) + "'")
+            if stats is not None and not is_placeholder_seq(inner):
+                stats["xpath/css values"] += 1
+        elif kind == "ph":
+            if text == "<attr>" and not (p and p[1] == "@"):
+                return None
+            out.append(text)
         elif kind == "num":
             out.append(text if re.fullmatch(r"\d{1,2}", text) else "1")
         elif kind in ("sent", "var"):
-            out.append("$p")
+            out.append("<param>")
         elif kind == "op":
             if text == "[":
                 depth_sq += 1
@@ -217,10 +291,10 @@ def redact_xpath(s: str, stats: Counter | None = None) -> str | None:
             out.append(text)
         else:  # name
             if p and p[1] == "@":
-                if text in SAFE_ATTRS or re.fullmatch(r"aria-[a-z]+", text):
+                if _attr_ok(text, deny):
                     out.append(text)
                 else:
-                    out.append("data-custom")
+                    out.append("<attr>")
                     if stats is not None:
                         stats["custom attribute names"] += 1
             elif operator_ctx:
@@ -276,11 +350,12 @@ def looks_like_xpath(s: str) -> bool:
 
 # ----------------------------------------------------------------------------------------------- css
 _CSS_IDENT = r"-?[A-Za-z_][\w-]*"
+_CSS_VAL = rf"{_CSS_IDENT}|{_PH}|\x00"
 _CSS_TOKEN = re.compile(rf"""
  (?P<ws>\s+)
-|(?P<hash>\#(?:[\w-]+|<v>|\x00))
-|(?P<cls>\.(?:{_CSS_IDENT}|<v>|\x00))
-|(?P<attr>\[\s*(?P<an>{_CSS_IDENT})\s*(?:(?P<aop>[~|^$*]?=)\s*(?P<av>'[^']*'|"[^"]*"|[^\]\s]+)\s*(?:[iIsS]\s*)?)?\])
+|(?P<hash>\#(?:[\w-]+|{_PH}|\x00))
+|(?P<cls>\.(?:{_CSS_VAL}))
+|(?P<attr>\[\s*(?P<an>{_CSS_IDENT}|<attr>)\s*(?:(?P<aop>[~|^$*]?=)\s*(?P<av>'[^']*'|"[^"]*"|[^\]\s]+)\s*(?:[iIsS]\s*)?)?\])
 |(?P<pseudo>::?[A-Za-z-]+)
 |(?P<comb>[>+~,])
 |(?P<star>\*)
@@ -301,7 +376,11 @@ def _css_args(s: str, start: int) -> int:
     return -1
 
 
-def redact_css(s: str, strict: bool, stats: Counter | None = None) -> str | None:
+def _unq(v: str) -> str:
+    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"" else v
+
+
+def redact_css(s: str, strict: bool, stats: Counter | None = None, deny=None) -> str | None:
     pos, out = 0, []
     selectorish = False
     s = s.strip()
@@ -312,27 +391,27 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None) -> str | None
         if not m:
             return None
         kind = m.lastgroup
-        if kind == "an":
+        if kind in ("an", "aop", "av"):
             kind = "attr"
         text = m.group(0)
         pos = m.end()
         if kind == "ws":
             out.append(" ")
         elif kind == "hash":
-            out.append("#<v>")
+            out.append("#" + type_value(text[1:], "id"))
             selectorish = True
         elif kind == "cls":
-            name = text[1:]
-            out.append("." + name if re.fullmatch(r"ag-[a-z][a-z-]*", name) else ".<v>")
+            v = text[1:]
+            out.append("." + (v if is_placeholder(v) else "<param>" if v == SENTINEL else class_token_type(v)))
             selectorish = True
         elif kind == "attr":
             an = m.group("an")
-            if not (an in SAFE_ATTRS or re.fullmatch(r"aria-[a-z]+", an)):
-                an = "data-custom"
+            if an != "<attr>" and not _attr_ok(an, deny):
+                an = "<attr>"
                 if stats is not None:
                     stats["custom attribute names"] += 1
             if m.group("aop"):
-                out.append(f"[{an}{m.group('aop')}'<v>']")
+                out.append(f"[{an}{m.group('aop')}'{type_value(_unq(m.group('av')), an)}']")
             else:
                 out.append(f"[{an}]")
             selectorish = True
@@ -348,7 +427,7 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None) -> str | None
                 arg = s[pos + 1:end]
                 pos = end + 1
                 if name in ("not", "has", "is", "where"):
-                    inner = redact_css(arg, False, stats)
+                    inner = redact_css(arg, False, stats, deny)
                     if inner is None:
                         return None
                     out.append(f"({inner})")
@@ -365,9 +444,7 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None) -> str | None
             out.append(text)
             if text == ">":
                 selectorish = True
-        elif kind == "star":
-            out.append("*")
-        elif kind == "sent":
+        elif kind in ("star", "sent"):
             out.append("*")
         else:  # ident = tag name
             if text in HTML_TAGS:
@@ -384,32 +461,31 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None) -> str | None
 
 
 # ----------------------------------------------------------------------------------------------- literals
-PLACEHOLDER_RX = re.compile(r"<([A-Za-z]+)>")
 _NUM_RX = re.compile(r"\s*[-+]?\d[\d,._]*\s*")
 _HINT_VALUE = {"id", "name", "className", "tagName", "value"}
 
 
-def is_placeholder(s: str) -> bool:
-    m = PLACEHOLDER_RX.fullmatch(s)
-    return bool(m and m.group(1) in PLACEHOLDERS)
+def classify_literal(s: str) -> str:
+    """Unhinted kind of a string value: xpath|css|url|email|number|secret|path|text|empty|placeholder."""
+    return redact_literal(s)[1]
 
 
-def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None) -> tuple[str, str]:
+def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None, deny=None) -> tuple[str, str]:
     """Return (replacement, kind) for a Java string literal value (SENTINEL marks concatenated params)."""
     if s == "":
         return "", "empty"
-    if is_placeholder(s):
+    if is_placeholder_seq(s):
         return s, "placeholder"
     if hint == "xpath":
-        r = redact_xpath(s, stats)
+        r = redact_xpath(s, stats, deny)
         return (r, "xpath") if r is not None else ("<xpath>", "xpath")
     if hint == "css":
-        r = redact_css(s, False, stats)
+        r = redact_css(s, False, stats, deny)
         return (r, "css") if r is not None else ("<css>", "css")
-    if hint in _HINT_VALUE or hint == "value":
-        return "<v>", "value"
+    if hint in _HINT_VALUE:
+        return type_value(s, "class" if hint == "className" else hint), "value"
     if hint == "text":
-        return "<text>", "text"
+        return text_value(s), "text"
     plain = s.replace(SENTINEL, " ")
     if secret_shapes(plain):
         return "<secret>", "secret"
@@ -423,12 +499,12 @@ def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None
         if re.fullmatch(r"/[\w\-./{}%:\x00]*", s) and not all(
                 seg in HTML_TAGS or seg == "" for seg in re.split(r"/+", s.strip("/"))):
             return "<path>", "path"
-        r = redact_xpath(s, stats)
+        r = redact_xpath(s, stats, deny)
         if r is not None:
             return r, "xpath"
         return "<xpath>", "xpath"
-    r = redact_css(s, True, stats)
-    if r is not None and SENTINEL not in s or (r is not None and r != "*"):
+    r = redact_css(s, True, stats, deny)
+    if r is not None:
         return r, "css"
     if looks_secret_token(plain):
         return "<secret>", "secret"
@@ -437,7 +513,7 @@ def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None
 
 def literal_is_clean(s: str) -> bool:
     """True if s (a string literal in the bundle) is a fixed point of some literal redactor."""
-    if s == "" or is_placeholder(s):
+    if s == "" or is_placeholder_seq(s):
         return True
     for hint in (None, "xpath", "css"):
         if redact_literal(s, hint)[0] == s:
@@ -495,7 +571,7 @@ class PhraseRedactor:
                     out.append("{" + self.ph_inner(inner) + "}")
             elif kind == "q":
                 qc, inner = tok[0], tok[1:-1]
-                if PLACEHOLDER_RX.fullmatch(inner) or re.fullmatch(r"<[A-Za-z][\w -]*>", inner):
+                if is_placeholder(inner) or re.fullmatch(r"<[A-Za-z][\w -]*>", inner):
                     out.append(qc + self._ph(inner) + qc)
                 elif re.fullmatch(r"\{[^{}\s]*\}", inner):
                     out.append(qc + self(inner, mode) + qc)

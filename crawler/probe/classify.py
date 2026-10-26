@@ -30,6 +30,8 @@ def is_hash_segment(seg: str) -> bool:
     letters = len(seg) - digits
     if letters == 0:
         return False
+    if re.fullmatch(r"[A-Za-z]+\d+", seg) and not re.search(r"[a-z][A-Z]", seg):
+        return False  # word + counter (ember482, item12), not a hash
     if digits >= 2:
         # digits interleaved with letters (not just a trailing counter like "item12")
         return bool(re.search(r"\d[A-Za-z]", seg)) or len(seg) >= 8
@@ -253,6 +255,9 @@ def generalize(s: str, denylist: Iterable[str] = ()) -> str | None:
     lit_words: list[str] = []
     lit_len = 0
     for p in parts:
+        if re.fullmatch(r"[-_.:$]+", p):
+            lit_len += len(p)
+            continue
         if p == "\0" or not p.isalpha() or is_hash_segment(p):
             # alnum like ember482: letters part may still be literal
             m = re.fullmatch(r"([A-Za-z]+)(\d+)", p) if p != "\0" else None
@@ -260,9 +265,6 @@ def generalize(s: str, denylist: Iterable[str] = ()) -> str | None:
                 lit_words.append(m.group(1))
                 lit_len += len(m.group(1))
             break
-        if re.fullmatch(r"[-_.:$]+", p):
-            lit_len += len(p)
-            continue
         lit_words.append(p)
         lit_len += len(p)
     literal_ok = bool(lit_words) and lit_len <= _LIT_MAX and all(

@@ -9,7 +9,9 @@ def _words(s: str) -> frozenset[str]:
 # Placeholders the redactors emit inside string literals / step text.
 PLACEHOLDERS = _words("""
 v text int number url email path xpath css secret string Name value doc p regex date json html selector name
+attr param
 """)
+VALUE_SUBTYPES = _words("auto-id hashed-class state-class semantic-class number word kebab camel")
 
 HTML_TAGS = _words("""
 a abbr address area article aside audio b bdi bdo blockquote body br button canvas caption cite code col colgroup
@@ -17,7 +19,7 @@ data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption f
 h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu
 meta meter nav noscript object ol optgroup option output p param picture pre progress q s samp section select
 slot small source span strong sub summary sup svg table tbody td template textarea tfoot th thead time title tr
-track u ul var video wbr path g use rect circle polygon line text tspan
+track u ul var video wbr path g use rect circle polygon line
 """)
 
 XPATH_FUNCS = _words("""
