@@ -597,6 +597,16 @@
       }
     }
 
+    // 9b: document-order index on the best non-unique own predicates (fragile, but beats a path)
+    var strongCount = 0;
+    out.forEach(function (c) { if (c.score >= 45) strongCount++; });
+    if (strongCount < 2) {
+      preds.filter(function (p) { return p.w >= 60; }).slice(0, 2).forEach(function (pr) {
+        var xs = '//' + t + '[' + pr.p + ']', lst = all(xs), k = lst.indexOf(el);
+        if (k >= 0 && lst.length > 1 && lst.length <= 20) add('(' + xs + ')[' + (k + 1) + ']', 'indexed', 35);
+      });
+    }
+
     // 10: positional fallback (always produce one)
     var pos = positional(el, anchors[0]);
     if (pos) add(pos, 'positional', 10);
