@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js"></script>
+<script src="hostile.js"></script>
+</head>
+<body>
+<main class="page" id="main"></main>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile, I = H.icons;
+  if (!H) return;
+  H.styles({
+    'Dashboard.header': 'display:flex;justify-content:space-between;align-items:flex-end;gap:16px;',
+    'Search.root': 'display:flex;align-items:center;gap:6px;border:1px solid #c4cad6;border-radius:6px;padding:0 8px;background:#fff;',
+    'Search.input': 'border:none;outline:none;min-width:220px;',
+    'Card.meta': 'color:#5a6478;font-size:12px;',
+    'Activity.item': 'padding:6px 0;border-bottom:1px solid #eef0f4;'
+  });
+  var main = document.getElementById('main');
+  main.id = H.newId();
+
+  var NAMES = ['Alex', 'Priya', 'Mateo', 'Siobhán', 'Wei', 'Fatima', 'Jordan', 'Ngozi', 'Lukas', 'Aiko'];
+  var who = H.pick(NAMES);
+  var notifications = 2 + H.rnd(240);
+  var now = new Date();
+  var stamp = now.toLocaleDateString('en-US') + ' ' + now.toLocaleTimeString('en-GB');
+
+  function viewBtn() {
+    return '<div class="{{c:Card.actions}}"><button type="button" class="{{c:Button.text}}" id="{{rid}}">' + I.eye +
+      '<span class="{{c:Button.label}}">View details</span></button></div>';
+  }
+
+  H.load(main, function (c) {
+    c.appendChild(H.frag(
+      '<div class="{{c:Dashboard.header}}" {{v}}>' +
+      ' <div class="{{c:Dashboard.greeting}}">' +
+      '  <h1 class="{{c:Typography.h1}}" id="{{rid}}">Welcome back, ' + H.esc(who) + '</h1>' +
+      '  <p class="{{c:Dashboard.sub}}"><span>You have ' + notifications + ' notifications</span> · <span class="{{c:Dashboard.stamp}}">Last updated ' + stamp + '</span></p>' +
+      ' </div>' +
+      ' <div class="{{c:Search.root}}">' + I.search +
+      '  <input type="text" role="searchbox" aria-label="Search" placeholder="Search…" class="{{c:Search.input}}" id="{{rid}}" autocomplete="off">' +
+      ' </div>' +
+      '</div>' +
+      '<div role="tablist" aria-label="Dashboard sections" class="{{c:Tabs.list}}">' +
+      ' <button type="button" role="tab" aria-selected="true" id="{{id:tab1}}" aria-controls="{{id:panel1}}" class="{{c:Tabs.tab}}"><span>Overview</span></button>' +
+      ' <button type="button" role="tab" aria-selected="false" tabindex="-1" id="{{id:tab2}}" aria-controls="{{id:panel2}}" class="{{c:Tabs.tab}}"><span>Activity</span></button>' +
+      ' <button type="button" role="tab" aria-selected="false" tabindex="-1" id="{{id:tab3}}" aria-controls="{{id:panel3}}" class="{{c:Tabs.tab}}"><span>Reports</span></button>' +
+      '</div>' +
+      // Overview panel: cards with duplicate "View details" buttons
+      '<div role="tabpanel" id="{{id:panel1}}" aria-labelledby="{{id:tab1}}" class="{{c:Tabs.panel}}">' +
+      ' <div class="cards {{c:Grid.container}}">' +
+      '  <div class="card {{c:Card.root}}" data-testid="card-orders"><div class="{{c:Card.header}}">' +
+      '    <h3 class="{{c:Card.title}}">Recent orders</h3><span class="{{c:Card.meta}}">' + (3 + H.rnd(40)) + ' new today</span></div>' +
+      '   <div class="{{c:Card.body}}"><div><div>Latest: <span>A-' + (100 + H.rnd(900)) + '</span></div></div></div>' + viewBtn() +
+      '  </div>' +
+      '  <section class="card {{c:Card.root}}" aria-labelledby="{{id:invH}}"><div class="{{c:Card.header}}">' +
+      '    <h3 class="{{c:Card.title}}" id="{{id:invH}}">Open invoices</h3><span class="{{c:Card.meta}}">$' + (1000 + H.rnd(90000)).toLocaleString('en-US') + ' due</span></div>' +
+      '   <div class="{{c:Card.body}}"><div><div>Oldest overdue: <span>' + (1 + H.rnd(60)) + ' days</span></div></div></div>' + viewBtn() +
+      '  </section>' +
+      '  <div class="card {{c:Card.root}}"><div class="{{c:Card.header}}">' +
+      '    <h3 class="{{c:Card.title}}">Top customer</h3><span class="{{c:Card.meta}}">this month</span></div>' +
+      '   <div class="{{c:Card.body}}"><div><div class="{{c:Customer.name}}">O\'Brien "Bob"</div><div class="{{c:Customer.meta}}">' + (5 + H.rnd(90)) + ' orders</div></div>' +
+      '    <button type="button" class="{{c:Button.text}}" id="{{rid}}">' + I.mail + '<span>Email O\'Brien "Bob"</span></button></div>' + viewBtn() +
+      '  </div>' +
+      ' </div>' +
+      '</div>' +
+      // Activity panel (kept in DOM, hidden)
+      '<div role="tabpanel" id="{{id:panel2}}" aria-labelledby="{{id:tab2}}" hidden class="{{c:Tabs.panel}}">' +
+      ' <ul class="{{c:Activity.list}}">' +
+      [1, 2, 3, 4].map(function (i) {
+        var t = new Date(now.getTime() - (i * 7 + H.rnd(7)) * 60000);
+        return '<li class="{{c:Activity.item}}"><span>' + H.pick(['Order shipped', 'Invoice paid', 'Customer added', 'Refund issued']) +
+          '</span> <time datetime="' + t.toISOString() + '">' + t.toLocaleTimeString('en-GB') + '</time></li>';
+      }).join('') +
+      ' </ul>' +
+      ' <button type="button" class="{{c:Button.text}}" id="{{rid}}"><span>Mark all as read</span></button>' +
+      '</div>' +
+      // Reports panel
+      '<div role="tabpanel" id="{{id:panel3}}" aria-labelledby="{{id:tab3}}" hidden class="{{c:Tabs.panel}}">' +
+      ' <div class="panel {{c:Panel.root}}"><h2 class="{{c:Typography.h2}}">Reports</h2>' +
+      '  <div class="form-row {{c:FormRow.root}}"><label for="{{id:period}}">Period</label>' +
+      '   <select id="{{id:period}}" class="{{c:Select.root}}"><option>Last 7 days</option><option>Last 30 days</option><option>This quarter</option></select></div>' +
+      '  <button type="button" class="btn-primary {{c:Button.primary}}" data-testid="generate-report" id="{{rid}}">' + I.arrow + '<span>Generate report</span></button>' +
+      '  <p class="{{c:Reports.status}}" aria-live="polite"></p>' +
+      ' </div>' +
+      '</div>'));
+
+    // Tabs
+    var tabs = Array.prototype.slice.call(c.querySelectorAll('[role=tab]'));
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+          t.tabIndex = on ? 0 : -1;
+          document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+        });
+      });
+    });
+
+    // Search filters cards by text
+    var search = c.querySelector('[role=searchbox]');
+    search.addEventListener('input', function () {
+      var q = search.value.trim().toLowerCase();
+      c.querySelectorAll('.card').forEach(function (card) {
+        card.hidden = q !== '' && card.textContent.toLowerCase().indexOf(q) === -1;
+      });
+    });
+
+    // View details -> toast naming the card
+    c.querySelectorAll('.card').forEach(function (card) {
+      var btns = card.querySelectorAll('button');
+      btns[btns.length - 1].addEventListener('click', function () {
+        H.toast('Opening ' + card.querySelector('h3').textContent.replace(/ /g, ' '));
+      });
+    });
+
+    var gen = c.querySelector('[data-testid=generate-report]');
+    gen.addEventListener('click', function () {
+      var status = gen.parentNode.querySelector('[aria-live]');
+      gen.setAttribute('aria-busy', 'true');
+      status.textContent = 'Generating…';
+      setTimeout(function () {
+        gen.removeAttribute('aria-busy');
+        status.textContent = 'Report ready (' + (10 + H.rnd(500)) + ' rows)';
+      }, 300 + H.rnd(400));
+    });
+  });
+})();
+</script>
+</body>
+</html>

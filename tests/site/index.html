@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Loading…</title>
+<script>
+(function () {
+  var authed = false;
+  try { authed = localStorage.getItem('auth') === '1'; } catch (e) { authed = false; }
+  location.replace(authed ? 'dashboard.html' : 'login.html');
+})();
+</script>
+</head>
+<body></body>
+</html>

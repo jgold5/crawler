@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Orders</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="app.js"></script>
+  <script src="vendor/ag-grid-community.min.js"></script>
+  <script src="orders-data.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; }
+    main { padding: 12px 16px; }
+    .section-head { display: flex; align-items: baseline; gap: 12px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 6px 0; font-size: 13px; color: #555; }
+    .grid-host { width: 100%; }
+    .btn-sm { font-size: 12px; padding: 1px 8px; margin-right: 4px; }
+    .order-link { color: #0645ad; }
+  </style>
+</head>
+<body>
+<main id="content">
+  <section class="panel">
+    <div class="section-head">
+      <h2>Orders</h2>
+      <span class="toolbar"><span id="ordersCount" class="count"></span></span>
+    </div>
+    <div class="toolbar">
+      <button type="button" id="btn-1720" class="tb-btn">Export</button>
+      <span id="ordersMessage" role="status"></span>
+    </div>
+    <!-- aria-label on the grid host; no getRowId on this grid (row-ids are 0..n, meaningless) -->
+    <div id="ordersGrid" class="grid-host" aria-label="Orders" style="height: 480px"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Customers</h2>
+    <div class="toolbar">Accounts with open orders</div>
+    <!-- hash-like generated id: must never be used in a locator -->
+    <div id="grid-8f3a2c19" class="grid-host" style="height: 280px"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var STATUSES = ["Open", "Pending", "Shipped", "Delivered", "Cancelled"];
+  var params = new URLSearchParams(location.search);
+  var nRows = parseInt(params.get("rows") || "1000", 10);
+
+  function money(p) { return p.value == null ? "" : "$" + Number(p.value).toFixed(2); }
+
+  function OrderLinkRenderer() {}
+  OrderLinkRenderer.prototype.init = function (p) {
+    this.eGui = document.createElement("a");
+    this.eGui.className = "order-link";
+    this.eGui.href = "#/orders/" + encodeURIComponent(p.value);
+    this.eGui.textContent = p.value;
+  };
+  OrderLinkRenderer.prototype.getGui = function () { return this.eGui; };
+  OrderLinkRenderer.prototype.refresh = function () { return false; };
+
+  function ActionsRenderer() {}
+  ActionsRenderer.prototype.init = function (p) {
+    var span = document.createElement("span");
+    var edit = document.createElement("button");
+    edit.type = "button"; edit.className = "btn-sm"; edit.textContent = "Edit";
+    edit.addEventListener("click", function () {
+      document.getElementById("ordersMessage").textContent = "Editing " + p.data.orderId;
+    });
+    var del = document.createElement("button");
+    del.type = "button"; del.className = "btn-sm"; del.textContent = "Delete";
+    del.addEventListener("click", function () {
+      document.getElementById("ordersMessage").textContent = "Deleted " + p.data.orderId;
+      p.api.applyTransaction({ remove: [p.data] });
+    });
+    span.appendChild(edit); span.appendChild(del);
+    this.eGui = span;
+  };
+  ActionsRenderer.prototype.getGui = function () { return this.eGui; };
+  ActionsRenderer.prototype.refresh = function () { return false; };
+
+  var plain = function (field, headerName, extra) {
+    var c = { field: field, headerName: headerName, width: 140 };
+    for (var k in extra || {}) c[k] = extra[k];
+    return c;
+  };
+
+  var orderCols = [
+    { field: "orderId", headerName: "Order ID", pinned: "left", width: 130, lockPinned: true,
+      cellRenderer: OrderLinkRenderer, filter: "agTextColumnFilter", floatingFilter: true },
+    { headerName: "Details", children: [
+      plain("customer", "Customer", { filter: "agTextColumnFilter", floatingFilter: true }),
+      plain("quantity", "Quantity", { editable: true, cellDataType: "number", cellEditor: "agNumberCellEditor", width: 110 }),
+      plain("status", "Status", { editable: true, cellEditor: "agSelectCellEditor",
+        cellEditorParams: { values: STATUSES }, filter: "agTextColumnFilter", floatingFilter: true }),
+      plain("priority", "Priority", { editable: true, cellDataType: "boolean", width: 100 }),
+      plain("notes", "Notes", { editable: true, cellEditor: "agLargeTextCellEditor", cellEditorPopup: true,
+        cellEditorParams: { maxLength: 500, rows: 6, cols: 40 }, width: 180 })
+    ]},
+    { headerName: "Product", children: [
+      plain("product", "Product"),
+      plain("sku", "SKU"),
+      plain("category", "Category"),
+      plain("unitPrice", "Unit Price", { valueFormatter: money, cellDataType: "number" }),
+      { colId: "total", headerName: "Total", width: 120,
+        valueGetter: function (p) { return p.data ? Math.round(p.data.quantity * p.data.unitPrice * 100) / 100 : null; },
+        valueFormatter: money },
+      plain("currency", "Currency")
+    ]},
+    { headerName: "Fulfillment", children: [
+      plain("orderDate", "Order Date"),
+      plain("shipDate", "Ship Date"),
+      plain("carrier", "Carrier"),
+      plain("tracking", "Tracking #"),
+      plain("warehouse", "Warehouse")
+    ]},
+    plain("salesRep", "Sales Rep"),
+    plain("channel", "Channel"),
+    plain("discount", "Discount"),
+    plain("tax", "Tax"),
+    plain("payment", "Payment"),
+    plain("terms", "Terms"),
+    plain("createdBy", "Created By"),
+    plain("updatedAt", "Updated At"),
+    plain("region", "Region"),
+    { colId: "actions", headerName: "Actions", pinned: "right", width: 150, lockPinned: true,
+      sortable: false, filter: false, cellRenderer: ActionsRenderer }
+  ];
+
+  var ordersApi = agGrid.createGrid(document.getElementById("ordersGrid"), {
+    columnDefs: orderCols,
+    defaultColDef: { sortable: true, resizable: true },
+    // NOTE: no getRowId on purpose.
+    rowData: undefined,          // loading overlay until data arrives
+    loading: true,
+    animateRows: true,
+    stopEditingWhenCellsLoseFocus: true
+  });
+  window.ordersGridApi = ordersApi;
+
+  var customersApi = agGrid.createGrid(document.getElementById("grid-8f3a2c19"), {
+    columnDefs: [
+      { field: "customerId", headerName: "Customer ID", width: 130 },
+      { field: "name", headerName: "Name", width: 180 },
+      { field: "orderId", headerName: "Last Order", width: 130 },
+      { field: "quantity", headerName: "Open Qty", width: 110, editable: true, cellDataType: "number" },
+      { field: "status", headerName: "Status", width: 130 },
+      { field: "country", headerName: "Country", width: 110 },
+      { field: "tier", headerName: "Tier", width: 110 }
+    ],
+    getRowId: function (p) { return p.data.customerId; },
+    rowData: undefined,
+    loading: true
+  });
+
+  // Data arrives asynchronously, like an XHR to a slow backend.
+  function delay() { return 300 + Math.floor(Math.random() * 500); }
+  setTimeout(function () {
+    var rows = window.fixtureData.makeOrders(nRows);
+    ordersApi.setGridOption("rowData", rows);
+    ordersApi.setGridOption("loading", false);
+    document.getElementById("ordersCount").textContent = rows.length + " orders";
+  }, delay());
+  setTimeout(function () {
+    customersApi.setGridOption("rowData", window.fixtureData.makeCustomers(60));
+    customersApi.setGridOption("loading", false);
+  }, delay());
+})();
+</script>
+</body>
+</html>

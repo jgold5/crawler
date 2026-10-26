@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js"></script>
+<script src="hostile.js"></script>
+</head>
+<body>
+<main class="page" id="main"></main>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile, I = H.icons;
+  H.styles({
+    'Settings.header': 'margin-bottom:16px;',
+    'Settings.meta': 'color:#5a6478;font-size:12px;',
+    'KeyRow.root': 'display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #eef0f4;'
+  });
+  var main = document.getElementById('main');
+  main.id = H.newId();
+
+  // App frame renders first (after a short "route" load), then each section loads on its own.
+  H.load(main, function (c) {
+    var last = new Date(Date.now() - H.rnd(86400000));
+    c.appendChild(H.frag(
+      '<div class="{{c:Settings.header}}" {{v}}><h1 class="{{c:Typography.h1}}">Settings</h1>' +
+      ' <p class="{{c:Settings.meta}}">Last sign-in ' + last.toLocaleString('en-US') + ' from 10.' + H.rnd(255) + '.' + H.rnd(255) + '.' + H.rnd(255) + '</p></div>' +
+      '<div class="{{c:Settings.body}}">' +
+      ' <section class="panel {{c:Panel.root}}" data-slot="profile"></section>' +
+      ' <section class="panel {{c:Panel.root}}" data-testid="security-section" data-slot="security"></section>' +
+      ' <section class="panel {{c:Panel.root}}" data-slot="keys"></section>' +
+      ' <section class="panel {{c:Panel.root}}" data-slot="danger"></section>' +
+      '</div>'));
+    var slots = {};
+    c.querySelectorAll('[data-slot]').forEach(function (s) { slots[s.getAttribute('data-slot')] = s; s.removeAttribute('data-slot'); });
+    H.load(slots.profile, renderProfile);
+    H.load(slots.security, renderSecurity);
+    H.load(slots.keys, renderKeys);
+    H.load(slots.danger, renderDanger);
+  }, 150, 400);
+
+  function saveButton() {
+    return '<div class="{{c:Form.actions}}"><button type="button" class="btn-primary {{c:Button.primary}}" id="{{rid}}">' + I.save +
+      '<span class="{{c:Button.label}}">Save</span></button></div>';
+  }
+
+  function wireSave(section) {
+    var btn = section.querySelector('.btn-primary');
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      setTimeout(function () {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        H.toast('Saved');
+      }, 200 + H.rnd(300));
+    });
+  }
+
+  var ZONES = ['UTC', 'Europe/Dublin', 'America/New_York', 'Asia/Kolkata (UTC+05:30)', 'Australia/Sydney'];
+
+  function renderProfile(s) {
+    s.appendChild(H.frag(
+      '<h2 class="{{c:Typography.h2}}" id="{{rid}}">Profile</h2>' +
+      '<div class="{{c:Form.root}}">' +
+      // wrapping label
+      ' <div class="form-row {{c:FormRow.root}}"><label class="{{c:Field.label}}"><span class="{{c:Field.text}}">Display name</span>' +
+      '  <div class="{{c:InputBase.root}}"><input type="text" class="{{c:InputBase.input}}" id="{{rid}}" value="Jordan Smith"></div></label></div>' +
+      // NO label: preceding span only
+      ' <div class="form-row {{c:FormRow.root}}"><span class="{{c:Field.text}}">Nickname</span>' +
+      '  <div class="{{c:InputBase.root}}"><div class="{{c:InputBase.inner}}"><input type="text" class="{{c:InputBase.input}}" id="{{rid}}"></div></div></div>' +
+      // select with label for
+      ' <div class="form-row {{c:FormRow.root}}"><label for="{{id:country}}" class="{{c:Field.label}}">Country</label>' +
+      '  <select id="{{id:country}}" class="{{c:Select.root}}">' +
+      '   <option value="">Choose…</option><option value="us">United States</option><option value="ie" selected>Ireland</option>' +
+      '   <option value="ci">Côte d’Ivoire</option><option value="ba">Bosnia &amp; Herzegovina</option><option value="ca">Canada</option>' +
+      '  </select></div>' +
+      // custom combobox, listbox portaled to <body> on open
+      ' <div class="form-row {{c:FormRow.root}}"><span id="{{id:tzLabel}}" class="{{c:Field.text}}">Timezone</span>' +
+      '  <div role="combobox" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="{{id:tzLabel}}" class="{{c:Combobox.root}}" id="{{rid}}">' +
+      '   <span class="{{c:Combobox.value}}">UTC</span>' + I.chevron + '</div></div>' +
+      // wrapping label checkbox
+      ' <div class="form-row inline {{c:FormRow.root}}"><label class="{{c:Field.check}}"><input type="checkbox" class="{{c:Checkbox.input}}" id="{{rid}}"> <span>Subscribe to newsletter</span></label></div>' +
+      saveButton() +
+      '</div>'));
+    wireSave(s);
+    wireCombobox(s.querySelector('[role=combobox]'));
+  }
+
+  function wireCombobox(cb) {
+    var popper = null;
+    function close() {
+      if (popper) { popper.remove(); popper = null; }
+      cb.setAttribute('aria-expanded', 'false');
+      cb.removeAttribute('aria-controls');
+    }
+    function open() {
+      var current = cb.querySelector('span').textContent;
+      popper = H.frag('<ul role="listbox" id="{{id:lb}}" class="listbox-popper {{c:Popper.root}}" {{v}}>' +
+        ZONES.map(function (z) {
+          return '<li role="option" id="{{rid}}" class="{{c:Option.root}}" aria-selected="' + (z === current) + '">' + H.esc(z) + '</li>';
+        }).join('') + '</ul>').firstElementChild;
+      var r = cb.getBoundingClientRect();
+      popper.style.left = (r.left + window.scrollX) + 'px';
+      popper.style.top = (r.bottom + window.scrollY + 4) + 'px';
+      document.body.appendChild(popper);
+      cb.setAttribute('aria-expanded', 'true');
+      cb.setAttribute('aria-controls', popper.id);
+      popper.addEventListener('click', function (e) {
+        var opt = e.target.closest('[role=option]');
+        if (!opt) return;
+        cb.querySelector('span').textContent = opt.textContent;
+        close();
+      });
+    }
+    cb.addEventListener('click', function (e) { e.stopPropagation(); if (popper) close(); else open(); });
+    cb.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); if (!popper) open(); }
+      if (e.key === 'Escape') close();
+    });
+    document.addEventListener('click', function (e) { if (popper && !popper.contains(e.target)) close(); });
+  }
+
+  function renderSecurity(s) {
+    s.appendChild(H.frag(
+      '<h2 class="{{c:Typography.h2}}" id="{{rid}}">Security</h2>' +
+      '<div class="{{c:Form.root}}">' +
+      ' <div class="form-row {{c:FormRow.root}}"><div class="{{c:InputBase.root}}">' +
+      '  <input type="password" aria-label="Current password" class="{{c:InputBase.input}}" id="{{rid}}" autocomplete="current-password"></div></div>' +
+      ' <div class="form-row {{c:FormRow.root}}"><span id="{{id:npl}}" class="{{c:Field.text}}">New password</span>' +
+      '  <div class="{{c:InputBase.root}}"><div class="{{c:InputBase.inner}}"><input type="password" aria-labelledby="{{id:npl}}" class="{{c:InputBase.input}}" id="{{rid}}" autocomplete="new-password"></div></div></div>' +
+      saveButton() +
+      '</div>'));
+    wireSave(s);
+  }
+
+  function renderKeys(s) {
+    s.appendChild(H.frag(
+      '<h2 class="{{c:Typography.h2}}">API keys</h2>' +
+      '<div class="{{c:KeyRow.root}}"><div><span>Production key</span> <code class="{{c:KeyRow.mask}}">••••' + H.rs(4, '0123456789ABCDEF') + '</code></div>' +
+      ' <button type="button" class="{{c:Button.text}}" id="{{rid}}">' + I.trash + '<span>Delete</span></button></div>'));
+    s.querySelector('button').addEventListener('click', function () { H.toast('Key revoked'); });
+  }
+
+  function renderDanger(s) {
+    s.appendChild(H.frag(
+      '<h2 class="{{c:Typography.h2}}">Danger zone</h2>' +
+      '<p>Deleting your account removes all data. This can’t be undone.</p>' +
+      '<button type="button" class="btn-danger {{c:Button.danger}}" id="{{rid}}">' + I.trash + '<span>Delete account</span></button>'));
+    var opener = s.querySelector('button');
+    opener.addEventListener('click', function () { openDialog(opener); });
+  }
+
+  function openDialog(opener) {
+    var backdrop = H.frag(
+      '<div class="backdrop {{c:Modal.backdrop}}" id="{{rid}}" {{v}}>' +
+      ' <div role="dialog" aria-modal="true" aria-labelledby="{{id:dt}}" aria-describedby="{{id:dd}}" class="{{c:Dialog.paper}}" id="{{rid}}">' +
+      '  <h2 id="{{id:dt}}" class="{{c:Dialog.title}}">Delete account?</h2>' +
+      '  <p id="{{id:dd}}" class="{{c:Dialog.content}}">Your account and all associated data will be permanently removed.</p>' +
+      '  <div class="dialog-actions {{c:Dialog.actions}}">' +
+      '   <button type="button" class="{{c:Button.text}}" id="{{rid}}"><span>Cancel</span></button>' +
+      '   <button type="button" class="btn-danger {{c:Button.danger}}" id="{{rid}}">' + I.trash + '<span>Delete</span></button>' +
+      '  </div>' +
+      ' </div>' +
+      '</div>').firstElementChild;
+    H.sprinkle(backdrop);
+    document.body.appendChild(backdrop);
+    var btns = backdrop.querySelectorAll('.dialog-actions button');
+    function close() { backdrop.remove(); opener.focus(); }
+    btns[0].addEventListener('click', close);
+    btns[1].addEventListener('click', function () { close(); H.toast('Account scheduled for deletion'); });
+    backdrop.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+    btns[0].focus();
+  }
+})();
+</script>
+</body>
+</html>

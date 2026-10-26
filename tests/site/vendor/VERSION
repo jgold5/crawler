@@ -1,0 +1,5 @@
+ag-grid-community 36.2.0
+source: https://registry.npmjs.org/ag-grid-community/-/ag-grid-community-36.2.0.tgz
+file: package/dist/ag-grid-community.min.js (UMD, styles bundled)
+sha256: 5f8ddee2e7e2d78e4005f29329404e67bba54ee6db63710b91878e81076ebc1e
+license: MIT (ag-grid-community.LICENSE.txt)

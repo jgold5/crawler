@@ -1,0 +1,57 @@
+# SiteConfig for the hostile fixture app (tests/site). See crawler/config.py.
+# Tests override base_url with the live server URL from the `site_url` fixture.
+base_url: http://localhost:8000
+
+# Pattern lists below EXTEND the defaults in crawler/config.py.
+test_id_attrs: [data-testid]
+unstable_id_patterns:
+  - '^rc_select_\d+$'          # rc-select style ids used by the fixture
+unstable_class_patterns:
+  - '^app-spinner$'            # spinner chrome is transient, never anchor on it
+unstable_text_patterns:
+  - '^Welcome back, '          # greeting includes a random user name
+  - '\bnotifications?\b'       # "You have N notifications"
+  - '^Last (updated|sign-in) ' # timestamps
+spinner_selectors:
+  - "[role='progressbar']"
+  - "[aria-busy='true']"
+  - ".app-spinner"
+
+pages:
+  Login:
+    url: /login.html
+    ready: "[data-testid='login-submit']"
+  Dashboard:
+    url: /dashboard.html
+    ready: "[role='tablist']"
+  Orders:
+    url: /orders.html
+    ready: ".ag-row"
+  Settings:
+    url: /settings.html
+    ready: "[data-testid='security-section'] h2"
+
+grids:
+  Orders:
+    selector: "[data-testid='orders-grid']"
+    key_column: orderId
+    kind: ag-grid
+    api_expr: window.ordersGridApi
+  Customers:
+    selector: "[data-testid='customers-grid']"
+    key_column: customerId
+    kind: ag-grid
+
+# Auth: the app's session is just localStorage auth='1' (set by login.html), so a
+# borrowed/cached storage_state works. (auth.flow was removed from AuthDef; the
+# login page is still fully scriptable for tests.)
+auth:
+  storage_state: .crawler/auth.json
+  max_age_minutes: 60
+
+java:
+  package: com.example.pages
+
+vars:
+  user_email: qa@example.com
+  user_password: hunter2

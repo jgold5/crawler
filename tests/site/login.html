@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<link rel="stylesheet" href="app.css">
+<script src="hostile.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile, I = H.icons;
+  H.styles({
+    'Login.shell': 'min-height:100vh;display:flex;align-items:center;justify-content:center;',
+    'Login.card': 'background:#fff;border:1px solid #dde2ec;border-radius:12px;padding:28px;width:380px;',
+    'Login.footer': 'display:flex;justify-content:space-between;align-items:center;margin-top:12px;'
+  });
+  var root = document.getElementById('root');
+  root.id = H.newId();  // even the mount point id is unstable
+  root.className = H.cls('App.root');
+
+  H.load(root, function (c) {
+    c.appendChild(H.frag(
+      '<div class="{{c:Login.shell}}" {{v}}>' +
+      ' <div class="{{c:Login.card}}" id="{{rid}}">' +
+      '  <div class="{{c:Login.header}}"><div class="{{c:Typography.h1}}"><h1 class="{{c:Login.title}}">Welcome</h1></div>' +
+      '   <p class="{{c:Login.subtitle}}">Sign in to continue. Server time <span class="{{c:Login.clock}}">' + new Date().toLocaleTimeString('en-GB') + '</span></p></div>' +
+      '  <form class="{{c:Login.form}}" novalidate aria-label="Sign in form">' +
+      '   <div class="{{c:Login.error}}" data-slot="error"></div>' +
+      '   <div class="form-row {{c:FormRow.root}}">' +
+      '    <label for="{{id:email}}" class="{{c:InputLabel.root}}">Email address</label>' +
+      '    <div class="{{c:InputBase.root}}"><div class="{{c:InputBase.inner}}">' +
+      '     <input id="{{id:email}}" type="email" autocomplete="username" class="{{c:InputBase.input}}">' +
+      '    </div></div>' +
+      '   </div>' +
+      '   <div class="form-row {{c:FormRow.root}}">' +
+      '    <div class="{{c:InputBase.root}}"><div class="{{c:InputBase.inner}}">' +
+      '     <input type="password" name="password" placeholder="Password" id="{{id:pw}}" class="{{c:InputBase.input}}">' +
+      '     <span class="{{c:InputBase.adornment}}">' + I.lock + '</span>' +
+      '    </div></div>' +
+      '   </div>' +
+      '   <div class="form-row inline {{c:FormRow.root}}">' +
+      '    <input type="checkbox" id="{{id:remember}}" class="visually-hidden {{c:Checkbox.input}}">' +
+      '    <label for="{{id:remember}}" class="check-label {{c:Checkbox.label}}">' +
+      '     <span class="check-box {{c:Checkbox.box}}">' + I.check + '</span><span class="{{c:Checkbox.text}}">Remember me</span>' +
+      '    </label>' +
+      '   </div>' +
+      '   <div class="{{c:Login.actions}}">' +
+      '    <button type="submit" class="btn-primary {{c:Button.primary}}" data-testid="login-submit" id="{{rid}}">' + I.arrow + '<span class="{{c:Button.label}}">Sign in</span></button>' +
+      '    <button type="submit" class="mobile-only {{c:Button.primary}}" id="{{rid}}">' + I.arrow + '<span class="{{c:Button.label}}">Sign in</span></button>' +
+      '   </div>' +
+      '  </form>' +
+      '  <div class="{{c:Login.footer}}">' +
+      '   <a href="#" class="{{c:Link.root}}" id="{{rid}}">Forgot password?</a>' +
+      '   <span class="{{c:Login.version}}">v' + (H.rnd(9) + 1) + '.' + H.rnd(20) + '.' + H.rnd(300) + '</span>' +
+      '  </div>' +
+      '  <div class="{{c:Login.info}}" data-slot="info"></div>' +
+      ' </div>' +
+      '</div>'));
+
+    var form = c.querySelector('form');
+    var email = form.querySelector('input[type=email]');
+    var pw = form.querySelector('input[name=password]');
+    var remember = form.querySelector('input[type=checkbox]');
+    var errSlot = form.querySelector('[data-slot=error]');
+    errSlot.removeAttribute('data-slot');
+    var infoSlot = c.querySelector('[data-slot=info]');
+    infoSlot.removeAttribute('data-slot');
+
+    c.querySelector('a[href="#"]').addEventListener('click', function (e) {
+      e.preventDefault();
+      infoSlot.innerHTML = '';
+      infoSlot.appendChild(H.frag('<p role="status" class="{{c:Login.infoText}}">If an account exists, we’ve emailed a reset link.</p>'));
+    });
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      errSlot.innerHTML = '';
+      if (!email.value.trim() || !pw.value) {
+        errSlot.appendChild(H.frag('<div role="alert" class="error {{c:Alert.error}}" id="{{rid}}">Please enter your email address and password.</div>'));
+        return;
+      }
+      var btn = form.querySelector('[data-testid=login-submit]');
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      try {
+        localStorage.setItem('auth', '1');
+        localStorage.setItem('user', email.value.trim());
+        if (remember.checked) localStorage.setItem('remember', '1'); else localStorage.removeItem('remember');
+      } catch (err) { /* ignore */ }
+      setTimeout(function () { location.href = 'dashboard.html'; }, 250 + H.rnd(400));
+    });
+  });
+})();
+</script>
+</body>
+</html>
