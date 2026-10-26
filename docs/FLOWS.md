@@ -37,13 +37,16 @@ One action per line. Quotes are optional; they're needed only when a name contai
   then fuzzy. If it's ambiguous or unknown, the tool stops and lists the closest names. It never
   guesses.
 - **Values** pass through unchanged, except **date expressions**, which are normalized to your
-  framework's own phrasing (exact forms to be confirmed):
-  - `N days from today` / `today + N`: calendar days
-  - `N business days from today` / `next business day`: business days
-  - `today`, `yesterday`, literal dates
+  **`T+X`** convention:
+  - `today` → `T`
+  - `in 2 days`, `2 days from today`, `today + 2`, `2 business days from today` → `T+2`
+  - `yesterday`, `3 days ago`, `today - 3` → `T-1`, `T-3`
+  - `next business day` → `T+1`
+  - literal dates (`1/5/2026`) pass through unchanged
 
-  Your step decides how a date is computed; the English layer only emits the expression your
-  step expects.
+  Whether `T+2` means calendar or business days is decided by **the step**, as today. When the
+  English says "business days" and more than one date step fits, the tool prefers the step that
+  computes business dates (configured once in the step mapping) and notes it in the report.
 
 ## Per line, on the live page
 1. Parse to (action, element, value, row, grid/section).
@@ -75,6 +78,5 @@ the steps really execute (it creates data the way a test does). Nothing comes ba
 you send it.
 
 ## Open questions
-- The exact date phrasing your steps accept (e.g. `"+2"`, `"T+2"`, `"2 days from today"`,
-  `"next business day"`).
+- Which date steps compute business dates vs calendar dates (one line each in the step mapping).
 - Whether new element names should follow the visible label exactly (the assumption here).
