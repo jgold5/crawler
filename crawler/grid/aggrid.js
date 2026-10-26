@@ -593,7 +593,9 @@
       // dev-set classes on the host (e.g. <ag-grid-angular class="orders-grid">); AG Grid's own
       // ag-* classes (themes, layout) are shared by every grid and never used
       Array.prototype.forEach.call(e.classList || [], function (cl) {
-        if (/^ag-/.test(cl) || any(badClass, cl)) return;
+        // the class alone must identify this element (a shared class such as "grid-host" that is
+        // only unique together with the tag name would break as soon as another grid appears)
+        if (/^ag-/.test(cl) || any(badClass, cl) || document.getElementsByClassName(cl).length !== 1) return;
         out.push({ xp: "//" + tag + "[contains(concat(' ', normalize-space(@class), ' '), " + lit(" " + cl + " ") + ")]", strategy: "class", rank: 3 });
       });
     });
