@@ -253,15 +253,17 @@
     return top && bottom;
   }
   // Wait until the grid re-rendered after a scroll: rows cover the visible box and the DOM
-  // signature is unchanged for 2 consecutive frames. `check` short-circuits as soon as it is truthy.
+  // signature is unchanged between two frames (AG Grid renders one frame after the scroll event).
+  // `check` runs every frame and short-circuits as soon as it is truthy. Callers that conclude
+  // "absent" do not trust a single settle: sweepRows revisits any row index it never saw.
   async function settle(w, sc, deadline, check) {
-    var prev = null, stable = 0;
+    var prev = null;
     for (var i = 0; i < 120 && now() < deadline; i++) {
       await frame();
       if (check) { var c = check(); if (c) return c; }
       var sig = signature(w);
-      if (sig === prev) { if (++stable >= 2 && covered(w, sc)) return null; }
-      else { stable = 0; prev = sig; }
+      if (sig === prev && covered(w, sc)) return null;
+      prev = sig;
     }
     return check ? check() : null;
   }
@@ -405,22 +407,28 @@
     return check();
   }
   // Sweep the vertical scroller from the top in rendered-span steps until `check` finds something.
-  async function sweepRows(w, deadline, check, stats) {
-    var sc = vScroller(w);
-    var hit = check();
+  // `seen` collects row indices whose key cell was rendered with text; before reporting "absent",
+  // every hole in [0, last row] is revisited, so a fast settle can never cause a false "not found".
+  async function sweepRows(w, deadline, check, keyCol, stats) {
+    var sc = vScroller(w), seen = {};
+    var mark = function () {
+      cellsByCol(w, keyCol).forEach(function (c) { if (norm(c.textContent)) seen[rowIdx(rowOf(c))] = 1; });
+    };
+    var chk = function () { mark(); return check(); };
+    var hit = chk();
     if (hit || !sc) return hit;
     sc.scrollTop = 0;
-    hit = await settle(w, sc, deadline, check);
-    var maxSeen = -1;
+    hit = await settle(w, sc, deadline, chk);
+    var maxSeen = -1, h = 0;
     for (var guard = 0; !hit && guard < 5000 && now() < deadline; guard++) {
       var rows = rowsOf(w);
       var base = sc.getBoundingClientRect().top - sc.scrollTop;
-      var minTop = 1e12, maxBottom = -1e12, minIdx = 1e12, h = 0;
+      var minTop = 1e12, maxBottom = -1e12;
       rows.forEach(function (r) {
         var rr = r.getBoundingClientRect();
         if (!rr.height) return;
         minTop = Math.min(minTop, rr.top - base); maxBottom = Math.max(maxBottom, rr.bottom - base);
-        minIdx = Math.min(minIdx, rowIdx(r)); maxSeen = Math.max(maxSeen, rowIdx(r)); h = h || rr.height;
+        maxSeen = Math.max(maxSeen, rowIdx(r)); h = h || rr.height;
       });
       if (sc.scrollTop >= sc.scrollHeight - sc.clientHeight - 1) break;
       var span = maxBottom > minTop ? maxBottom - minTop : sc.clientHeight;
@@ -428,18 +436,20 @@
       sc.scrollTop = before + Math.max(h || 20, span - (h || 20));
       if (sc.scrollTop <= before) break;
       stats.steps++;
-      hit = await settle(w, sc, deadline, check);
-      if (hit) break;
-      // gap guard: rows must continue where the previous window ended
-      var idxs = rowsOf(w).map(rowIdx);
-      var lo = idxs.length ? Math.min.apply(null, idxs) : 0;
-      if (lo > maxSeen + 1 && h) {
-        sc.scrollTop = sc.scrollTop - (lo - maxSeen - 1) * h - h;
-        stats.steps++;
-        hit = await settle(w, sc, deadline, check);
-      }
+      hit = await settle(w, sc, deadline, chk);
     }
-    return hit || check();
+    // completeness: revisit holes (indices never seen with a rendered key cell)
+    rowsOf(w).forEach(function (r) { maxSeen = Math.max(maxSeen, rowIdx(r)); });
+    for (var i = 0; !hit && i <= maxSeen && now() < deadline; i++) {
+      if (seen[i]) continue;
+      stats.revisits++;
+      await scrollToIndexDom(w, i, deadline);
+      hit = await settle(w, sc, deadline, chk);
+      if (!seen[i]) stats.unseen.push(i);
+      seen[i] = 1;   // visited; do not loop on rows whose key cell is empty
+    }
+    stats.rowsSeen = maxSeen + 1;
+    return hit || chk();
   }
   async function findRow(w, spec, keyCol, api, deadline, notes, stats) {
     if (spec.index != null) {
@@ -472,10 +482,12 @@
         notes.push("API located the row but it did not render; falling back to scrolling");
       }
     }
-    var found = await sweepRows(w, deadline, function () { var m = keyMatches(w, keyCol, key); return m.length ? m : null; }, stats);
+    var found = await sweepRows(w, deadline, function () { var m = keyMatches(w, keyCol, key); return m.length ? m : null; }, keyCol, stats);
     if (!found) {
       var filtered = w.querySelector(".ag-header-cell-filtered,.ag-filter-active");
-      return { error: "No row with " + keyCol + " = '" + key + "' (scanned " + (stats.steps + 1) + " viewport(s))" + (filtered ? "; the grid has an active filter" : "") };
+      if (now() >= deadline) return { error: "Timed out searching for row " + keyCol + " = '" + key + "' after " + (stats.steps + 1) + " viewport(s)" };
+      return { error: "No row with " + keyCol + " = '" + key + "' (scanned all " + stats.rowsSeen + " rows in " + (stats.steps + 1) + " viewport(s))" + (filtered ? "; the grid has an active filter" : ""),
+               alternatives: stats.unseen.length ? ["row indices whose key cell never rendered text: " + stats.unseen.slice(0, 10).join(", ")] : [] };
     }
     if (found.length > 1) return { error: "Key " + key + " matches " + found.length + " rendered rows in column " + keyCol + "; the key column is not unique", alternatives: found.map(function (i) { return "row-index " + i; }) };
     notes.push("key uniqueness checked among rendered rows only (no api_expr)");
@@ -581,7 +593,21 @@
     // filter to row elements before joining (O(rows) instead of O(all grid descendants)).
     out.push({ name: "join", xp: G + "//*[@row-index][@row-index=" + G + k + "/ancestor::*/@row-index]" + c });
     out.push({ name: "join-ancestor", xp: G + "//*[@row-index][@row-index=ancestor::*[@role=" + lit(gridRole) + "]" + k + "/ancestor::*/@row-index]" + c });
+    // only offered when the app's getRowId returns the key itself (checked by the caller); ranked
+    // after the key-text forms, so it is primary only when those cannot work (key cell not rendered
+    // together with the target because of column virtualization).
+    out.push({ name: "row-id", xp: G + "//*[@row-id=" + TOKEN + "]" + c, penalty: 1, needsRowIdKey: true });
     return out;
+  }
+  // true when every rendered row's row-id equals its key cell text (app getRowId returns the key)
+  function rowIdIsKey(w, keyCol, api) {
+    var cells = cellsByCol(w, keyCol);
+    if (!cells.length) return false;
+    var ok = cells.every(function (c) { return rowOf(c).getAttribute("row-id") === norm(c.textContent); });
+    if (ok && api) {
+      try { api.forEachNode(function (n) { if (ok && !n.group && String(n.id) !== apiValue(api, n, keyCol)) ok = false; }); } catch (e) { /* DOM check stands */ }
+    }
+    return ok;
   }
   function controlSteps(ctl, cell) {
     var tag = ctl.tagName.toLowerCase(), steps = [];
@@ -625,9 +651,11 @@
         proofs.push({ key: String(i + 1), el: tt });
       });
     }
-    var valid = [], tried = [];
+    var valid = [], tried = [], idKey = !isIndex && rowIdIsKey(w, ctx.keyCol, ctx.api);
     anchors.forEach(function (a) {
+      if (valid.length >= 3) return;   // enough verified alternatives; skip weaker anchors
       forms(a.xp, role, ctx.keyCol, ctx.colId, isIndex).forEach(function (f) {
+        if (f.needsRowIdKey && !idKey) return;
         var tpl = f.xp + (ctx.controlStep || "");
         var concrete = tpl.split(TOKEN).join(lit(ctx.paramValue));
         var m = xpSafe(concrete);
@@ -640,10 +668,10 @@
           });
         }
         tried.push({ form: f.name, anchor: a.strategy, ok: ok, matched: m ? m.length : -1 });
-        if (ok) valid.push({ template: tpl, xpath: concrete, form: f.name, anchor: a.strategy, rank: a.rank, proofs: proved });
+        if (ok) valid.push({ template: tpl, xpath: concrete, form: f.name, anchor: a.strategy, rank: a.rank, penalty: f.penalty || 0, proofs: proved });
       });
     });
-    valid.sort(function (a, b) { return a.rank - b.rank || a.template.length - b.template.length; });
+    valid.sort(function (a, b) { return a.rank - b.rank || a.penalty - b.penalty || a.template.length - b.template.length; });
     return { valid: valid, tried: tried, anchors: anchors.map(function (a) { return a.xp; }), proofRows: proofs.length };
   }
 
@@ -660,7 +688,7 @@
   // ------------------------------------------------------------------ main entry
   async function resolve(spec, apis) {
     var t0 = now(), deadline = t0 + (spec.timeoutMs || 10000);
-    var timings = {}, notes = [], stats = { steps: 0, hsteps: 0, api: false };
+    var timings = {}, notes = [], stats = { steps: 0, hsteps: 0, revisits: 0, unseen: [], rowsSeen: 0, api: false };
     var fail = function (error, alternatives, extra) {
       var r = { ok: false, error: error, alternatives: alternatives || [], timings: timings, notes: notes };
       for (var k in extra || {}) r[k] = extra[k];
@@ -767,7 +795,7 @@
       keyColId: keyCol ? keyCol.colId : null, keyHeader: keyCol ? (keyCol.header || keyCol.colId) : null, keyHow: keyHow,
       keyValue: spec.index == null ? norm(spec.keyValue) : null, index: spec.index,
       control: control, controlTag: ctl ? ctl.tagName.toLowerCase() : null,
-      apiUsed: stats.api, scrollSteps: stats.steps, hScrollSteps: stats.hsteps, gridCount: allGrids().length,
+      apiUsed: stats.api, scrollSteps: stats.steps, hScrollSteps: stats.hsteps, revisits: stats.revisits, gridCount: allGrids().length,
       timings: timings, notes: notes
     };
     if (spec.noTemplates) { timings.total = Math.round(now() - t0); return { result: base, el: ctl || cell }; }
@@ -779,7 +807,7 @@
       controlStep = steps[0];
     }
     var tb = buildTemplates(w, {
-      js: spec.js, target: ctl || cell, keyCol: keyCol ? keyCol.colId : null, colId: col.colId,
+      js: spec.js, api: api, target: ctl || cell, keyCol: keyCol ? keyCol.colId : null, colId: col.colId,
       key: base.keyValue, idx: idx, isIndex: spec.index != null, controlStep: controlStep,
       paramValue: spec.index != null ? String(spec.index) : base.keyValue
     });

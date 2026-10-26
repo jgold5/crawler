@@ -41,8 +41,8 @@
   <section class="panel">
     <h2>Customers</h2>
     <div class="toolbar">Accounts with open orders</div>
-    <!-- hash-like generated id: must never be used in a locator -->
-    <div id="grid-8f3a2c19" class="grid-host" style="height: 280px"></div>
+    <!-- generated per page load (like ExtJS/GWT counters): must never be used in a locator -->
+    <div class="grid-host customers-host" style="height: 280px"></div>
   </section>
 </main>
 
@@ -149,7 +149,9 @@
   });
   window.ordersGridApi = ordersApi;
 
-  var customersApi = agGrid.createGrid(document.getElementById("grid-8f3a2c19"), {
+  var customersHost = document.querySelector(".customers-host");
+  customersHost.id = "grid-" + (1000 + Math.floor(Math.random() * 9000));
+  var customersApi = agGrid.createGrid(customersHost, {
     columnDefs: [
       { field: "customerId", headerName: "Customer ID", width: 130 },
       { field: "name", headerName: "Name", width: 180 },
