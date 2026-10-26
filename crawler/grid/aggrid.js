@@ -29,7 +29,8 @@
     return "concat(" + out.join(", ") + ")";
   }
   function now() { return performance.now(); }
-  function frame() { return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); }
+  var frames = 0;   // frames waited (reported in timings, useful when tuning speed)
+  function frame() { frames++; return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); }
   function xpAll(xp, ctx) {
     var r = document.evaluate(xp, ctx || document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     var out = [];
@@ -690,9 +691,10 @@
 
   // ------------------------------------------------------------------ main entry
   async function resolve(spec, apis) {
-    var t0 = now(), deadline = t0 + (spec.timeoutMs || 10000);
+    var t0 = now(), deadline = t0 + (spec.timeoutMs || 10000), frames0 = frames;
     var timings = {}, notes = [], stats = { steps: 0, hsteps: 0, revisits: 0, unseen: [], rowsSeen: 0, api: false };
     var fail = function (error, alternatives, extra) {
+      timings.frames = frames - frames0;
       var r = { ok: false, error: error, alternatives: alternatives || [], timings: timings, notes: notes };
       for (var k in extra || {}) r[k] = extra[k];
       return { result: r, el: null };
@@ -801,7 +803,7 @@
       apiUsed: stats.api, scrollSteps: stats.steps, hScrollSteps: stats.hsteps, revisits: stats.revisits, gridCount: allGrids().length,
       timings: timings, notes: notes
     };
-    if (spec.noTemplates) { timings.total = Math.round(now() - t0); return { result: base, el: ctl || cell }; }
+    if (spec.noTemplates) { timings.total = Math.round(now() - t0); timings.frames = frames - frames0; return { result: base, el: ctl || cell }; }
     // 6. templates
     var t3 = now(), controlStep = null;
     if (ctl) {
@@ -816,6 +818,7 @@
     });
     timings.templates = Math.round(now() - t3);
     timings.total = Math.round(now() - t0);
+    timings.frames = frames - frames0;
     if (!tb.valid.length) return fail("No verified grid locator for this cell", tb.tried.map(function (t) { return t.anchor + "/" + t.form + ": matched " + t.matched; }), { anchors: tb.anchors });
     base.templates = tb.valid; base.token = TOKEN; base.anchors = tb.anchors; base.proofRows = tb.proofRows;
     return { result: base, el: ctl || cell };

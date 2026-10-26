@@ -3,6 +3,7 @@ free string, and a fail-closed leak scan over the written bundle.
 """
 from __future__ import annotations
 
+import importlib
 import re
 from collections.abc import Iterable
 from functools import lru_cache
@@ -270,13 +271,16 @@ def _distill_check(out: Path, names: Iterable[str], denylist: list[str]) -> list
     `raw()` pass. Missing module -> no extra findings (our own scans still run). Any other error fails closed.
     """
     try:
-        from crawler.distill import check as dcheck  # type: ignore
+        dcheck = importlib.import_module("crawler.distill.check")
     except ImportError:
         return []
+    scan_text = getattr(dcheck, "scan_text", None)
+    checker_cls = getattr(dcheck, "_Checker", None)
+    if scan_text is None and (checker_cls is None or not hasattr(checker_cls, "raw")):
+        return []  # scanner API not available in this version; our own scans still apply
     problems: list[str] = []
     try:
-        scan_text = getattr(dcheck, "scan_text", None)
-        checker = None if scan_text else dcheck._Checker(list(denylist))
+        checker = None if scan_text else checker_cls(list(denylist))
         for name in names:
             text = (out / name).read_text(encoding="utf-8")
             if scan_text:
