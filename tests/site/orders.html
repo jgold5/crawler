@@ -1,4 +1,10 @@
 <!doctype html>
+<!-- M1b grid fixture. Orders: ~1000 shuffled rows, 27 columns (row + column virtualization),
+     "Order ID" pinned left (link renderer), "Actions" pinned right (Edit/Delete), async data with
+     the loading overlay, no getRowId, Angular-style <ag-grid-angular> host. Customers: getRowId,
+     heading-only anchor, random per-load host id, col-ids/values that collide with Orders.
+     Query params: ?ag=31.3.4|34.3.1 (alternate AG Grid build), ?ng=0 (no window.ng),
+     ?seed=N (reproducible shuffles), ?rows=N. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
