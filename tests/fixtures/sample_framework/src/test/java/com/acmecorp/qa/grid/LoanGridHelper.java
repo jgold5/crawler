@@ -1,6 +1,7 @@
 package com.acmecorp.qa.grid;
 
 import org.openqa.selenium.By;
+import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
@@ -35,6 +36,12 @@ public class LoanGridHelper {
 
     public void clickCell(String rowKey, String colId) {
         driver.findElement(cell(rowKey, colId)).click();
+    }
+
+    public void scrollToRow(int index) {
+        ((JavascriptExecutor) driver).executeScript(
+            "window.loanGridApi.ensureIndexVisible(arguments[0]); window.loanGridApi.getDisplayedRowAtIndex(arguments[0]);",
+            index);
     }
 
     public int rowCount() {

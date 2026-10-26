@@ -10,8 +10,8 @@ from collections import Counter
 
 from crawler.config import DEFAULT_UNSTABLE_CLASS_PATTERNS, DEFAULT_UNSTABLE_ID_PATTERNS
 
-from .vocab import (CSS_PSEUDOS, HTML_TAGS, PLACEHOLDERS, SAFE_ATTRS, SAFE_WORDS, VALUE_SUBTYPES, XPATH_AXES,
-                    XPATH_FUNCS, XPATH_OPERATOR_NAMES)
+from .vocab import (ARIA_ROLES, INPUT_TYPES, CSS_PSEUDOS, GENERIC_STEMS, HTML_TAGS, PLACEHOLDERS, ROLE_WORDS, SAFE_ATTRS, SAFE_WORDS,
+                    TAG_WORDS, VALUE_SUBTYPES, XPATH_AXES, XPATH_FUNCS, XPATH_OPERATOR_NAMES)
 
 SENTINEL = "\x00"   # stands for a non-literal operand inside a concatenated string template
 
@@ -173,9 +173,16 @@ def is_placeholder_seq(s: str) -> bool:
     return bool(_PH_SEQ.fullmatch(s)) and all(is_placeholder(x) for x in PH_TOKEN_RX.findall(s))
 
 
+_AG_STRUCT = re.compile(r"ag-[a-z]+(?:-[a-z]+)*")
+
+
 def class_token_type(t: str) -> str:
+    if is_placeholder(t):
+        return t
     if any(p.search(t) for p in _STATE_CLASS):
         return "<v:state-class>"
+    if _AG_STRUCT.fullmatch(t):
+        return t                       # AG Grid structural class: public library vocabulary
     if any(p.search(t) for p in _HASHED_CLASS):
         return "<v:hashed-class>"
     return "<v:semantic-class>"
@@ -193,6 +200,14 @@ def type_value(value: str, attr: str | None) -> str:
         return " ".join(class_token_type(t) for t in toks) if toks else "<v:word>"
     if attr in _URL_ATTRS:
         return "<url>"
+    if v in ("true", "false"):
+        return v
+    if attr == "role" and v in ARIA_ROLES:
+        return v
+    if attr == "type" and v in INPUT_TYPES:
+        return v
+    if attr == "tag" and v in HTML_TAGS:
+        return v
     if re.fullmatch(r"\d+", v):
         return "<v:number>"
     if " " in v or not v:
@@ -214,10 +229,18 @@ def text_value(value: str) -> str:
     return "<text>"
 
 
+_ATTR_WORDS = SAFE_WORDS | GENERIC_STEMS | ROLE_WORDS | frozenset(
+    "testid test qa cy automation e2e uid ref key col row idx index tooltip toggle target dismiss bs".split())
+
+
 def _attr_ok(name: str, deny) -> bool:
+    """Known-safe names, aria-*, and data-* whose words are all generic (data-row-key yes, data-acme-id no)."""
     if deny and deny(name):
         return False
-    return name in SAFE_ATTRS or bool(re.fullmatch(r"(?:data|aria)-[a-z0-9]+(?:-[a-z0-9]+)*", name))
+    if name in SAFE_ATTRS or re.fullmatch(r"aria-[a-z]+", name):
+        return True
+    m = re.fullmatch(r"data-([a-z0-9]+(?:-[a-z0-9]+)*)", name)
+    return bool(m) and all(w in _ATTR_WORDS for w in m.group(1).split("-"))
 
 
 # ----------------------------------------------------------------------------------------------- xpath
@@ -402,7 +425,7 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None, deny=None) ->
             selectorish = True
         elif kind == "cls":
             v = text[1:]
-            out.append("." + (v if is_placeholder(v) else "<param>" if v == SENTINEL else class_token_type(v)))
+            out.append("." + ("<param>" if v == SENTINEL else class_token_type(v)))
             selectorish = True
         elif kind == "attr":
             an = m.group("an")
@@ -559,8 +582,13 @@ class PhraseRedactor:
     def __call__(self, s: str, mode: str = "text") -> str:
         out: list[str] = []
         start = True
+        pending = False
         for m in _PHRASE_TOKEN.finditer(s):
             kind, tok = m.lastgroup, m.group(0)
+            if kind == "ws":
+                start = start or pending
+            elif not (kind == "other" and tok in ".!?"):
+                pending = False
             if kind == "qcap" or kind == "esc":
                 out.append(tok)
             elif kind == "cls":
@@ -610,8 +638,10 @@ class PhraseRedactor:
                 out.append(" ")
             else:
                 out.append(tok)
-                if tok in ".!?:;":
-                    start = True
+                if tok in ".!?":
+                    pending = True
+                elif tok not in "\"'":
+                    start = False
         return "".join(out)
 
     def word(self, w: str, sentence_start: bool) -> str:
@@ -647,11 +677,10 @@ class PhraseRedactor:
         if not bad:
             words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+|[^\W\d_]+", r)
             for w in words:
-                if self.rename.is_token(w) or w.lower() in SAFE_WORDS:
+                if self.rename.is_token(w) or w.lower() in SAFE_WORDS or w.lower() in GENERIC_STEMS:
                     continue
-                if w.isdigit() or any(c.isupper() for c in w) or not w.isascii():
-                    bad = True
-                    break
+                bad = True
+                break
             if re.search(r"[^\w \-]", r):
                 bad = True
         if not bad:
@@ -693,7 +722,7 @@ class TagRedactor:
             return "@" + self.tickets[t]
         r = self.phrase.rename(t)
         ok = re.fullmatch(r"[A-Za-z][\w-]*", r) and all(
-            w.lower() in SAFE_WORDS or self.phrase.rename.is_token(w) or (w.islower() and w.isalpha())
+            w.lower() in SAFE_WORDS or w.lower() in TAG_WORDS or self.phrase.rename.is_token(w)
             for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", r))
         if ok and not any(c.isdigit() for c in re.sub(self.phrase.rename.token_rx, "", r)):
             return "@" + r

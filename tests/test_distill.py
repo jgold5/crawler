@@ -249,7 +249,12 @@ def test_stats_waits_grid_testids(files):
     assert {"waitForVisible", "until"} & set(st["waits"]["helpers"]) or "waitForVisible" in st["waits"]["helpers"]
     assert st["waits"]["expected_conditions"]["visibilityOfElementLocated"] == 1
     assert st["waits"]["explicit_wait_objects"] == 1
-    assert st["grid"]["ag_grid_detected"] is True and st["grid"]["col_id_locators"] >= 2
+    g = st["grid"]
+    assert g["ag_grid"] is True and g["col_id_locators"] >= 2 and g["grid_helper_classes"] == 1
+    assert g["uses_text_for_row_match"] is True
+    assert g["js_api_calls"] == {"ensureIndexVisible": 1, "getDisplayedRowAtIndex": 1}
+    assert len(g["js_api_objects"]) == 1 and re.fullmatch(r"item\d+GridApi", g["js_api_objects"][0])
+    assert {"role", "col-id", "data-qa"} <= set(st["attribute_names"])
     assert st["test_id_attributes"] == {"data-qa": 2, "data-testid": 1}
     assert st["locators"]["by_kind"]["xpath"] >= 8
 
@@ -258,15 +263,15 @@ def test_locators_yaml_shapes_metrics_flags(files):
     data = yaml.safe_load(files["locators.yaml"])
     shapes = {(i["kind"], i["shape"]): i for i in data["locators"]}
     assert ("xpath", "//div[@row-id='<param>']//div[@col-id='<param>']") in shapes
-    assert ("xpath", "//div[@role='<v:word>'][.//div[@col-id='<v:camel>' and normalize-space()='<param>']]") \
-        in shapes   # constant + concatenation resolved
-    assert ("xpath", "//div[@role='<v:word>'][.//div[@col-id='<v:camel>' and text()='<text>']]") \
+    assert ("xpath", "//div[@role='row'][.//div[@col-id='<v:camel>' and normalize-space()='<param>']]") \
+        in shapes   # constant + concatenation resolved; ARIA role kept verbatim
+    assert ("xpath", "//div[@role='row'][.//div[@col-id='<v:camel>' and text()='<text>']]") \
         in shapes   # Java 17 text block, via fallback
     abs_ = shapes[("xpath", "/html/body/div[2]/div/div[3]/span")]
     assert "absolute_path" in abs_["flags"] and "positional_index" in abs_["flags"]
     assert abs_["metrics"]["steps"] == 6 and abs_["metrics"]["length"] == len("/html/body/div[2]/div/div[3]/span")
     assert "auto_generated_id" in shapes[("xpath", "//div[@id='<v:auto-id>']")]["flags"]
-    assert "hashed_class" in shapes[("css", ".<v:hashed-class> > .<v:semantic-class>")]["flags"]
+    assert "hashed_class" in shapes[("css", ".<v:hashed-class> > .ag-row")]["flags"]   # AG Grid class kept
     assert ("xpath", "//*[@<attr>='<v:kebab>']") in shapes            # denylisted attribute name hidden
     s = data["summary"]
     assert s["total"] == sum(i["count"] for i in data["locators"])
@@ -379,3 +384,69 @@ def test_scan_text_public_helper():
     assert any("email" in p for p in probs) and all("jane" not in p for p in probs)
     assert scan_text("x.java", "class A {}", ["Acme"]) == []
     assert scan_text("x.java", 'class A { String s = "secret"; }', [], grammar=True)
+
+
+ADVERSARIAL = '''package com.bigbank.qa.zorblaxportal;
+
+import static com.bigbank.qa.zorblaxportal.ZorblaxStuff.ZORBLAX_LIMIT;
+import com.bigbank.billing.ZorblaxInvoice;
+import com.zorblaxlib.client.ZorblaxClient;
+import lombok.Getter;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.When;
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebElement;
+
+@Getter
+@ZorblaxRetry(times = 3, reason = "Zorblax flaky")
+public class ZorblaxStuff extends com.bigbank.qa.base.ZorblaxBase implements ZorblaxAware {
+    public static final int ZORBLAX_LIMIT = 987654;
+    public static final char ZORBLAX_SEP = 'Z';
+    public static final long ZORBLAX_ACCOUNT = 1234567890123L;
+    private com.bigbank.billing.ZorblaxInvoice zorblaxInvoice;
+    private final By zorblaxRow = By.xpath("//tr[td='Zorblax 42']//zorblax-widget[@zorblax-id='z1']");
+    private final By fmt = By.xpath(String.format("//div[@data-zorblax='%s']", "Zorblax"));
+    private final Runnable r = new Runnable() { public void run() { System.out.println("Zorblax"); } };
+    private final java.util.function.Supplier<String> s = () -> "Zorblax";
+    private final String[] zorblaxNames = {"Zorblax Inc", "zorblax-two"};
+    private final double rate = 3.14159;
+    private final String html = "<b>Zorblax</b>";
+    private final String zorblaxWord = "zorblax";
+    enum ZorblaxTier { GOLD_ZORBLAX("Zorblax Gold", 99), PLATINUM(" zorblax plat ", 5); ZorblaxTier(String n, int c) {} }
+    interface ZorblaxAware { String ZORBLAX_KEY = "zorblax-key-123"; }
+
+    @Given("^the (?:Zorblax|Bigbank) user ([^ ]+) logs in with code (\\\\d{4})$")
+    public void zorblaxLogin(String zorblaxUser, String code) {
+        ((WebElement) new ZorblaxClient("Zorblax").login(zorblaxUser)).findElement(By.cssSelector(".zorblax")).click();
+    }
+
+    @When("the customer selects {zorblaxType} and {string} for Zorblax")
+    public void pick(ZorblaxType t, String zorblaxValue) { }
+
+    public void pr\\u00fcfeZorblaxKonto() { }
+}
+'''
+FRENCH = """# language: fr
+@zorblax @ZORB-12
+Fonctionnalité: Portail Zorblax
+  Scénario: Le client Zorblax se connecte
+    Soit le client "Zorblax" se connecte avec zorblax@bigbank.example.org
+    Quand il tape 12345 dans Zorblax
+"""
+
+
+def test_adversarial_marker_never_survives(tmp_path):
+    """A customer name that is NOT on the denylist, planted in every construct (except kept step phrasing)."""
+    src = tmp_path / "repo"
+    (src / "src" / "com" / "bigbank" / "qa" / "zorblaxportal").mkdir(parents=True)
+    (src / "src/com/bigbank/qa/zorblaxportal/ZorblaxStuff.java").write_text(ADVERSARIAL)
+    (src / "src/com/bigbank/qa/zorblaxportal/PrüfeZorblax.java").write_text(
+        "package com.bigbank.qa.zorblaxportal;\npublic class PrüfeZorblax { int 测试Zorblax; }\n")
+    (src / "fr.feature").write_text(FRENCH, encoding="utf-8")
+    out = distill(src, tmp_path / "fp", ["Bigbank"])
+    for rel, text in _bundle_text(out).items():
+        low = (rel + text).lower()
+        for marker in ("zorb", "987654", "1234567890", "3.14159", "测试", "prüfe", "bigbank"):
+            assert marker not in low, (marker, rel)
+    locs = yaml.safe_load((out / "locators.yaml").read_text())["locators"]
+    assert any(i["shape"] == ".<v:semantic-class>" and i["kind"] == "css" for i in locs)   # found inside a cast

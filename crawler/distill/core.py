@@ -20,7 +20,7 @@ from .profile import conventions, render_md, test_id_attrs, wait_and_grid_stats
 from .redact import EMAIL_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hosts_in, registrable_label
 from .skeleton import Renderer, render_tokens
 from .stepdefs import Catalog, Inference, collect, count_usage, mapping_yaml
-from .vocab import GENERIC_STEMS, PACKAGE_GENERIC, SAFE_IMPORT_PREFIXES, SAFE_WORDS
+from .vocab import AG_GRID_API, GENERIC_STEMS, PACKAGE_GENERIC, SAFE_IMPORT_PREFIXES, SAFE_WORDS
 
 SKIP_DIRS = {"target", "build", "out", "bin", "node_modules", "dist", "__pycache__", "venv", "logs",
              "test-output", "allure-results", "reports"}
@@ -180,7 +180,7 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
             except Exception:  # noqa: BLE001
                 m = re.search(r"^\s*package\s+([\w.]+)\s*;", cleaned, re.M)
                 u = Unit(rel, None, Scope(package=m.group(1) if m else ""), mode="tokens", stub_text=stub)
-            u.raw_strings = string_values(cleaned) + blocks
+        u.raw_strings = string_values(cleaned) + blocks
         try:
             if u.cu is not None:
                 index_unit(u)
@@ -271,16 +271,20 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
     # ---- locators
     lc = LocatorCollector(policy, stats)
     ag_refs = 0
+    js_calls: Counter = Counter()
+    js_objects: set[str] = set()
     for u in units:
         try:
             lc.unit(u)
         except Exception:  # noqa: BLE001
             stats["files with locator extraction errors"] += 1
-        ag_refs += sum(1 for v in u.raw_strings if re.search(r"\bag-[a-z]", v))
-        if u.mode == "ast" and u.cu is not None:
-            for _, n in u.cu.filter(javalang.tree.Literal):
-                if isinstance(n.value, str) and re.search(r"\bag-[a-z]", n.value):
-                    ag_refs += 1
+        for v in u.raw_strings:
+            if re.search(r"\bag-[a-z]", v):
+                ag_refs += 1
+            calls = [c for c in re.findall(r"\.\s*([A-Za-z_$][\w$]*)\s*\(", v) if c in AG_GRID_API]
+            js_calls.update(calls)
+            if calls:
+                js_objects.update(policy.member(o, "field") for o in re.findall(r"\bwindow\.([A-Za-z_$][\w$]*)", v))
     loc_items = lc.items()
     loc_summary = lc.summary()
 
@@ -294,7 +298,7 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
 
     # ---- profile
     java, naming, facts = conventions(units, policy)
-    waits, grid = wait_and_grid_stats(units, policy, loc_items, ag_refs)
+    waits, grid = wait_and_grid_stats(units, policy, loc_items, ag_refs, js_calls, js_objects)
     exprs = Counter(e["expression"] for e in cat.entries)
     kw = Counter(e["keyword"] for e in cat.entries)
     acts = Counter(e["action"] for e in cat.entries)
@@ -324,7 +328,8 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
     files["not_read"] = dict(sorted(not_read.items()))
     files["not_read_total"] = sum(v for k, v in not_read.items() if k not in ("skipped directories",))
     stats_out = {"locators": {k: loc_summary[k] for k in ("total", "by_kind", "length_median", "length_p90")},
-                 "test_id_attributes": test_id_attrs(loc_summary), "waits": waits, "grid": grid}
+                 "test_id_attributes": test_id_attrs(loc_summary),
+                 "attribute_names": loc_summary["attribute_names"], "waits": waits, "grid": grid}
     profile = {"java": java, "stats": stats_out, "cucumber": cucumber, "naming": naming, "files": files,
                "facts": facts, "keep_identifiers": keep}
     dump = dict(sort_keys=False, allow_unicode=False, width=120, default_flow_style=False)

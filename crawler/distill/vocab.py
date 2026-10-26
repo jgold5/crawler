@@ -73,6 +73,38 @@ value values verify view visible wait warning when where which will window with 
 untick approve approved deny denied opens enters types clicks sees selects chooses hovers waits appears
 """)
 
+# Standard (spec / library) attribute values kept verbatim in locator shapes.
+ARIA_ROLES = _words("""
+alert alertdialog application article banner button cell checkbox columnheader combobox complementary
+contentinfo definition dialog directory document feed figure form grid gridcell group heading img link list
+listbox listitem log main marquee math menu menubar menuitem menuitemcheckbox menuitemradio navigation none
+note option presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox
+separator slider spinbutton status switch tab table tablist tabpanel term textbox timer toolbar tooltip tree
+treegrid treeitem
+""")
+INPUT_TYPES = _words("""
+text password checkbox radio submit button email number date datetime-local time month week search hidden file
+tel url range color reset image
+""")
+AG_GRID_API = _words("""
+ensureIndexVisible ensureColumnVisible ensureNodeVisible getDisplayedRowAtIndex getDisplayedRowCount forEachNode
+forEachNodeAfterFilter forEachNodeAfterFilterAndSort setFilterModel getFilterModel setColumnFilterModel
+onFilterChanged setGridOption getGridOption setRowData applyTransaction refreshCells redrawRows sizeColumnsToFit
+autoSizeAllColumns autoSizeColumns getRowNode selectAll deselectAll getSelectedRows getSelectedNodes
+startEditingCell stopEditing getColumnDefs setColumnDefs applyColumnState getColumnState setFocusedCell
+getFocusedCell paginationGoToPage paginationGetCurrentPage showLoadingOverlay hideOverlay setQuickFilter
+getModel getRenderedNodes getCellValue exportDataAsCsv setSortModel getSortModel isDestroyed
+""")
+
+# Common tag words kept verbatim (@smoke, @regression, ...). Other tags become @tag-N.
+TAG_WORDS = _words("""
+smoke regression sanity wip ignore ignored manual flaky skip slow fast e2e api ui critical high medium low
+blocker major minor p0 p1 p2 p3 positive negative happy path edge case nightly daily weekly release prod
+staging dev qa uat sit known issue bug todo pending disabled mobile desktop web chrome firefox safari edge
+headless parallel serial isolated integration acceptance functional unit performance security accessibility a11y
+orders order login logout grid admin user
+""")
+
 # --- identifier anonymization -------------------------------------------------------------------------------
 
 ROLE_WORDS = _words("""

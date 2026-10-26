@@ -176,6 +176,9 @@ class Inference:
             return v
         if isinstance(e, (T.LambdaExpression, T.MethodReference)):
             return EMPTY
+        if isinstance(e, T.Cast):
+            return self._selectors(e, self._eval(e.expression, env, effects, depth, stack, ctx),
+                                   env, effects, depth, stack, ctx)
         out = EMPTY
         for child in e.children if isinstance(e, javalang.ast.Node) else []:
             items = child if isinstance(child, list) else [child]

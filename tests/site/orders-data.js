@@ -19,9 +19,22 @@
   function date(r) {
     return "2024-" + pad(1 + Math.floor(r() * 12), 2) + "-" + pad(1 + Math.floor(r() * 28), 2);
   }
-  function shuffle(a) {
+  // ?seed=N makes the shuffles reproducible for tests (one PRNG per grid, so the order of the
+  // async data callbacks does not matter); default is a new order on every load.
+  var seedParam = new URLSearchParams(location.search).get("seed");
+  function rng(salt) {
+    if (seedParam == null) return Math.random;
+    var a = (parseInt(seedParam, 10) || 0) + salt;
+    return function () {  // mulberry32
+      a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function shuffle(a, rand) {
     for (var i = a.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
+      var j = Math.floor(rand() * (i + 1));
       var t = a[i]; a[i] = a[j]; a[j] = t;
     }
     return a;
@@ -68,7 +81,7 @@
         region: pick(r, REGIONS)
       });
     }
-    return shuffle(rows);
+    return shuffle(rows, rng(0));
   }
 
   function makeCustomers(count) {
@@ -88,7 +101,7 @@
     }
     // make sure a customer's "Last Order" is A-950 (same text as an Orders key)
     rows[3].orderId = "A-950";
-    return shuffle(rows);
+    return shuffle(rows, rng(7919));
   }
 
   window.fixtureData = { makeOrders: makeOrders, makeCustomers: makeCustomers };

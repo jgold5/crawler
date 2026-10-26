@@ -168,7 +168,8 @@ def conventions(units: list[Unit], policy: Policy) -> tuple[dict, dict, dict]:
     return java, naming, facts
 
 
-def wait_and_grid_stats(units: list[Unit], policy: Policy, locs: list[dict], raw_ag_refs: int) -> tuple[dict, dict]:
+def wait_and_grid_stats(units: list[Unit], policy: Policy, locs: list[dict], raw_ag_refs: int,
+                        js_calls: Counter | None = None, js_objects: set | None = None) -> tuple[dict, dict]:
     ec = Counter()
     explicit = sleeps = implicit = 0
     wait_helpers, grid_helpers = set(), set()
@@ -203,10 +204,20 @@ def wait_and_grid_stats(units: list[Unit], policy: Policy, locs: list[dict], raw
 
     def count(pat):
         return sum(i["count"] for i in locs if re.search(pat, i["shape"]))
-    grid = {"col_id_locators": count(r"col-id"), "row_id_locators": count(r"row-id"),
-            "row_index_locators": count(r"row-index|aria-rowindex"), "ag_grid_class_literals": raw_ag_refs,
-            "role_grid_locators": count(r"@role|\[role"), "helpers": sorted(grid_helpers)}
-    grid["ag_grid_detected"] = bool(grid["col_id_locators"] or raw_ag_refs)
+    text_row = any("col-id" in i["shape"] and re.search(r"text\(\)|normalize-space|\.\s*=", i["shape"])
+                   for i in locs if i["kind"] == "xpath")
+    helper_classes = {c.fqcn for u in units for c in u.classes
+                      if not _has_steps(c) and {w.lower() for w in split_words(c.name)} & GRID_WORDS}
+    grid = {"ag_grid": bool(count(r"col-id") or raw_ag_refs or js_calls),
+            "col_id_locators": count(r"col-id"), "row_id_locators": count(r"row-id"),
+            "row_index_locators": count(r"row-index|aria-rowindex"),
+            "role_grid_locators": count(r"role='(?:grid|row|gridcell|columnheader|treegrid)'"),
+            "ag_class_literals": raw_ag_refs,
+            "grid_helper_classes": len(helper_classes),
+            "grid_helpers": sorted(grid_helpers),
+            "uses_text_for_row_match": bool(text_row),
+            "js_api_calls": dict(sorted((js_calls or Counter()).items(), key=lambda kv: (-kv[1], kv[0]))),
+            "js_api_objects": sorted(js_objects or set())}
     return waits, grid
 
 
@@ -273,9 +284,11 @@ def render_md(p: dict) -> str:
     a(f"- ExpectedConditions: {', '.join(f'{k} {v}' for k, v in w['expected_conditions'].items()) or 'none'}")
     a(f"- Explicit wait objects: {w['explicit_wait_objects']}, Thread.sleep calls: {w['thread_sleep_calls']}, "
       f"implicit waits: {w['implicit_wait_calls']}")
-    a(f"- AG Grid detected: {g['ag_grid_detected']} (col-id locators {g['col_id_locators']}, row-id "
-      f"{g['row_id_locators']}, row-index {g['row_index_locators']}); grid helpers: "
-      f"{', '.join(g['helpers']) or 'none'}")
+    a(f"- AG Grid: {g['ag_grid']} (col-id locators {g['col_id_locators']}, row-id {g['row_id_locators']}, "
+      f"row-index {g['row_index_locators']}, text used to match rows: {g['uses_text_for_row_match']})")
+    a(f"- Grid helper classes: {g['grid_helper_classes']}; helpers: {', '.join(g['grid_helpers']) or 'none'}")
+    a(f"- Grid JS API calls: {', '.join(f'{k} {v}' for k, v in g['js_api_calls'].items()) or 'none'}"
+      f" (via {', '.join(g['js_api_objects']) or '-'})")
     a("")
     c = p["cucumber"]
     a("## Cucumber (steps.yaml, step-mappings.draft.yaml)")

@@ -12,7 +12,7 @@ import yaml
 
 from .features import parse_feature
 from .redact import (EMAIL_RX, IP_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hosts_in, is_placeholder_seq,
-                     literal_is_clean, redact_literal, secret_shapes)
+                     literal_is_clean, redact_literal, secret_shapes, type_value)
 from .skeleton import COMMENT_PREFIXES, STEP_ANNOTATIONS
 from .javasrc import unescape_java
 
@@ -73,7 +73,10 @@ class _Checker:
         Tk = javalang.tokenizer
         for j, t in enumerate(toks):
             ln = t.position.line if t.position else None
-            if isinstance(t, Tk.String):
+            if isinstance(t, (Tk.Character, Tk.String)) and t.value.startswith("'"):
+                if t.value != "'?'":
+                    self.add(rel, ln, "char literal", t.value)
+            elif isinstance(t, Tk.String):
                 if t.value.startswith('"""'):
                     self.add(rel, ln, "text block in skeleton", t.value)
                     continue
@@ -85,8 +88,6 @@ class _Checker:
                         self.add(rel, ln, "step pattern not redacted", v)
                 elif not literal_is_clean(v):
                     self.add(rel, ln, "string literal outside placeholder grammar", v)
-            elif isinstance(t, Tk.Character) and t.value != "'?'":
-                self.add(rel, ln, "char literal", t.value)
             elif isinstance(t, Tk.Integer) and not re.fullmatch(r"\d{1,2}[lL]?", t.value):
                 self.add(rel, ln, "numeric literal", t.value)
             elif isinstance(t, Tk.FloatingPoint) and t.value != "0.0":
@@ -200,7 +201,8 @@ class _Checker:
                 if kind in ("xpath", "css"):
                     ok = shape in ("<xpath>", "<css>") or redact_literal(shape, kind)[0] == shape
                 else:
-                    ok = is_placeholder_seq(shape)
+                    attr = {"class": "class", "tag": "tag", "id": "id", "name": "name"}.get(kind)
+                    ok = is_placeholder_seq(shape) or (attr is not None and type_value(shape, attr) == shape)
                 if not ok:
                     self.add(rel, None, "locator shape outside grammar", shape)
         elif rel == "profile.yaml":

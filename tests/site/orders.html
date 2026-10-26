@@ -145,8 +145,8 @@
     columnDefs: orderCols,
     defaultColDef: { sortable: true, resizable: true },
     // NOTE: no getRowId on purpose.
-    rowData: undefined,          // loading overlay until data arrives
-    loading: true,
+    rowData: undefined,          // loading overlay until data arrives (all versions)
+
     animateRows: true,
     stopEditingWhenCellsLoseFocus: true
   });
@@ -176,8 +176,7 @@
       { field: "tier", headerName: "Tier", width: 110 }
     ],
     getRowId: function (p) { return p.data.customerId; },
-    rowData: undefined,
-    loading: true
+    rowData: undefined           // loading overlay until data arrives
   });
 
   // Data arrives asynchronously, like an XHR to a slow backend.
@@ -185,12 +184,10 @@
   setTimeout(function () {
     var rows = window.fixtureData.makeOrders(nRows);
     ordersApi.setGridOption("rowData", rows);
-    ordersApi.setGridOption("loading", false);
     document.getElementById("ordersCount").textContent = rows.length + " orders";
   }, delay());
   setTimeout(function () {
     customersApi.setGridOption("rowData", window.fixtureData.makeCustomers(60));
-    customersApi.setGridOption("loading", false);
   }, delay());
 })();
 </script>

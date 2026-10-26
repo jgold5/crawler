@@ -245,7 +245,8 @@ class LocatorCollector:
                     return
         if not isinstance(node, javalang.ast.Node):
             return
-        for child in node.children:
+        extra = [] if "selectors" in node.attrs else list(getattr(node, "selectors", None) or [])
+        for child in list(node.children) + extra:
             if isinstance(child, javalang.ast.Node):
                 self.walk(child, owner, None)
             elif isinstance(child, list):

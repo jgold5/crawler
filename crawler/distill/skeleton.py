@@ -471,6 +471,8 @@ def render_tokens(text: str, policy: Policy, stats: Counter) -> tuple[str, str] 
             else:
                 r = policy.member(v, "field")
             out.append(r)
+        elif isinstance(t, T_.String) and v.startswith("'"):
+            out.append("'?'")
         elif isinstance(t, T_.String):
             if v.startswith('"""'):
                 out.append('"<text>"')

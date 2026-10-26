@@ -1,5 +1,10 @@
-ag-grid-community 36.2.0
+ag-grid-community 36.2.0 (latest stable on registry.npmjs.org, 2026-10)
 source: https://registry.npmjs.org/ag-grid-community/-/ag-grid-community-36.2.0.tgz
-file: package/dist/ag-grid-community.min.js (UMD, styles bundled)
+file: package/dist/ag-grid-community.min.js -> ag-grid-community.min.js (UMD, styles bundled)
 sha256: 5f8ddee2e7e2d78e4005f29329404e67bba54ee6db63710b91878e81076ebc1e
 license: MIT (ag-grid-community.LICENSE.txt)
+
+Alternate builds for cross-version DOM tests (orders.html?ag=<version>):
+ag-grid-community 31.3.4: package/dist/ag-grid-community.min.js -> ag-grid-community-31.3.4.min.js sha256 4253c41cf89cec4bb45e37adbdf560f94a2ef5eaece55b0cb3992856e19f5457
+ag-grid-community 34.3.1: package/dist/ag-grid-community.min.js -> ag-grid-community-34.3.1.min.js sha256 6be4d9a4c4e3d1f1e96736e0432a74a5db112451e456dd89bdbe953367f99607
+  31.3.4 / 34.3.1 = oldest/newest of the 'split row' DOM (pinned containers); 36.x = 'unified row' DOM.
