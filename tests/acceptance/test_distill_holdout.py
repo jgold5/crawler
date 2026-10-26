@@ -148,3 +148,19 @@ def test_locator_inventory_redacted_with_metrics(bundle):
     assert "text_dependent" in flags                 # text()='%s' in the grid helper
     assert all("metrics" in e for e in entries)
     assert "locators" in (bundle / "PROFILE.md").read_text().lower()
+
+
+def test_java_constants_are_not_hosts_but_real_hosts_are(tmp_path):
+    """Regression (user report): `Locale.US` was flagged as a host name and failed the whole run."""
+    src = tmp_path / "src" / "com" / "acme" / "x"
+    src.mkdir(parents=True)
+    (src / "Util.java").write_text(
+        "package com.acme.x;\nimport java.util.Locale;\nimport java.util.logging.Level;\n"
+        "public class Util {\n  private final Locale l = Locale.US;\n  private final Level v = Level.INFO;\n"
+        "  public void f() { Locale.setDefault(Locale.CANADA); }\n}\n")
+    out = distill_mod.distill(tmp_path / "src", tmp_path / "out", ["acme"])
+    assert "Locale.US" in (Path(out) / "skeleton/com/example/x/Util.java").read_text()
+    from crawler.distill.check import _Checker
+    c = _Checker([])
+    c.raw("A.java", 'String a = "api.corp.io"; b = svc.internal.local; c = Locale.US;\n')
+    assert len(c.problems) == 2, c.problems

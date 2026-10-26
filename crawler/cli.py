@@ -31,18 +31,22 @@ def _denylist(deny: tuple[str, ...], deny_file: str | None) -> list[str]:
               help="Your first-party Java packages are renamed to this.")
 @click.option("--keep-identifiers", is_flag=True,
               help="Keep your class/field/method names (default: domain words are replaced with generic stems).")
+@click.option("--show-leaks", is_flag=True,
+              help="If the leak check fails, print the flagged values here (local terminal only; don't paste them).")
 @click.option("--check", "check_only", type=click.Path(exists=True, file_okay=False),
               help="Only re-scan an existing bundle for leaks.")
-def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, check_only) -> None:
+def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_leaks, check_only) -> None:
     """Make a redacted profile of your UI automation framework. Runs offline; nothing leaves your machine.
 
     SRC is the root of your Selenium/Cucumber repo. Review the bundle before sharing it.
     """
     from crawler.distill import check, distill as run_distill
+    from crawler.distill.check import explain
+    from crawler.distill.core import DistillLeakError
 
     terms = _denylist(deny, deny_file)
     if check_only:
-        problems = check(Path(check_only), terms)
+        problems = (explain if show_leaks else check)(Path(check_only), terms)
         if problems:
             for p in problems:
                 click.echo(f"LEAK  {p}", err=True)
@@ -53,8 +57,17 @@ def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, check_o
         raise click.UsageError("SRC is required unless --check is given.")
     if not terms:
         click.echo("warning: no --deny terms given; add your company/product names and domains.", err=True)
-    bundle = run_distill(Path(src), Path(out), terms, rename_packages_to=package_prefix,
-                         keep_identifiers=keep_identifiers)
+    try:
+        bundle = run_distill(Path(src), Path(out), terms, rename_packages_to=package_prefix,
+                             keep_identifiers=keep_identifiers)
+    except DistillLeakError as e:
+        click.echo("Leak check failed, so nothing was written. Flagged:", err=True)
+        for line in (e.details if show_leaks else e.problems):
+            click.echo(f"  {line}", err=True)
+        if not show_leaks:
+            click.echo("Re-run with --show-leaks to see the flagged values on this terminal "
+                       "(don't paste those values anywhere; paste only the lines above).", err=True)
+        raise SystemExit(2)
     click.echo(f"wrote {bundle}  (open PROFILE.md first; review everything before sharing)")
 
 

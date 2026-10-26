@@ -20,6 +20,19 @@ ALLOWED_TOP = {"profile.yaml", "PROFILE.md", "steps.yaml", "step-mappings.draft.
 _STR_IN_LINE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)\'')
 
 
+def _java_constant_not_host(line: str, host: str) -> bool:
+    """`Locale.US`, `Level.INFO`: a mixed-case qualified name in code, not a host.
+
+    Real hosts in Java appear lowercase or inside string literals; those are still flagged.
+    """
+    in_strings = " ".join(_STR_IN_LINE.findall(line)).lower()
+    if host in in_strings:
+        return False
+    code = _STR_IN_LINE.sub('""', line)
+    found = [m.group(0) for m in re.finditer(re.escape(host), code, re.I)]
+    return bool(found) and all(f != f.lower() for f in found)
+
+
 def _line(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
@@ -31,10 +44,12 @@ class _Checker:
         self.phrase = PhraseRedactor(self.rename)
         self.tags = TagRedactor(self.phrase)
         self.problems: list[str] = []
+        self.values: list[str] = []  # parallel to problems; only shown locally via explain()
 
     def add(self, rel: str, line: int | None, what: str, value: str = "") -> None:
         n = f" ({len(value)} chars)" if value else ""
         self.problems.append(f"{rel}:{line or 0}: {what}{n}")
+        self.values.append(value)
 
     # -------------------------------------------------------------- generic byte scans
     def raw(self, rel: str, text: str) -> None:
@@ -48,8 +63,11 @@ class _Checker:
         for m in IP_RX.finditer(text):
             if m.group(0) not in ("127.0.0.1", "0.0.0.0"):
                 self.add(rel, _line(text, m.start()), "ip address", m.group(0))
+        is_java = rel.endswith(".java")
         for i, line in enumerate(text.split("\n"), 1):
             for h in hosts_in(line):
+                if is_java and _java_constant_not_host(line, h):
+                    continue
                 self.add(rel, i, "host name", h)
             for kind in secret_shapes(line):
                 self.add(rel, i, f"secret-shaped value ({kind})")
@@ -212,10 +230,23 @@ class _Checker:
 
 
 def check(out: Path, denylist: list[str] = ()) -> list[str]:
-    out = Path(out)
+    return _run(Path(out), denylist).problems
+
+
+def explain(out: Path, denylist: list[str] = ()) -> list[str]:
+    """Like check(), but each problem also shows the offending value.
+
+    For the user's own terminal only (`crawler distill --show-leaks`); never write this anywhere shared.
+    """
+    c = _run(Path(out), denylist)
+    return [f"{p}\n      value: {v!r}" if v else p for p, v in zip(c.problems, c.values)]
+
+
+def _run(out: Path, denylist) -> "_Checker":
     c = _Checker(denylist)
     if not out.is_dir():
-        return [f"{out}: not a directory"]
+        c.add(str(out), None, "not a directory")
+        return c
     for f in sorted(out.rglob("*")):
         if f.is_symlink():
             c.add(f.name, None, "symlink in bundle")
@@ -243,7 +274,7 @@ def check(out: Path, denylist: list[str] = ()) -> list[str]:
             c.feature(rel, text)
         elif rel.endswith(".yaml"):
             c.yaml_file(rel, text)
-    return c.problems
+    return c
 
 
 def scan_text(rel: str, text: str, denylist: list[str] = (), grammar: bool = False) -> list[str]:

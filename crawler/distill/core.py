@@ -34,8 +34,9 @@ PUBLIC_LABELS = {"google", "github", "githubusercontent", "selenium", "seleniumh
 
 
 class DistillLeakError(RuntimeError):
-    def __init__(self, problems: list[str]):
+    def __init__(self, problems: list[str], details: list[str] | None = None):
         self.problems = problems
+        self.details = details or []  # with values; for the local terminal only
         head = "\n  ".join(problems[:20])
         more = f"\n  ... {len(problems) - 20} more" if len(problems) > 20 else ""
         super().__init__(f"distill check failed; no bundle was written. Problems:\n  {head}{more}")
@@ -142,7 +143,8 @@ def distill(src: Path, out: Path, denylist: list[str] = (), rename_packages_to: 
         terms = _build(src, tmp, list(denylist or []), rename_packages_to, keep_identifiers, {out, tmp})
         problems = check(tmp, terms)
         if problems:
-            raise DistillLeakError(problems)
+            from .check import explain
+            raise DistillLeakError(problems, explain(tmp, terms))
         _prepare_out(out)
         tmp.rename(out)
     except BaseException:
