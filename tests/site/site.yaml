@@ -33,12 +33,12 @@ pages:
 
 grids:
   Orders:
-    selector: "[data-testid='orders-grid']"
+    selector: "[aria-label='Orders']"
     key_column: orderId
     kind: ag-grid
     api_expr: window.ordersGridApi
   Customers:
-    selector: "[data-testid='customers-grid']"
+    selector: ".grid-host:not([aria-label='Orders'])"   # orders.html: Customers grid has only a hash-like id
     key_column: customerId
     kind: ag-grid
 

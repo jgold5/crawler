@@ -69,8 +69,7 @@ def test_shell_nav_and_sign_out(authed_page, site_url):
     expect(nav.get_by_role("link", name="Dashboard")).to_have_attribute("aria-current", "page")
     # nav coexists with page content
     expect(pg.get_by_role("heading", name=re.compile(r"^Welcome back, "))).to_be_visible()
-    # sign out clears auth (remove the init script effect by checking storage right after click)
-    pg.context.clear_cookies()
+    # sign out clears auth and returns to login
     nav.get_by_role("button", name="Sign out").click()
     pg.wait_for_url(re.compile(r"/login\.html$"))
 
