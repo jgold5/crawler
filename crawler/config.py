@@ -115,7 +115,7 @@ class SiteConfig:
     runs: int = 2
     parallel: int = 4
     headless: bool = True
-    cdp_endpoint: str = "http://localhost:9222"  # the user's logged-in Chrome; we borrow its session (see nav/connect.py)
+    cdp_endpoint: str = "http://localhost:9222"  # the user's logged-in Chrome: borrowed or driven (see nav/session.py)
     timeout_ms: int = 10_000
     viewport: dict[str, int] = field(default_factory=lambda: {"width": 1440, "height": 900})
     root: str = "."  # directory of site.yaml; relative paths resolve against it
@@ -124,6 +124,13 @@ class SiteConfig:
     ready_ignore_urls: list[str] = field(default_factory=list)
     # navmap.yaml written by `crawler navmap`: `go to X` for a page without a url clicks its tab -> option
     navmap: str | None = None
+    # How navmap/author/probe get a logged-in browser (see crawler/nav/session.py):
+    #   borrow: copy the session out of the Chrome at cdp_endpoint into our own headless browser
+    #   drive:  run in new tabs of that Chrome itself (its logged-in profile; visible; nothing copied)
+    #   auto:   borrow; drive instead when the borrowed start page looks like a login page
+    session: str = "auto"
+    # URL regexes of the app's login/SSO pages (auto mode: landing on one means "not logged in")
+    login_url_patterns: list[str] = field(default_factory=list)
 
     def js_config(self) -> dict[str, Any]:
         """The subset passed into the in-page engine (camelCase for JS)."""

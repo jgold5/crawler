@@ -14,6 +14,7 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
@@ -25,15 +26,34 @@ _READ_STORAGE = """() => ({
 })"""
 
 
+class NoAppSessionError(RuntimeError):
+    """The debug Chrome holds nothing for the app (no cookie, no web storage, no tab on its host)."""
+
+
+def _cookie_matches(domain: str, host: str) -> bool:
+    d = (domain or "").lstrip(".").lower()
+    return bool(d) and (host == d or host.endswith("." + d))
+
+
+def no_session_message(cdp_endpoint: str, app_url: str, tabs: int, on_host: bool) -> str:
+    host = urlsplit(app_url).hostname or app_url
+    return (f"the Chrome at {cdp_endpoint} has no session for {host}: open {app_url} in THAT Chrome window (the one "
+            f"started with --remote-debugging-port), log in there, keep the tab open, and run again "
+            f"(that Chrome has {tabs} tab(s) open; {'one is' if on_host else 'none is'} on the app host)")
+
+
 def harvest_auth(cdp_endpoint: str, out_path: str | Path, *, playwright: Playwright | None = None,
-                 origin: str | None = None) -> Path:
+                 origin: str | None = None, app_url: str | None = None) -> Path:
     """Copy the session out of a running Chrome (`http://localhost:9222` or a `ws://` URL) into a storage-state file.
 
     `origin` limits localStorage to one origin (cookies are always all of them).
+    `app_url` (the app's base_url): if that Chrome has no cookie for its host (parent domains included), no
+    local/sessionStorage for its origin and no tab on its host, nothing is written (an empty login must not be
+    cached) and NoAppSessionError says where to log in.
     """
     if playwright is None:
         with sync_playwright() as p:
-            return harvest_auth(cdp_endpoint, out_path, playwright=p, origin=origin)
+            return harvest_auth(cdp_endpoint, out_path, playwright=p, origin=origin, app_url=app_url)
     try:
         browser = playwright.chromium.connect_over_cdp(cdp_endpoint)
     except Exception as e:
@@ -61,8 +81,19 @@ def harvest_auth(cdp_endpoint: str, out_path: str | Path, *, playwright: Playwri
         state.setdefault("origins", []).extend(
             {"origin": o, "localStorage": items} for o, items in local.items() if o not in known)
         state[_SESSION_KEY] = session
+        tabs = [pg.url for pg in ctx.pages]
     finally:
         browser.close()  # for connect_over_cdp this only disconnects; the user's Chrome keeps running
+    if app_url:
+        parts = urlsplit(app_url)
+        host = (parts.hostname or "").lower()
+        app_origin = f"{parts.scheme}://{parts.netloc}"
+        has_cookie = any(_cookie_matches(c.get("domain", ""), host) for c in state.get("cookies", []))
+        has_storage = any(o.get("origin") == app_origin and o.get("localStorage") for o in state["origins"]) \
+            or bool(state[_SESSION_KEY].get(app_origin))
+        on_host = any((urlsplit(u).hostname or "").lower() == host for u in tabs if u.startswith(("http://", "https://")))
+        if host and not (has_cookie or has_storage or on_host):
+            raise NoAppSessionError(no_session_message(cdp_endpoint, app_url, len(tabs), on_host))
     if origin:
         origin = origin.rstrip("/")
         state["origins"] = [o for o in state["origins"] if o.get("origin") == origin]
