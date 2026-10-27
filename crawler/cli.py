@@ -36,7 +36,7 @@ def _denylist(deny: tuple[str, ...], deny_file: str | None) -> list[str]:
 @click.option("--check", "check_only", type=click.Path(exists=True, file_okay=False),
               help="Only re-scan an existing bundle for leaks.")
 @click.option("--pages", "pages", multiple=True, metavar="GLOB",
-              help="Also read page-definition files (.yaml/.yml/.json) matching GLOB, relative to SRC or absolute "
+              help="Also read page-definition files (.yaml/.yml/.json/.xml) matching GLOB, relative to SRC or absolute "
                    "(e.g. 'src/test/resources/pages/**/*.yaml'). Repeatable. Off by default; files named like "
                    "credentials/secrets/.env/.properties are never read.")
 def distill(src, out, deny, deny_file, package_prefix, keep_identifiers, show_leaks, check_only, pages) -> None:
@@ -90,15 +90,18 @@ def _echo_warnings(caught, category) -> None:
 
 @main.command()
 @click.argument("url")
-@click.option("--out", default="site-profile", show_default=True, type=click.Path(file_okay=False))
+@click.option("--out", default="site-profile", show_default=True, type=click.Path(file_okay=False),
+              help="Where to write site-profile.yaml, SITE-PROFILE.md and site.suggested.yaml.")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="site.yaml; suggestions are then only additions to it.")
 @click.option("--deny", multiple=True, metavar="TERMS", help="Comma-separated private terms. Repeatable.")
-@click.option("--deny-file", type=click.Path(exists=True, dir_okay=False))
-@click.option("--max-pages", default=30, show_default=True)
+@click.option("--deny-file", type=click.Path(exists=True, dir_okay=False), help="File with one private term per line.")
+@click.option("--max-pages", default=30, show_default=True, help="Stop after this many distinct page shapes.")
 @click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
 def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
     """Read-only, headless crawl of your site that records only shapes and counts (no content).
+
+    Writes a redacted site-profile.yaml plus site.suggested.yaml (config additions for site.yaml).
 
     Borrows your login from Chrome started with --remote-debugging-port=9222 (log in there first).
     """
