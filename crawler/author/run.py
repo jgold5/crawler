@@ -614,8 +614,10 @@ class Author:
         replayed once (the last one, then the last two... at most 4) and the line runs again."""
         retried = replayed = False
         while True:
+            start_doc = None
             try:
                 self._refresh_frame(rec, c)
+                start_doc = c.doc
                 if nxt is not None and self._watchable(nxt) and (c.watch or {}).get("n") != nxt.line.n:
                     self._install_watch(nxt, c)
                 self._element(rec, c)
@@ -635,7 +637,9 @@ class Author:
                     return
                 raise
             except (PlaywrightError, ResolveError, GridError, FrameError, _Stop) as e:
-                if retried or not is_transient(e):
+                # transient: the error says so, or the document was replaced while the line ran (a reload mid-edit)
+                reloaded = start_doc is not None and self._doc_id(c.frame) not in (None, start_doc)
+                if retried or not (is_transient(e) or reloaded):
                     raise
                 retried = True
                 first = str(e).split("\n")[0].strip()
@@ -1157,6 +1161,17 @@ class Author:
         if c.run == 1:
             self._render(rec, rec.slot.name)
         self._act_static(rec, c, handle, self._live(rec, c, use))
+
+    def _still_displayed(self, rec: LineRec, c: _Ctx, handle) -> bool:
+        """Displayed: the resolver found it visible (and stable for a window). Still there: is it visible now?
+        Gone since (a toast): it was displayed, which is what the line checks."""
+        if self._connected(handle):
+            try:
+                return bool(handle.is_visible())
+            except PlaywrightError:
+                pass
+        self._note_once(rec, c, f"{rec.line.target!r} was displayed when found and gone right after (transient)")
+        return True
 
     @staticmethod
     def _connected(handle) -> bool:
@@ -1687,7 +1702,15 @@ class Author:
         elif act == "remember":
             pass
         elif act == "verify":
-            self._verify(rec, c, el.evaluate(_READ_JS), el.is_visible, el.is_enabled)
+            # a check reads the element it resolved (now), never waits for it to come back
+            if ln.verify_op == "displayed":
+                self._verify(rec, c, None, lambda: self._still_displayed(rec, c, handle), handle.is_enabled)
+            elif ln.verify_op == "not_displayed":
+                self._verify(rec, c, None, lambda: self._connected(handle) and handle.is_visible(), handle.is_enabled)
+            else:
+                if not self._connected(handle):
+                    raise PlaywrightError("Element is not attached to the DOM (re-rendered before it was read)")
+                self._verify(rec, c, handle.evaluate(_READ_JS), handle.is_visible, handle.is_enabled)
         self._settle(rec, c)
 
     def _act_grid(self, rec: LineRec, c: _Ctx, gf, cell) -> None:
