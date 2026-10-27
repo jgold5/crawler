@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- App shell: the tab bar (top document, no iframe) and its dropdown options. -->
+<pageDefinition>
+    <pageTitle>Shell</pageTitle>
+    <element name="Trading">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//li[normalize-space()='Trading']</locatorValue>
+    </element>
+    <!-- broken: the tab is an li, not a button -->
+    <element name="Admin">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[normalize-space()='Admin']</locatorValue>
+    </element>
+    <!-- ambiguous once Trading is open: the Trading tab and the Trades option both contain 'Trad' -->
+    <element name="Trades">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//li[contains(normalize-space(),'Trad')]</locatorValue>
+    </element>
+    <!-- text-fragile -->
+    <element name="Orders">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//li[contains(text(),'Orders')]</locatorValue>
+    </element>
+    <!-- under Trading AND Reports: one entry, valid after opening either tab -->
+    <element name="Positions">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//ul[contains(@class,'nav-menu')]/li[normalize-space()='Positions']</locatorValue>
+    </element>
+    <!-- broken: the id is random on every load -->
+    <element name="Settings">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//li[@id='mui-4821']</locatorValue>
+    </element>
+    <!-- correct; matches nothing until Reports is opened -->
+    <element name="Blotter">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//li[normalize-space()='Blotter']</locatorValue>
+    </element>
+</pageDefinition>

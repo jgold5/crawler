@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-orders')]</iframe>
+    <element name="Orders">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//ag-grid-angular[@aria-label='Orders']</locatorValue>
+    </element>
+    <element name="Export">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[@id='btn-export']</locatorValue>
+    </element>
+    <element name="Quantity in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//div[@role='row'][@row-index='</xpath_a>
+        <xpath_b>']//div[@col-id='quantity']</xpath_b>
+    </element>
+    <element name="Status in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//div[@row-index='</xpath_a>
+        <xpath_b>']//div[@col-id='status']</xpath_b>
+    </element>
+    <element name="Edit in row">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//div[@col-id='orderId'][normalize-space()='</xpath_a>
+        <xpath_b>']/ancestor::div[@role='row']//button[normalize-space()='Edit']</xpath_b>
+    </element>
+    <element name="Order ID link">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//div[@col-id='orderId']//a</locatorValue>
+    </element>
+    <element name="Header cell">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//*[contains(@class,'ag-header-cell')]</locatorValue>
+    </element>
+</pageDefinition>

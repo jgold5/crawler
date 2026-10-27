@@ -137,7 +137,11 @@ def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
 @click.option("--aliases", "aliases_path", type=click.Path(dir_okay=False),
               help="aliases.yaml (default: next to FLOW).")
 @click.option("--headed", is_flag=True, help="Show the browser.")
-def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, answers, aliases_path, headed) -> None:
+@click.option("--navmap", "navmap_path", type=click.Path(exists=True, dir_okay=False),
+              help="navmap.yaml from `crawler navmap`: `go to X` for a page without a url clicks its tab -> option "
+                   "(default: site.yaml `navmap:`).")
+def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, answers, aliases_path, headed,
+           navmap_path) -> None:
     """Run an English FLOW on the live app: write the owner's feature, verified XML edits and a report.
 
     Exit codes: 0 done, 1 a check failed or a line could not run, 2 English/usage errors, 3 a line needs
@@ -152,11 +156,42 @@ def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, 
     command = author_command(sys.argv[sys.argv.index("author"):] if "author" in sys.argv else ["author", flow])
     res = run_author(flow, repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
                      no_auth=no_auth, apply=do_apply, answers=list(answers), aliases=aliases_path,
-                     headless=not headed, echo=click.echo, command=command)
+                     headless=not headed, echo=click.echo, command=command, navmap=navmap_path)
     if res.errors:
         click.echo(f"{flow}: {len(res.errors)} problem(s); nothing was run:", err=True)
         for e in res.errors:
             click.echo(f"  {e}", err=True)
+    raise SystemExit(res.exit_code)
+
+
+@main.command()
+@click.option("--repo", "repo_root", required=True, type=click.Path(exists=True, file_okay=False),
+              help="The XML locator repository (a folder of version folders, or of page files).")
+@click.option("--version", "version", default=None, help="UI version folder in the repository (e.g. aggrid).")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="site.yaml (base_url: the page with the tab bar).")
+@click.option("--out", default="navmap-out", show_default=True, type=click.Path(file_okay=False))
+@click.option("--tabs", default=None, metavar="\"A,B\"",
+              help="Only these tabs (their labels, comma-separated); also picks the bar when several fit.")
+@click.option("--runs", default=2, show_default=True, type=click.IntRange(1, 10),
+              help="Fresh sessions every proposed locator must verify in.")
+@click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
+@click.option("--apply", "do_apply", is_flag=True, help="Write the XML edits (default: only xml.diff).")
+@click.option("--headed", is_flag=True, help="Show the browser.")
+def navmap(repo_root, version, config_path, out, tabs, runs, no_auth, do_apply, headed) -> None:
+    """Map the app's tab bar -> (lazy) dropdown options -> pages, verified in fresh sessions.
+
+    Writes OUT/navmap.yaml, report.md, xml.diff (tab/option entries: reuse / fix / new) and NAVIGATE.md (the
+    navigate step for your framework). Exit codes: 0 done, 1 no tab bar / a run failed, 2 usage, 3 several tab
+    bars fit (see OUT/ASK.md; answer with --tabs).
+    """
+    from crawler.navmap import navmap as run_navmap
+
+    res = run_navmap(repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
+                     tabs=[t for t in (tabs or "").split(",") if t.strip()] or None, no_auth=no_auth,
+                     apply=do_apply, headless=not headed, echo=click.echo)
+    for e in res.errors:
+        click.echo(f"error: {e}", err=True)
     raise SystemExit(res.exit_code)
 
 

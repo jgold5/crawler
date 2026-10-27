@@ -144,6 +144,7 @@ class Slot:
     notes: list[str] = field(default_factory=list)
     edit: Edit | None = None
     context: list[str] = field(default_factory=list)   # titles of the containers the element is in
+    nav: bool = False                  # a tab/option entry (crawler navmap): a stable container class is not fragile
 
     @property
     def proposes(self) -> bool:
@@ -269,7 +270,7 @@ def decide(slot: Slot, cfg: SiteConfig, runs: int) -> None:
             slot.verdict, slot.final = "conflict", None
             slot.reason = f"{e.name!r} does not select an iframe ({e.template!r}): never changed into one"
             return
-        flags = fragility(e.template, e.kind, cfg, template=e.dynamic)
+        flags = fragility(e.template, e.kind, cfg, template=e.dynamic, stable_classes=slot.nav)
         bad = [u for u in uses if not (u.entry or {}).get("same")]
         if not bad and not flags:
             slot.verdict, slot.reason, slot.final = "reuse", "selects exactly the intended element", e.template

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <!-- broken: the iframe's id is random; the page is still identified by the iframe's name -->
+    <iframe>//iframe[@id='mui-1234']</iframe>
+    <element name="Refresh">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]</locatorValue>
+    </element>
+</pageDefinition>

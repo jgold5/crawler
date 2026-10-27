@@ -10,7 +10,8 @@ helps share the shape of a private framework without sharing its contents.
 |---|---|---|
 | `crawler distill SRC` | Redacted, offline profile of your framework (structure, conventions, step catalog, locator shapes). `--pages GLOB` adds page-definition files (YAML/JSON/XML). `--check DIR` re-scans a bundle for leaks. | no |
 | `crawler probe URL` | Read-only, headless crawl that records only shapes and counts (frameworks, AG Grid, test-ids, id/class patterns); writes `site-profile.yaml` and `site.suggested.yaml`. | yes |
-| `crawler author FLOW.txt --repo XMLDIR --version aggrid --config site.yaml` | Runs an English flow on the live app (headless) and writes `flow.feature` (using your existing steps), `xml.diff` (reuse / fix / new entries, verified in 2 fresh sessions) and `report.md`. `--apply` writes the XML; `--answer L=N` answers `ASK.md`. | yes |
+| `crawler navmap --repo XMLDIR --version aggrid --config site.yaml` | Maps navigation: clicks each tab (`li`), waits for its lazy dropdown, clicks each option, identifies the page by its iframe. Writes `navmap.yaml` (page → tab → option, verified XPaths), `xml.diff` for broken/fragile nav entries, and `NAVIGATE.md` (a `navigateTo(pageKey)` method for the Java framework). Only navigation is clicked. | yes |
+| `crawler author FLOW.txt --repo XMLDIR --version aggrid --config site.yaml` | Runs an English flow on the live app (headless) and writes `flow.feature` (using your existing steps), `xml.diff` (reuse / fix / new entries, verified in 2 fresh sessions) and `report.md`. `--apply` writes the XML; `--answer L=N` answers `ASK.md`. With `--navmap navmap-out/navmap.yaml`, `go to X` navigates tab → option → iframe; a page with neither a URL nor a navmap route is a context switch. | yes |
 
 Specs: `docs/FLOWS.md` (author), `GOALS.md` (goals and status), `docs/ARCHITECTURE.md`.
 

@@ -65,7 +65,7 @@ NAV_JS = r"""(() => {
     const inner = c.querySelector(EXPLICIT);
     return !!(inner && visible(inner)) || c.localName === 'li' && [...c.querySelectorAll('*')].some(pointerOrigin);
   };
-  const st = { bars: [] };
+  const st = { found: [] };
 
   st.bars = function () {
     const out = [];
@@ -107,28 +107,38 @@ NAV_JS = r"""(() => {
                  tag: p.localName, triggers: items.map(i => is(i, TRIGGER) || !!i.querySelector(TRIGGER) ? 1 : 0),
                  carets: items.map(i => (i.querySelector('svg,[class*=caret],[class*=chevron]') ? 1 : 0)) });
     }
-    // a bar nested inside another bar's item (a menu under a tab) is not a bar of its own
-    const res = out.filter(b => !out.some(o => o !== b && o.items.some(i => i.contains(b.el))));
+    const whole = (i, o) => i === o.el || (i.contains(o.el) && label(i) === o.labels.join(' '));
+    const res = out.filter(b =>
+      // an outer group whose item IS a list of tabs (nav > ul + a button) gives way to that list
+      !out.some(o => o !== b && b.items.some(i => whole(i, o))) &&
+      // a group nested under another group's item (a menu under a tab) is not a bar of its own
+      !out.some(o => o !== b && o.items.some(i => i.contains(b.el) && !whole(i, b))));
     res.sort((a, b) => b.score - a.score || a.top - b.top);
-    st.bars = res;
+    st.found = res;
     return res.map((b, i) => ({ idx: i, labels: b.labels, score: b.score, evidence: b.evidence, top: b.top,
                                 left: b.left, tag: b.tag, triggers: b.triggers, carets: b.carets }));
   };
   st.item = function (bar, lab) {              // the click target of the bar item labelled ``lab``
-    const b = st.bars[bar];
+    const b = st.found[bar];
     if (!b) return null;
     const it = b.items.find(i => i.isConnected && label(i) === lab);
     return it ? target(it) : null;
   };
-  st.barEl = function (bar) { const b = st.bars[bar]; return b ? b.el : null; };
-  st.itemsOf = function (bar) { const b = st.bars[bar]; return b ? b.items.filter(i => i.isConnected).map(target) : []; };
+  st.barEl = function (bar) { const b = st.found[bar]; return b ? b.el : null; };
+  st.itemsOf = function (bar) { const b = st.found[bar]; return b ? b.items.filter(i => i.isConnected).map(target) : []; };
 
+  const TEXTY = 'li,a,button,[role=menuitem],[role=option],[role=tab]';
   st.mark = function (tok) {
-    for (const el of document.querySelectorAll('*')) { el.__navTok = tok; el.__navVis = visible(el); }
+    for (const el of document.querySelectorAll('*')) {
+      el.__navTok = tok; el.__navVis = visible(el);
+      el.__navTxt = is(el, TEXTY) ? el.textContent : undefined;
+    }
     st.look = null;
     return true;
   };
-  const fresh = (el, tok) => el.__navTok !== tok || !el.__navVis;
+  // new since the mark: not there, hidden then, or (a reused menu item) its text changed
+  const fresh = (el, tok) => el.__navTok !== tok || !el.__navVis ||
+    (el.__navTxt !== undefined && el.__navTxt !== el.textContent);
   st.scan = function (tok) {
     const news = [];
     let iframe = false, spinner = false, existed = 0;
@@ -174,6 +184,30 @@ NAV_JS = r"""(() => {
   st.closed = function (tok) { return st.scan(tok).opts.length === 0; };
   st.options = function (tok) { return st.scan(tok).opts; };
   st.panel = function (tok) { return st.scan(tok).panel; };
+  // the menu container and up to 3 ancestors, with what could anchor a locator on them (Python decides stability)
+  const anchorsFor = (start, kids) => {
+    const out = [];
+    let el = start, depth = 0;
+    while (el && el.nodeType === 1 && el !== document.body && el !== document.documentElement && depth < 4) {
+      const attrs = {};
+      for (const a of el.attributes) if (a.name !== 'style' && a.value.length <= 80) attrs[a.name] = a.value;
+      const direct = kids.every(o => o.parentElement === el);
+      out.push({ tag: el.localName, attrs, depth, direct });
+      el = el.parentElement; depth++;
+    }
+    return out;
+  };
+  st.anchors = function (tok) {           // the open menu's container (and ancestors)
+    const s = st.scan(tok);
+    return s.panel ? anchorsFor(s.panel, s.opts) : [];
+  };
+  st.barAnchors = function (bar) {        // the tab bar's container (and ancestors)
+    const b = st.found[bar];
+    return b ? anchorsFor(b.el, b.items.map(target)) : [];
+  };
+  st.own = function (el) {                // tag + normalized text of an element (for its own XPath step)
+    return { tag: el.localName, text: norm(el.textContent), label: label(el) };
+  };
   st.label = label;
   st.visible = visible;
 

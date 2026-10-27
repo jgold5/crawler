@@ -15,6 +15,10 @@
   .navbar-nav { flex: 1; }
   .navbar-nav > li, .user-menu > li { display: flex; align-items: center; gap: 4px; padding: 0 14px; cursor: pointer; color: #c9d3ea; }
   .navbar-nav > li:hover, .user-menu > li:hover { color: #fff; background: rgba(255,255,255,.06); }
+  .nav-menu { position: absolute; z-index: 900; list-style: none; margin: 0; background: #fff; color: #1d2330; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); min-width: 180px; padding: 4px 0; }
+  .nav-menu > li { padding: 8px 14px; cursor: pointer; }
+  .nav-menu > li:hover { background: #eef2fb; }
+  .nav-menu > li.app-spinner { cursor: default; padding: 10px 40px; }
   .nav-dropdown { position: absolute; background: #fff; color: #1d2330; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); min-width: 180px; padding: 4px 0; pointer-events: auto; }
   .nav-dropdown ul { list-style: none; margin: 0; padding: 0; }
   .nav-dropdown li { padding: 8px 14px; cursor: pointer; }
@@ -40,9 +44,13 @@
     nav.html?style=mat       Angular-Material-like: <nav mat-tab-nav-bar> with a[mat-tab-link][role=tab] and
                              button[mat-menu-trigger-for][aria-haspopup=menu]; menus are role=menu/menuitem.
     nav.html?frame=1         the whole shell (tab bar + content iframe) lives in <iframe name="navShell">.
+    nav.html?bars=2          "Help" (right-hand <ul>) opens a dropdown too: two plausible tab bars.
 
-  Clicking a tab with a menu fetches nav-<menu>.json, waits 200-1500 ms (spinner in the dropdown meanwhile) and
-  renders the dropdown in a cdk-overlay-container at the end of <body>; it closes on Escape and on outside clicks.
+  Plain: ONE shared menu <ul class="nav-menu"> elsewhere in <body> (not under the tabs) serves every tab: clicking a
+  tab shows it under the tab, CLEARS it and repopulates it with <li> items (handlers on the li, no ARIA) after
+  fetching nav-<menu>.json + 200-1500 ms (a spinner li meanwhile). Closing only hides it (stale items stay hidden
+  until the next tab clears them). Mat: a separate role=menu panel per open, in a cdk-overlay-container at the end
+  of <body>. Both close on Escape and on outside clicks.
   Clicking an option REPLACES <iframe name="appFrame-<key>" src="<key>.html?v=..."> (after a 200-800 ms fake XHR).
   Home has no dropdown (direct link). Admin > Audit Log opens nothing (a broken link); Admin > Users loads a page
   that does not exist. "Positions" is under Trading (positions) and under Reports (risk).
@@ -86,6 +94,11 @@
   document.body.appendChild(content);
   var overlay = H.frag('<div class="cdk-overlay-container"></div>').firstElementChild;
   document.body.appendChild(overlay);
+  var shared = null;
+  if (style === 'plain') {
+    shared = H.frag('<ul class="nav-menu {{c:Menu.list}}" id="{{rid}}" hidden></ul>').firstElementChild;
+    document.body.insertBefore(shared, overlay);
+  }
 
   var triggers = [];
   if (style === 'plain') {
@@ -102,6 +115,11 @@
     });
     var user = H.frag('<ul class="user-menu {{c:User.list}}">' +
       '<li class="{{c:User.item}}">Help</li><li class="{{c:User.item}}">Profile</li><li class="{{c:User.item}}">Sign out</li></ul>').firstElementChild;
+    if (params.get('bars') === '2') {    // a second bar whose items open dropdowns too (the tool must ask)
+      var help = user.firstElementChild;
+      help.insertAdjacentHTML('beforeend', CHEVRON);
+      help.addEventListener('click', function (e) { e.stopPropagation(); activate({ label: 'Help', menu: 'admin' }, help); });
+    }
     user.lastElementChild.addEventListener('click', function () {
       try { localStorage.removeItem('auth'); } catch (e) { /* ignore */ }
       location.replace('login.html');
@@ -137,7 +155,8 @@
   var seq = 0;
   function closeMenu() {
     if (!open) return;
-    open.pane.remove();
+    if (open.pane === shared) shared.hidden = true;
+    else open.pane.remove();
     if (open.backdrop) open.backdrop.remove();
     if (open.trigger.hasAttribute('aria-expanded')) open.trigger.setAttribute('aria-expanded', 'false');
     open = null;
@@ -150,6 +169,31 @@
     if (was) return;                      // a second click on the open tab closes it
     var r = trigger.getBoundingClientRect();
     var backdrop = null;
+    var mine;
+    if (style === 'plain') {             // the shared menu: cleared, shown under the tab, repopulated lazily
+      while (shared.firstChild) shared.removeChild(shared.firstChild);
+      shared.style.left = Math.round(r.left) + 'px';
+      shared.style.top = Math.round(r.bottom) + 'px';
+      var sp = H.frag('<li class="app-spinner {{c:Spinner.root}}" role="progressbar" aria-label="Loading" id="{{rid}}">' +
+        '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="40 20"/></svg></li>').firstElementChild;
+      shared.appendChild(sp);
+      shared.hidden = false;
+      open = { pane: shared, backdrop: null, trigger: trigger };
+      mine = ++seq;
+      fetch('nav-' + t.menu + '.json', { cache: 'no-store' }).then(function (res) { return res.json(); }).then(function (items) {
+        setTimeout(function () {
+          if (mine !== seq) return;
+          sp.remove();
+          items.forEach(function (it) {
+            var li = H.frag('<li class="{{c:Menu.item}}" id="{{rid}}">' + H.esc(it.label) + '</li>').firstElementChild;
+            li.addEventListener('click', function (e) { e.stopPropagation(); choose(it); });
+            shared.appendChild(li);
+          });
+          H.sprinkle(shared);
+        }, 200 + H.rnd(1301));
+      });
+      return;
+    }
     if (style === 'mat') {
       backdrop = H.frag('<div class="cdk-overlay-backdrop cdk-overlay-transparent-backdrop"></div>').firstElementChild;
       backdrop.addEventListener('click', closeMenu);
@@ -165,7 +209,7 @@
     overlay.appendChild(pane);
     if (trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'true');
     open = { pane: pane, backdrop: backdrop, trigger: trigger };
-    var mine = ++seq;
+    mine = ++seq;
     var host = style === 'mat' ? panel.querySelector('.mat-mdc-menu-content') : panel;
     var spin = H.frag('<div class="app-spinner {{c:Spinner.root}}" role="progressbar" aria-label="Loading" id="{{rid}}">' +
       '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="40 20"/></svg></div>').firstElementChild;

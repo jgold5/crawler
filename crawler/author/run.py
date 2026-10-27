@@ -172,6 +172,8 @@ class LineRec:
     grid_name: str | None = None
     secret: bool = False
     switch: bool = False                    # goto without a URL: switch page context, don't navigate
+    nav: object = None                      # goto through the tab bar (a crawler.navmap Route)
+    nav_slots: list = field(default_factory=list)   # the tab / option entries that navigation used
     resolved: dict = field(default_factory=dict)    # run -> how it was found
     verify: dict = field(default_factory=dict)      # run -> (ok, actual, expected)
     ms: dict = field(default_factory=dict)          # run -> ms
@@ -388,8 +390,9 @@ def parse_answers(values) -> dict[int, int]:
 class Author:
     def __init__(self, flow_path, repo: LocatorRepo, cfg: SiteConfig, out_dir, *, runs: int = 2,
                  answers: dict[int, int] | None = None, aliases_path=None, echo=print,
-                 command: str | None = None):
+                 command: str | None = None, navmap=None):
         self.flow_path = Path(flow_path)
+        self.navmap = navmap               # crawler.navmap.NavMap: pages without a url are reached tab -> option
         self.repo = repo
         self.cfg = cfg
         self.out = Path(out_dir)
@@ -445,6 +448,16 @@ class Author:
                             [f"add pages: {{{ref.cfg_name or ref.written}: {{url: /...}}}}", "or set base_url"]))
                         continue
                     first_goto = False
+                    route = self.navmap.route(ref.key) if self.navmap is not None and ln.verb != "switch to" else None
+                    if route is not None and route.bar_frame:
+                        # (a tab bar inside a frame: its pages' iframes are nested; not supported by author yet)
+                        self.echo(f"line {ln.n}: navmap: the tab bar is inside a frame; `go to {ln.page or ln.target}`"
+                                  f" switches context instead of clicking {route.tab!r}")
+                        route = None
+                    if route is not None:
+                        # navmap: click the page's tab (and its lazy option), then switch to the page's iframe
+                        self.records.append(LineRec(ln, "goto", pageref=ref, switch=True, nav=route))
+                        continue
                     self.records.append(LineRec(replace(ln, verb="switch to"), "goto", pageref=ref, switch=True))
                     continue
                 first_goto = False
@@ -766,7 +779,7 @@ class Author:
         ref = rec.pageref
         if not rec.switch:
             c.page.goto(ref.url, wait_until="domcontentloaded")
-        elif c.page.url in ("", "about:blank"):
+        elif c.page.url in ("", "about:blank") or (rec.nav is not None and not self._at_base(c)):
             c.page.goto(self.cfg.base_url, wait_until="domcontentloaded")   # the flow starts by switching
         rep = c.tracker.wait([c.page.main_frame])
         c.key = ref.key
@@ -774,6 +787,7 @@ class Author:
             self._not_ready(rec, c, rep)
         elif rep.stuck:
             self._stuck(rec, c, rep)
+        nav_frame = self._nav_goto(rec, c) if rec.nav is not None else None
         entry = self.repo.iframe_entry(ref.key) if ref.in_repo else None
         if entry is not None and not entry.page_level and not targets_frame(entry.value):
             entry = None          # only an entry whose locator selects a frame is the page's iframe entry
@@ -789,6 +803,8 @@ class Author:
                     frame = frame_for(c.page, entry.value, self.timeout)
                 except FrameError as e:
                     rec.notes.append(f"run {c.run}: iframe entry {entry.name!r}: {e}") if c.run == 1 else None
+        if frame is None and nav_frame is not None:
+            frame = nav_frame          # the iframe the tab/option click opened (found by the navmap's locator)
         if frame is None:
             # a framed app (the repository's pages have iframe entries, or an earlier page was framed): wait for
             # this page's iframe to appear instead of running the page in the shell's own document
@@ -858,6 +874,129 @@ class Author:
                     " (cross-origin)" if info.origin != main.origin else "")
             rec.resolved[c.run] = f"page {ref.key!r} ({ref.how})" + where
             self._render(rec, None, page_name=ref.key)
+
+    def _at_base(self, c: _Ctx) -> bool:
+        from urllib.parse import urlparse
+        a, b = urlparse(c.page.url), urlparse(self.cfg.base_url)
+        return (a.scheme, a.netloc, a.path) == (b.scheme, b.netloc, b.path)
+
+    def _nav_goto(self, rec: LineRec, c: _Ctx):
+        """`go to X` through the tab bar (crawler navmap): click the tab, wait for its lazy option and click it,
+        then wait for the page's iframe. The tab and option entries (on the navmap's nav page) are checked like any
+        other entry. Returns the page's frame (None: left to the usual iframe logic)."""
+        from ..navmap.crawl import clean, nav_check
+        route = rec.nav
+        bar = c.page.main_frame
+        for xp in route.bar_frame or []:
+            bar = frame_for(bar, xp, self.timeout)
+        tab = self._nav_element(rec, c, bar, route.tab, route.tab_xpath, route.tab_entry, check=nav_check,
+                                clean=clean)
+        tab_loc = self._nav_live(bar, rec.nav_slots[-1], tab)
+        tab_loc.click(timeout=self.timeout)
+        used = f"tab {route.tab!r}"
+        if route.option:
+            opt = None
+            for attempt in (1, 2):       # clickUntilVisible: the options load only after the tab is clicked
+                try:
+                    opt = self._nav_wait_option(bar, route)
+                    break
+                except (PlaywrightError, ResolveError) as e:
+                    if attempt == 2:
+                        raise _Stop(f"option {route.option!r} did not appear after clicking tab {route.tab!r}: "
+                                    f"{str(e).splitlines()[0]}") from None
+                    tab_loc.click(timeout=self.timeout)
+            self._nav_element(rec, c, bar, route.option, route.option_xpath, route.option_entry, check=nav_check,
+                              clean=clean, handle=opt)
+            self._nav_live(bar, rec.nav_slots[-1], opt).click(timeout=self.timeout)
+            used += f" -> option {route.option!r}"
+        entry = self.repo.iframe_entry(rec.pageref.key) if rec.pageref.in_repo else None
+        # the navmap's verified iframe locator first (the page's entry, or its verified replacement)
+        want = list(dict.fromkeys(x for x in (route.iframe_xpath, (entry.value if entry is not None
+                                                                    and entry.kind == "xpath" else None)) if x))
+        frame = None
+        for i, xp in enumerate(want):
+            try:
+                frame = frame_for(bar, xp, self.timeout if i == 0 else quick_ms(self.timeout, 0.3))
+                break
+            except FrameError:
+                continue
+        if c.run == 1:
+            rec.notes.append(f"navigated through the tab bar: {used}" + (f" -> iframe {want[0]!r}" if want else ""))
+        return frame
+
+    def _nav_wait_option(self, bar, route):
+        """The option, once its tab's dropdown showed it: by the navmap's XPath (visible), else by its label."""
+        if route.option_xpath:
+            try:
+                loc = bar.locator(f"xpath={route.option_xpath}")
+                loc.first.wait_for(state="visible", timeout=self.timeout)
+                if loc.count() == 1:
+                    h = loc.element_handle(timeout=self.timeout)
+                    if norm(h.inner_text().replace("\u25be", "")) == norm(route.option):
+                        return h
+            except PlaywrightError:
+                pass
+        return resolve(bar, Target(query=route.option), "click", self.cfg, self.timeout).handle
+
+    def _nav_element(self, rec: LineRec, c: _Ctx, frame, label: str, xpath: str | None, entry_name: str | None,
+                     *, check, clean, handle=None):
+        """Check the tab/option entry (and the navmap's XPath) against the element; returns its handle."""
+        if handle is None:
+            if xpath:
+                try:
+                    loc = frame.locator(f"xpath={xpath}")
+                    loc.first.wait_for(state="visible", timeout=self.timeout)
+                    if loc.count() == 1:
+                        handle = loc.element_handle(timeout=self.timeout)
+                except PlaywrightError:
+                    handle = None
+            if handle is None:
+                handle = resolve(frame, Target(query=label), "click", self.cfg, self.timeout).handle
+        nav_page = rec.nav.nav_page or "nav"
+        name = entry_name or label
+        slot = self.slots.get((nav_page, norm(name)))
+        if slot is None:
+            entry = None
+            if nav_page in self.repo.pages():
+                try:
+                    entry = self.repo.get(nav_page, name)
+                except RepoKeyError:
+                    entry = None
+            cands = [Cand(xpath, "navmap", 0.0, fragility(xpath, "xpath", self.cfg, stable_classes=True))] \
+                if xpath else []
+            cands += [x for x in clean(static_cands(generate(frame, handle, self.cfg), self.cfg)) if x.loc != xpath]
+            slot = self._slot(nav_page, entry.name if entry is not None else name, entry=entry,
+                              new_page=nav_page not in self.repo.pages(), cands=cands, nav=True,
+                              found_by="navmap (name)" if entry is not None else "new (navmap)")
+        if slot not in rec.nav_slots:
+            rec.nav_slots.append(slot)
+        else:          # the same entry twice in one navigation: keep it last (it is the one acted on)
+            rec.nav_slots.remove(slot)
+            rec.nav_slots.append(slot)
+        if rec.line.n not in slot.lines:
+            slot.lines.append(rec.line.n)
+        items = ([(slot.entry.kind, slot.entry.value or "")] if slot.entry is not None else []) + \
+            [("xpath", x.loc) for x in slot.cands]
+        res = check(frame, items, handle, [])
+        u = Use(rec.line.n, c.run)
+        if slot.entry is not None:
+            u.entry, u.entry_render, res = res[0], slot.entry.value, res[1:]
+        u.cands = [bool(r.get("same")) for r in res]
+        u.exact = [bool(r.get("exact")) for r in res]
+        slot.uses.append(u)
+        return handle
+
+    @staticmethod
+    def _nav_live(frame, slot: Slot, handle):
+        """Click through a locator verified (just now) to select the element; else the handle itself."""
+        u = slot.uses[-1] if slot.uses else None
+        if u is not None:
+            if slot.entry is not None and slot.entry.kind == "xpath" and (u.entry or {}).get("same"):
+                return frame.locator(f"xpath={slot.entry.value}")
+            for x, ok in zip(slot.cands, u.cands):
+                if ok:
+                    return frame.locator(f"xpath={x.loc}")
+        return handle
 
     # ------------------------------------------------------------------ slots
     def _slot(self, page: str, name: str, **kw) -> Slot:

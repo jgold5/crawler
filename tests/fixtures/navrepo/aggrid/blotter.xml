@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-blotter')]</iframe>
+    <element name="Refresh">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]</locatorValue>
+    </element>
+</pageDefinition>

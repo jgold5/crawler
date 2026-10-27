@@ -122,6 +122,8 @@ class SiteConfig:
     grid_row_base: int = 0  # the number the owner's grid steps give the first displayed row (`in row "0"`)
     # URL regexes whose requests never hold app-ready (long-poll, push, telemetry endpoints the app keeps open)
     ready_ignore_urls: list[str] = field(default_factory=list)
+    # navmap.yaml written by `crawler navmap`: `go to X` for a page without a url clicks its tab -> option
+    navmap: str | None = None
 
     def js_config(self) -> dict[str, Any]:
         """The subset passed into the in-page engine (camelCase for JS)."""

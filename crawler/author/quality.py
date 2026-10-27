@@ -43,12 +43,32 @@ def _generated(value: str, cfg: SiteConfig | None) -> bool:
     return any(re.search(p, value) for p in cfg.unstable_id_patterns or [])
 
 
+_CLASS_TOKEN = re.compile(r"contains\(\s*@class\s*,\s*'([\w-]+)'\s*\)"
+                          r"|contains\(\s*concat\(\s*' '\s*,\s*normalize-space\(\s*@class\s*\)\s*,\s*' '\s*\)\s*,\s*' ([\w-]+) '\s*\)")
+
+
+def _stable_classes(loc: str, cfg: SiteConfig | None) -> str:
+    """``loc`` with every class test on a stable class token (not matching ``unstable_class_patterns``) neutralized."""
+    cfg = cfg or SiteConfig()
+
+    def one(m: re.Match) -> str:
+        tok = m.group(1) or m.group(2)
+        if any(re.search(p, tok) for p in cfg.unstable_class_patterns or []):
+            return m.group(0)
+        return "true()"
+    return _CLASS_TOKEN.sub(one, loc)
+
+
 def fragility(locator: str | None, kind: str = "xpath", cfg: SiteConfig | None = None,
-              strategy: str | None = None, *, template: bool = False) -> list[str]:
-    """Fragility flags of ``locator`` (empty list: not fragile). ``template``: a row template (no length flag)."""
+              strategy: str | None = None, *, template: bool = False, stable_classes: bool = False) -> list[str]:
+    """Fragility flags of ``locator`` (empty list: not fragile). ``template``: a row template (no length flag).
+    ``stable_classes``: a test on a stable class token (a menu/bar container's own class, e.g. ``nav-menu``) is not
+    class-dependent (crawler navmap anchors tab/option locators on their container)."""
     if not locator:
         return []
     loc = " ".join(locator.split())
+    if stable_classes and kind != "css":
+        loc = _stable_classes(loc, cfg)
     flags: list[str] = []
     if strategy in _STRATEGY_FLAGS:
         flags.append(_STRATEGY_FLAGS[strategy])
@@ -73,7 +93,7 @@ def fragility(locator: str | None, kind: str = "xpath", cfg: SiteConfig | None =
             flags.append(FLAG_POS)
         if re.match(r"\(*\s*/(?!/)", bare):
             flags.append(FLAG_ABS)
-    if not template and len(loc) > VERY_LONG:
+    if not template and len(" ".join(locator.split())) > VERY_LONG:
         flags.append(FLAG_LONG)
     if any(_generated(v, cfg) for v in _id_values(loc, css)):
         flags.append(FLAG_ID)

@@ -33,8 +33,11 @@ def _storage_state(cfg: SiteConfig, no_auth: bool, playwright, echo) -> str | No
 def author(flow, *, repo_root, version: str | None = None, config=None, cfg: SiteConfig | None = None,
            out_dir="author-out", runs: int | None = None, no_auth: bool = False, apply: bool = False,
            answers=None, aliases=None, playwright=None, browser=None, headless: bool = True, echo=print,
-           command: str | None = None) -> AuthorResult:
-    """Run the whole `crawler author` command. ``playwright``/``browser`` may be passed in (tests share one)."""
+           command: str | None = None, navmap=None) -> AuthorResult:
+    """Run the whole `crawler author` command. ``playwright``/``browser`` may be passed in (tests share one).
+
+    ``navmap`` (or site.yaml ``navmap:``): navmap.yaml from `crawler navmap`; `go to X` for a page without a url
+    then clicks X's tab (and its lazy option) and switches to X's iframe."""
     t0 = time.monotonic()
     out = Path(out_dir)
     if cfg is None:
@@ -47,7 +50,16 @@ def author(flow, *, repo_root, version: str | None = None, config=None, cfg: Sit
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RepoWarning)
         repo = LocatorRepo.load(Path(repo_root), version)
-    a = Author(flow, repo, cfg, out, runs=runs, answers=answers, aliases_path=aliases, echo=echo, command=command)
+    nav = None
+    nav_path = navmap or (cfg.path(cfg.navmap) if getattr(cfg, "navmap", None) else None)
+    if nav_path:
+        from ..navmap.model import load_navmap
+        try:
+            nav = load_navmap(nav_path)
+        except (OSError, ValueError) as e:
+            return AuthorResult(EXIT_USAGE, out, errors=[f"navmap: {e}"])
+    a = Author(flow, repo, cfg, out, runs=runs, answers=answers, aliases_path=aliases, echo=echo, command=command,
+               navmap=nav)
     problems = a.prepare()
     if problems:
         return AuthorResult(EXIT_USAGE, out, records=a.records, errors=problems)
