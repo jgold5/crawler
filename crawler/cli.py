@@ -98,26 +98,36 @@ def _echo_warnings(caught, category) -> None:
 @click.option("--deny-file", type=click.Path(exists=True, dir_okay=False), help="File with one private term per line.")
 @click.option("--max-pages", default=30, show_default=True, help="Stop after this many distinct page shapes.")
 @click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
-def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
+@click.option("--session", "session", type=click.Choice(["auto", "borrow", "drive"]), default=None,
+              help="auto (default; site.yaml session:): borrow your Chrome's login, or drive that Chrome when the "
+                   "borrowed login lands on a login page; borrow: copy the login into a headless browser; drive: run "
+                   "in a new tab of your Chrome at cdp_endpoint (its logged-in profile, visible).")
+def probe(url, out, config_path, deny, deny_file, max_pages, no_auth, session) -> None:
     """Read-only, headless crawl of your site that records only shapes and counts (no content).
 
     Writes a redacted site-profile.yaml plus site.suggested.yaml (config additions for site.yaml).
 
-    Borrows your login from Chrome started with --remote-debugging-port=9222 (log in there first).
+    Uses your login from Chrome started with --remote-debugging-port=9222 (log in there first): borrowed, or
+    driven in a new tab of that Chrome (--session).
     """
+    from playwright.sync_api import sync_playwright
+
     from crawler.config import load_config
-    from crawler.nav.connect import harvest_auth, storage_state_fresh
+    from crawler.nav.session import SessionError, open_session
     from crawler.probe import probe as run_probe
 
     cfg = load_config(config_path)
-    state = None
-    if not no_auth:
-        state = str(cfg.path(cfg.auth.storage_state))
-        if not storage_state_fresh(state, cfg.auth.max_age_minutes):
-            click.echo(f"borrowing login from Chrome at {cfg.cdp_endpoint} ...")
-            harvest_auth(cfg.cdp_endpoint, state)
-    bundle = run_probe(url, Path(out), storage_state=state, max_pages=max_pages,
-                       denylist=_denylist(deny, deny_file), cfg=cfg if config_path else None)
+    with sync_playwright() as p:
+        try:
+            sess = open_session(cfg, p, mode=session, no_auth=no_auth, target_url=url, echo=click.echo)
+        except SessionError as e:
+            click.echo(f"error: {e}", err=True)
+            raise SystemExit(1)
+        try:
+            bundle = run_probe(url, Path(out), max_pages=max_pages, denylist=_denylist(deny, deny_file),
+                               cfg=cfg if config_path else None, session=sess)
+        finally:
+            sess.close()
     click.echo(f"wrote {bundle}  (open SITE-PROFILE.md; review before sharing)")
 
 
@@ -129,8 +139,12 @@ def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False), help="site.yaml.")
 @click.option("--out", default="author-out", show_default=True, type=click.Path(file_okay=False))
 @click.option("--runs", default=2, show_default=True, type=click.IntRange(1, 10),
-              help="Fresh sessions every proposed locator must verify in.")
+              help="Fresh sessions (fresh tabs when driving your Chrome) every proposed locator must verify in.")
 @click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
+@click.option("--session", "session", type=click.Choice(["auto", "borrow", "drive"]), default=None,
+              help="auto (default; site.yaml session:): borrow your Chrome's login, or drive that Chrome when the "
+                   "borrowed login lands on a login page; borrow: copy the login into a headless browser; drive: run "
+                   "in a new tab of your Chrome at cdp_endpoint (its logged-in profile, visible).")
 @click.option("--apply", "do_apply", is_flag=True, help="Write the XML edits (default: only xml.diff).")
 @click.option("--answer", "answers", multiple=True, metavar="LINE=N",
               help="Answer an ASK.md question: candidate N for line LINE (remembered in aliases.yaml). Repeatable.")
@@ -140,8 +154,8 @@ def probe(url, out, config_path, deny, deny_file, max_pages, no_auth) -> None:
 @click.option("--navmap", "navmap_path", type=click.Path(exists=True, dir_okay=False),
               help="navmap.yaml from `crawler navmap`: `go to X` for a page without a url clicks its tab -> option "
                    "(default: site.yaml `navmap:`).")
-def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, answers, aliases_path, headed,
-           navmap_path) -> None:
+def author(flow, repo_root, version, config_path, out, runs, no_auth, session, do_apply, answers, aliases_path,
+           headed, navmap_path) -> None:
     """Run an English FLOW on the live app: write the owner's feature, verified XML edits and a report.
 
     Exit codes: 0 done, 1 a check failed or a line could not run, 2 English/usage errors, 3 a line needs
@@ -156,7 +170,7 @@ def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, 
     command = author_command(sys.argv[sys.argv.index("author"):] if "author" in sys.argv else ["author", flow])
     res = run_author(flow, repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
                      no_auth=no_auth, apply=do_apply, answers=list(answers), aliases=aliases_path,
-                     headless=not headed, echo=click.echo, command=command, navmap=navmap_path)
+                     headless=not headed, echo=click.echo, command=command, navmap=navmap_path, session=session)
     if res.errors:
         click.echo(f"{flow}: {len(res.errors)} problem(s); nothing was run:", err=True)
         for e in res.errors:
@@ -174,11 +188,15 @@ def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, 
 @click.option("--tabs", default=None, metavar="\"A,B\"",
               help="Only these tabs (their labels, comma-separated); also picks the bar when several fit.")
 @click.option("--runs", default=2, show_default=True, type=click.IntRange(1, 10),
-              help="Fresh sessions every proposed locator must verify in.")
+              help="Fresh sessions (fresh tabs when driving your Chrome) every proposed locator must verify in.")
 @click.option("--no-auth", is_flag=True, help="Don't borrow a login (public pages only).")
+@click.option("--session", "session", type=click.Choice(["auto", "borrow", "drive"]), default=None,
+              help="auto (default; site.yaml session:): borrow your Chrome's login, or drive that Chrome when the "
+                   "borrowed login lands on a login page; borrow: copy the login into a headless browser; drive: run "
+                   "in a new tab of your Chrome at cdp_endpoint (its logged-in profile, visible).")
 @click.option("--apply", "do_apply", is_flag=True, help="Write the XML edits (default: only xml.diff).")
 @click.option("--headed", is_flag=True, help="Show the browser.")
-def navmap(repo_root, version, config_path, out, tabs, runs, no_auth, do_apply, headed) -> None:
+def navmap(repo_root, version, config_path, out, tabs, runs, no_auth, session, do_apply, headed) -> None:
     """Map the app's tab bar -> (lazy) dropdown options -> pages, verified in fresh sessions.
 
     Writes OUT/navmap.yaml, report.md, xml.diff (tab/option entries: reuse / fix / new) and NAVIGATE.md (the
@@ -189,7 +207,7 @@ def navmap(repo_root, version, config_path, out, tabs, runs, no_auth, do_apply, 
 
     res = run_navmap(repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
                      tabs=[t for t in (tabs or "").split(",") if t.strip()] or None, no_auth=no_auth,
-                     apply=do_apply, headless=not headed, echo=click.echo)
+                     apply=do_apply, headless=not headed, echo=click.echo, session=session)
     for e in res.errors:
         click.echo(f"error: {e}", err=True)
     raise SystemExit(res.exit_code)

@@ -30,13 +30,15 @@ QUIET_MS = 300
 def probe(start_url: str, out: str | Path, *, storage_state: str | None = None, max_pages: int = 30,
           same_origin_only: bool = True, include_path_shapes: bool = False, denylist: Iterable[str] = (),
           cfg: SiteConfig | None = None, browser: Any = None, timeout_ms: int | None = None,
-          stability_pages: int = 2) -> Path:
+          stability_pages: int = 2, session: Any = None) -> Path:
     """Crawl `start_url` read-only (links only, BFS, deduped by path shape) and write the redacted bundle.
 
     Writes `site-profile.yaml`, `SITE-PROFILE.md` and `site.suggested.yaml` into `out` and returns `out`.
     Always headless. `storage_state` is a Playwright storage-state file (e.g. from `nav.connect.harvest_auth`).
     `cfg` supplies the current patterns (defaults if None) so suggestions are only additions.
     `browser` lets callers reuse a launched Chromium (tests); otherwise one is launched and closed.
+    `session` (a crawler.nav.session.Session, from the CLI) supplies the browser instead: borrowing (its browser and
+    storage state), or driving the user's logged-in Chrome (one new tab, closed at the end; other tabs untouched).
     Raises ProbeLeakError (after deleting the bundle) if the leak scan finds anything.
     """
     cfg = cfg or SiteConfig()
@@ -53,7 +55,11 @@ def probe(start_url: str, out: str | Path, *, storage_state: str | None = None, 
     timeout = timeout_ms or cfg.timeout_ms
 
     t0 = time.monotonic()
-    if browser is None:
+    if session is not None:
+        storage_state = storage_state or session.storage_state
+        pages, stats, sentinels = _crawl(session.browser, start_url, cfg, storage_state, max_pages, same_origin_only,
+                                         timeout, stability_pages, session=session)
+    elif browser is None:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             b = p.chromium.launch()
@@ -66,7 +72,7 @@ def probe(start_url: str, out: str | Path, *, storage_state: str | None = None, 
         pages, stats, sentinels = _crawl(browser, start_url, cfg, storage_state, max_pages, same_origin_only,
                                          timeout, stability_pages)
     stats.elapsed_s = time.monotonic() - t0
-    stats.storage_state_used = bool(storage_state)
+    stats.storage_state_used = bool(storage_state) or bool(session is not None and session.driving)
     # window.* grid-API variable names are site strings too: any that is not generic must not reach the bundle
     sentinels = set(sentinels) | {str(a.get("name")) for p in pages for a in ((p.raw.get("ag") or {}).get("apis") or [])
                                   if a.get("name")}
@@ -122,19 +128,27 @@ def _wait_ready(page, sel: str, timeout: int) -> tuple[int, str]:
 
 
 def _crawl(browser, start_url: str, cfg: SiteConfig, storage_state: str | None, max_pages: int,
-           same_origin_only: bool, timeout: int, stability_pages: int):
+           same_origin_only: bool, timeout: int, stability_pages: int, session: Any = None):
     stats = CrawlStats()
     sentinels: set[str] = set()
     pages: list[PageFacts] = []
-    ctx = _new_context(browser, cfg, storage_state)
+    driving = session is not None and session.driving
+    if driving:
+        # the user's own Chrome: one new tab of its logged-in context; scripts/routes on that tab only
+        ctx, page = None, session.new_page(init_scripts=[js.INIT_JS])
+    else:
+        ctx = _new_context(browser, cfg, storage_state)
     try:
-        ctx.add_init_script(js.INIT_JS)
-        if cfg.block_url_patterns:
-            rx = re.compile("|".join(f"(?:{p})" for p in cfg.block_url_patterns))
-            ctx.route(rx, lambda route: route.abort())
-        page = ctx.new_page()
-        main = page
-        ctx.on("page", lambda pg: pg.close() if pg is not main else None)  # popups are never followed
+        if driving:
+            page.on("popup", lambda pg: pg.close())   # popups are never followed (the user's own tabs: untouched)
+        else:
+            ctx.add_init_script(js.INIT_JS)
+            if cfg.block_url_patterns:
+                rx = re.compile("|".join(f"(?:{p})" for p in cfg.block_url_patterns))
+                ctx.route(rx, lambda route: route.abort())
+            page = ctx.new_page()
+            main = page
+            ctx.on("page", lambda pg: pg.close() if pg is not main else None)  # popups are never followed
         page.on("dialog", lambda d: d.dismiss())
         origin = origin_of(start_url)
         visited: set[str] = set()
@@ -219,7 +233,10 @@ def _crawl(browser, start_url: str, cfg: SiteConfig, storage_state: str | None, 
             except Exception:
                 continue
     finally:
-        ctx.close()
+        if driving:
+            session.close_page(page)
+        else:
+            ctx.close()
     return pages, stats, sentinels
 
 
