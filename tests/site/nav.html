@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acmeish Trading</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="mat.css">
+<script src="hostile.js"></script>
+<style>
+  body { margin: 0; }
+  .app-header { display: flex; align-items: center; gap: 24px; padding: 0 16px; height: 48px; background: #1d2330; color: #fff; }
+  .app-brand { font-weight: 600; }
+  .navbar-nav, .user-menu { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; height: 100%; }
+  .navbar-nav { flex: 1; }
+  .navbar-nav > li, .user-menu > li { display: flex; align-items: center; gap: 4px; padding: 0 14px; cursor: pointer; color: #c9d3ea; }
+  .navbar-nav > li:hover, .user-menu > li:hover { color: #fff; background: rgba(255,255,255,.06); }
+  .nav-dropdown { position: absolute; background: #fff; color: #1d2330; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); min-width: 180px; padding: 4px 0; pointer-events: auto; }
+  .nav-dropdown ul { list-style: none; margin: 0; padding: 0; }
+  .nav-dropdown li { padding: 8px 14px; cursor: pointer; }
+  .nav-dropdown li:hover { background: #eef2fb; }
+  .nav-dropdown .app-spinner { padding: 10px 40px; }
+  .mat-mdc-tab-nav-bar { flex: 1; height: 100%; }
+  .mat-mdc-tab-links { display: flex; height: 100%; }
+  .mat-mdc-tab-link, .nav-trigger { display: inline-flex; align-items: center; gap: 4px; padding: 0 14px; height: 100%; color: #c9d3ea; text-decoration: none; background: transparent; border: none; border-radius: 0; cursor: pointer; }
+  .cdk-overlay-transparent-backdrop { background: transparent; }
+  .app-content { height: calc(100vh - 48px); }
+  .app-content iframe { border: 0; width: 100%; height: 100%; display: block; }
+  .outer-bar { height: 28px; padding: 4px 16px; background: #eef0f4; font-size: 12px; }
+  .nav-frame { border: 0; width: 100%; height: calc(100vh - 36px); display: block; }
+</style>
+</head>
+<body class="mat-typography">
+<!--
+  App shell with a TAB BAR in the top document (Angular-like, hostile ids/classes) for `crawler navmap`.
+
+    nav.html                 tab bar = <ul class="navbar-nav"> of <li> tabs, no ARIA at all; the click handlers are on
+                             the <li> (Angular `(click)` leaves no attribute; only cursor:pointer). A second <ul> on
+                             the right (Help, Profile, Sign out) is a distractor whose items open nothing.
+    nav.html?style=mat       Angular-Material-like: <nav mat-tab-nav-bar> with a[mat-tab-link][role=tab] and
+                             button[mat-menu-trigger-for][aria-haspopup=menu]; menus are role=menu/menuitem.
+    nav.html?frame=1         the whole shell (tab bar + content iframe) lives in <iframe name="navShell">.
+
+  Clicking a tab with a menu fetches nav-<menu>.json, waits 200-1500 ms (spinner in the dropdown meanwhile) and
+  renders the dropdown in a cdk-overlay-container at the end of <body>; it closes on Escape and on outside clicks.
+  Clicking an option REPLACES <iframe name="appFrame-<key>" src="<key>.html?v=..."> (after a 200-800 ms fake XHR).
+  Home has no dropdown (direct link). Admin > Audit Log opens nothing (a broken link); Admin > Users loads a page
+  that does not exist. "Positions" is under Trading (positions) and under Reports (risk).
+-->
+<script>
+(function () {
+  'use strict';
+  var H = window.Hostile;
+  var authed = false;
+  try { authed = localStorage.getItem('auth') === '1'; } catch (e) { authed = false; }
+  if (!authed) { location.replace('login.html'); return; }
+  var params = new URLSearchParams(location.search);
+  var style = params.get('style') === 'mat' ? 'mat' : 'plain';
+
+  if (params.get('frame') === '1') {           // the shell inside a frame
+    document.body.appendChild(H.frag('<div class="outer-bar {{c:Outer.bar}}" id="{{rid}}">Acmeish portal</div>'));
+    var f = document.createElement('iframe');
+    var q = new URLSearchParams(location.search);
+    q.delete('frame');
+    q.set('inner', '1');
+    f.name = 'navShell';
+    f.id = H.newId();
+    f.className = 'nav-frame ' + H.cls('Outer.frame');
+    f.src = 'nav.html?' + q.toString();
+    document.body.appendChild(f);
+    return;
+  }
+
+  var TABS = [
+    { label: 'Home', page: 'dashboard' },
+    { label: 'Trading', menu: 'trading' },
+    { label: 'Admin', menu: 'admin' },
+    { label: 'Reports', menu: 'reports' }
+  ];
+  var CHEVRON = H.icons.chevron;
+
+  var header = H.frag('<header class="app-header {{c:Header.root}}" id="{{rid}}">' +
+    '<span class="app-brand {{c:Header.brand}}">Acmeish Trading</span></header>').firstElementChild;
+  document.body.appendChild(header);
+  var content = H.frag('<main class="app-content {{c:Content.root}}" id="{{rid}}"></main>').firstElementChild;
+  document.body.appendChild(content);
+  var overlay = H.frag('<div class="cdk-overlay-container"></div>').firstElementChild;
+  document.body.appendChild(overlay);
+
+  var triggers = [];
+  if (style === 'plain') {
+    var wrap = H.frag('<div class="{{c:Nav.wrap}}" id="{{rid}}" style="flex:1;height:100%">' +
+      '<ul class="navbar-nav {{c:Nav.list}}"></ul></div>').firstElementChild;
+    header.appendChild(wrap);
+    var ul = wrap.querySelector('ul');
+    TABS.forEach(function (t) {
+      var li = H.frag('<li class="nav-item {{c:Nav.item}}" id="{{rid}}"><span class="{{c:Nav.label}}">' + H.esc(t.label) +
+        '</span>' + (t.menu ? CHEVRON : '') + '</li>').firstElementChild;
+      li.addEventListener('click', function (e) { e.stopPropagation(); activate(t, li); });
+      ul.appendChild(li);
+      triggers.push(li);
+    });
+    var user = H.frag('<ul class="user-menu {{c:User.list}}">' +
+      '<li class="{{c:User.item}}">Help</li><li class="{{c:User.item}}">Profile</li><li class="{{c:User.item}}">Sign out</li></ul>').firstElementChild;
+    user.lastElementChild.addEventListener('click', function () {
+      try { localStorage.removeItem('auth'); } catch (e) { /* ignore */ }
+      location.replace('login.html');
+    });
+    header.appendChild(user);
+  } else {
+    var nav = H.frag('<nav mat-tab-nav-bar class="mat-mdc-tab-nav-bar {{c:MatNav.root}}" id="{{rid}}">' +
+      '<div class="mat-mdc-tab-link-container"><div class="mat-mdc-tab-links {{c:MatNav.links}}"></div></div></nav>').firstElementChild;
+    header.appendChild(nav);
+    var links = nav.querySelector('.mat-mdc-tab-links');
+    TABS.forEach(function (t, i) {
+      var el;
+      if (!t.menu) {
+        el = H.frag('<a mat-tab-link role="tab" class="mdc-tab mat-mdc-tab-link {{c:MatNav.link}}" id="{{rid}}">' +
+          '<span class="mdc-tab__text-label">' + H.esc(t.label) + '</span></a>').firstElementChild;
+      } else if (i === 1) {
+        el = H.frag('<a mat-tab-link role="tab" aria-haspopup="menu" aria-expanded="false" ' +
+          'class="mdc-tab mat-mdc-tab-link mat-mdc-menu-trigger {{c:MatNav.link}}" id="{{rid}}">' +
+          '<span class="mdc-tab__text-label">' + H.esc(t.label) + '</span>' + CHEVRON + '</a>').firstElementChild;
+      } else {
+        el = H.frag('<button type="button" mat-button mat-menu-trigger-for="' + t.menu + 'Menu" aria-haspopup="menu" ' +
+          'aria-expanded="false" class="mdc-button nav-trigger mat-mdc-menu-trigger {{c:MatNav.trigger}}" id="{{rid}}">' +
+          '<span class="mdc-button__label">' + H.esc(t.label) + '</span>' + CHEVRON + '</button>').firstElementChild;
+      }
+      el.addEventListener('click', function (e) { e.stopPropagation(); activate(t, el); });
+      links.appendChild(el);
+      triggers.push(el);
+    });
+  }
+
+  // ------------------------------------------------------------------ dropdown
+  var open = null;       // {pane, backdrop, trigger}
+  var seq = 0;
+  function closeMenu() {
+    if (!open) return;
+    open.pane.remove();
+    if (open.backdrop) open.backdrop.remove();
+    if (open.trigger.hasAttribute('aria-expanded')) open.trigger.setAttribute('aria-expanded', 'false');
+    open = null;
+    seq++;
+  }
+  function activate(t, trigger) {
+    var was = open && open.trigger === trigger;
+    closeMenu();
+    if (!t.menu) { loadPage(t.page); return; }
+    if (was) return;                      // a second click on the open tab closes it
+    var r = trigger.getBoundingClientRect();
+    var backdrop = null;
+    if (style === 'mat') {
+      backdrop = H.frag('<div class="cdk-overlay-backdrop cdk-overlay-transparent-backdrop"></div>').firstElementChild;
+      backdrop.addEventListener('click', closeMenu);
+      overlay.appendChild(backdrop);
+    }
+    var pane = H.frag('<div class="cdk-overlay-pane {{c:Overlay.pane}}" id="{{rid}}" style="position:absolute;left:' +
+      Math.round(r.left) + 'px;top:' + Math.round(r.bottom) + 'px"></div>').firstElementChild;
+    var panel = style === 'mat'
+      ? H.frag('<div class="mat-mdc-menu-panel {{c:Menu.panel}}" role="menu" tabindex="-1" id="{{rid}}" aria-labelledby="' +
+          trigger.id + '"><div class="mat-mdc-menu-content"></div></div>').firstElementChild
+      : H.frag('<div class="nav-dropdown {{c:Dropdown.root}}" id="{{rid}}"></div>').firstElementChild;
+    pane.appendChild(panel);
+    overlay.appendChild(pane);
+    if (trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'true');
+    open = { pane: pane, backdrop: backdrop, trigger: trigger };
+    var mine = ++seq;
+    var host = style === 'mat' ? panel.querySelector('.mat-mdc-menu-content') : panel;
+    var spin = H.frag('<div class="app-spinner {{c:Spinner.root}}" role="progressbar" aria-label="Loading" id="{{rid}}">' +
+      '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="40 20"/></svg></div>').firstElementChild;
+    host.appendChild(spin);
+    fetch('nav-' + t.menu + '.json', { cache: 'no-store' }).then(function (res) { return res.json(); }).then(function (items) {
+      setTimeout(function () {
+        if (mine !== seq) return;           // closed meanwhile
+        spin.remove();
+        renderItems(host, items);
+        H.sprinkle(host);
+      }, 200 + H.rnd(1301));
+    });
+  }
+  function renderItems(host, items) {
+    if (style === 'mat') {
+      items.forEach(function (it) {
+        var b = H.frag('<button type="button" mat-menu-item role="menuitem" tabindex="0" class="mat-mdc-menu-item mat-focus-indicator {{c:Menu.item}}" id="{{rid}}">' +
+          '<span class="mat-mdc-menu-item-text">' + H.esc(it.label) + '</span></button>').firstElementChild;
+        b.addEventListener('click', function () { choose(it); });
+        host.appendChild(b);
+      });
+      return;
+    }
+    var list = H.frag('<ul class="{{c:Dropdown.list}}" id="{{rid}}"></ul>').firstElementChild;
+    items.forEach(function (it) {
+      var li = H.frag('<li class="{{c:Dropdown.item}}" id="{{rid}}"><a class="{{c:Dropdown.link}}">' + H.esc(it.label) + '</a></li>').firstElementChild;
+      li.addEventListener('click', function () { choose(it); });
+      list.appendChild(li);
+    });
+    host.appendChild(list);
+  }
+  function choose(it) {
+    closeMenu();
+    if (it.page) loadPage(it.page);          // a broken link: nothing happens
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
+  document.addEventListener('click', function (e) {
+    if (open && !open.pane.contains(e.target)) closeMenu();
+  });
+
+  // ------------------------------------------------------------------ content iframe (replaced per page)
+  var loads = 0;
+  function loadPage(key) {
+    var mine = ++loads;
+    while (content.firstChild) content.removeChild(content.firstChild);
+    H.load(content, function (c) {
+      if (mine !== loads) return;
+      var f = document.createElement('iframe');
+      f.name = 'appFrame-' + key;
+      f.id = H.newId();
+      f.className = 'app-frame ' + H.cls('Shell.frame');
+      f.src = key + '.html?v=' + Date.now().toString(36) + H.rnd(1000);
+      c.appendChild(f);
+    });
+  }
+  loadPage('dashboard');
+})();
+</script>
+</body>
+</html>

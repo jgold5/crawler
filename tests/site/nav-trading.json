@@ -1,0 +1,5 @@
+[
+  {"label": "Trades", "page": "trades"},
+  {"label": "Orders", "page": "orders"},
+  {"label": "Positions", "page": "positions"}
+]

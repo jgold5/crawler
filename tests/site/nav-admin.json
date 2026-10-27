@@ -1,0 +1,5 @@
+[
+  {"label": "Settings", "page": "settings"},
+  {"label": "Users", "page": "users"},
+  {"label": "Audit Log", "page": null}
+]
