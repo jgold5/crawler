@@ -9,7 +9,7 @@ import javalang
 from .idents import split_words
 from .jmodel import ClassInfo, Policy, Unit
 from .skeleton import FINDBY_ANNOTATIONS, STEP_ANNOTATIONS
-from .vocab import ROLE_WORDS, TEST_ID_ATTRS, VERBS
+from .vocab import KNOWN_API_NAMES, ROLE_WORDS, TEST_ID_ATTRS, VERBS
 
 T = javalang.tree
 SUFFIXES = ["PageObject", "Page", "Screen", "View", "PO", "Section", "Component", "Dialog", "Modal", "Panel", "Form"]
@@ -191,7 +191,7 @@ def wait_and_grid_stats(units: list[Unit], policy: Policy, locs: list[dict], raw
         for _, n in u.cu:
             if isinstance(n, T.MethodInvocation):
                 if n.qualifier == "ExpectedConditions":
-                    ec[n.member] += 1
+                    ec[n.member if n.member in KNOWN_API_NAMES else "<custom>"] += 1   # own helper names stay out
                 elif n.member == "sleep" and n.qualifier in ("Thread", "TimeUnit.SECONDS", "TimeUnit.MILLISECONDS"):
                     sleeps += 1
                 elif n.member == "implicitlyWait":
@@ -241,7 +241,8 @@ def render_md(p: dict) -> str:
       + (" (except: --keep-identifiers was used, so names are as written; read them all)."
          if p["keep_identifiers"] else "; check that no business words slipped through."))
     a("3. Read the step phrases listed under *Review these step phrases* below, and `steps.yaml`.")
-    a("4. Open `features/` and `step-mappings.draft.yaml`: unquoted words in step text are kept.")
+    a("4. Open `features/` and `step-mappings.draft.yaml`: step text keeps only generic step vocabulary "
+      "(see *Review these step phrases* below).")
     a("5. Search the folder for your company, product, customer and project names one more time.")
     if p.get("pages_md"):
         a("6. Skim `pages/` and `pages-schema.yaml`: only generic schema words and placeholders should remain.")
@@ -313,15 +314,30 @@ def render_md(p: dict) -> str:
     a("## Review these step phrases before sharing")
     a("")
     rev = p["review"]
+    a("Step-definition patterns:")
+    a("")
     if not rev:
         a("None: every kept word is in the common-word list.")
     else:
-        a(f"{len(rev)} phrase(s) keep words outside the common-word list (capitalized words at the start of a "
-          "sentence are kept). Delete or edit any that reveal business details:")
+        a(f"{len(rev)} pattern(s) keep words outside the short common-word list (every kept word is generic step "
+          "vocabulary; anything else became <Name> / <word>). Delete or edit any that reveal business details:")
         a("")
         for r in rev[:60]:
             a(f"- `{r}`")
         if len(rev) > 60:
             a(f"- ... and {len(rev) - 60} more in steps.yaml")
+    a("")
+    fr = p.get("feature_review") or {"steps": 0, "kept": 0, "examples": []}
+    a("Feature steps:")
+    a("")
+    a(f"{fr['steps']} step(s) in features/; every word outside the generic step vocabulary was replaced "
+      f"(<Name>, <word>). {fr['kept']} step(s) keep words outside the short common-word list"
+      + (":" if fr["examples"] else "."))
+    if fr["examples"]:
+        a("")
+        for r in fr["examples"][:20]:
+            a(f"- `{r}`")
+        if len(fr["examples"]) > 20:
+            a(f"- ... and {len(fr['examples']) - 20} more in features/")
     a("")
     return "\n".join(L)

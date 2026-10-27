@@ -67,6 +67,9 @@ def probe(start_url: str, out: str | Path, *, storage_state: str | None = None, 
                                          timeout, stability_pages)
     stats.elapsed_s = time.monotonic() - t0
     stats.storage_state_used = bool(storage_state)
+    # window.* grid-API variable names are site strings too: any that is not generic must not reach the bundle
+    sentinels = set(sentinels) | {str(a.get("name")) for p in pages for a in ((p.raw.get("ag") or {}).get("apis") or [])
+                                  if a.get("name")}
 
     profile, suggested = build(pages, stats, cfg, max_pages=max_pages, include_path_shapes=include_path_shapes,
                                denylist=deny)

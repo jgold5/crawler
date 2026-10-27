@@ -82,6 +82,11 @@ def string_values(cleaned: str) -> list[str]:
     return [unescape_java(m.group(0)[1:-1]) for m in _LEX.finditer(cleaned) if m.lastgroup == "str"]
 
 
+def comment_texts(text: str) -> list[str]:
+    """Text of every comment (only scanned for hosts/emails that name the company; never emitted)."""
+    return [m.group(0) for m in _LEX.finditer(text) if m.lastgroup in ("lc", "bc")]
+
+
 def unescape_java(s: str) -> str:
     def rep(m: re.Match) -> str:
         c = m.group(1)

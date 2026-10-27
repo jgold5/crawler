@@ -219,6 +219,8 @@ class Renderer:
         if len(names) > 1 and names[0][:1].islower():
             base = self.p.qualified(".".join(n for n in names))
             parts = base.split(".")
+        elif len(names) > 1 and self.p.type_strong(names[0], self.scope):
+            parts = self.p.type_name(".".join(names), self.scope).split(".")   # WebDriver.TargetLocator
         else:
             parts = [self.p.type_name(n, self.scope) for n in names]
         out = []
@@ -263,7 +265,7 @@ class Renderer:
                 hint = None
                 if simple in FINDBY_ANNOTATIONS:
                     hint = FINDBY_HINTS.get(pair.name) or (how if pair.name == "using" else None)
-                pname = self.p.rename(pair.name) if kept else self.p.member(pair.name, "method")
+                pname = self.p.kept_member(pair.name, "method") if kept else self.p.member(pair.name, "method")
                 parts.append(f"{pname} = {self.expr(pair.value, hint)}")
             return f"@{name}({', '.join(parts)})"
         return f"@{name}({self.expr(el)})"
@@ -297,7 +299,8 @@ class Renderer:
         if isinstance(e, T.MethodInvocation):
             q = self.qual(e.qualifier) if e.qualifier else ""
             kept_q = bool(e.qualifier) and self.qual_kept(e.qualifier)
-            member = self.p.rename(e.member) if kept_q else self.p.member(e.member, "method")
+            member = self.p.kept_member(e.member, "method", self.qual_strong(e.qualifier)) if kept_q \
+                else self.p.member(e.member, "method")
             h = BY_HINTS.get(e.member) if e.qualifier in ("By", "org.openqa.selenium.By") else None
             args = ", ".join(self.expr(a, h, depth + 1) for a in e.arguments or [])
             s = (q + "." if q else "") + f"{member}({args})"
@@ -345,7 +348,11 @@ class Renderer:
 
     def qual_kept(self, q: str) -> bool:
         first = q.split(".")[0]
-        return first[:1].isupper() and self.p.type_kept(first, self.scope)
+        return first[:1].isupper() and first not in self.p.fp_fields and self.p.type_kept(first, self.scope)
+
+    def qual_strong(self, q: str) -> bool:
+        """Qualifier is exactly a provably public type (Locale, TimeUnit), so its constants are public too."""
+        return "." not in q and self.qual_kept(q) and self.p.type_strong(q, self.scope)
 
     def qual(self, q: str) -> str:
         parts = q.split(".")
@@ -363,7 +370,7 @@ class Renderer:
         if not qualifier:
             return self.p.member(member, "field")
         if self.qual_kept(qualifier):
-            return self.qual(qualifier) + "." + self.p.rename(member)
+            return self.qual(qualifier) + "." + self.p.kept_member(member, "field", self.qual_strong(qualifier))
         return self.qual(qualifier) + "." + self.p.member(member, "field")
 
     # ------------------------------------------------------------------ body summary
@@ -379,7 +386,8 @@ class Renderer:
             c = None
             if isinstance(n, T.MethodInvocation):
                 kept = bool(n.qualifier) and self.qual_kept(n.qualifier)
-                name = self.p.rename(n.member) if kept else self.p.member(n.member, "method")
+                name = self.p.kept_member(n.member, "method", self.qual_strong(n.qualifier)) if kept \
+                    else self.p.member(n.member, "method")
                 q = n.qualifier or ""
                 if q and q[:1].isupper() and "." not in q:
                     name = f"{self.qual(q)}.{name}"

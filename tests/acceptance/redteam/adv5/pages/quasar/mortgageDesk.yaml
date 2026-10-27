@@ -1,0 +1,44 @@
+%YAML 1.1
+
+---
+page: mortgageDesk
+extends: &base basePage
+title: !label Quasar Mortgage Desk
+menuPath: [Lending, Quasar Mortgages, Jumbo Refinance]
+elements:
+  Overdraft Limit:
+    type: textfield
+    xpath: "//input[@id='overdraftLimit']"
+    data: {quasarDesk: kumquat}
+  status:
+    type: Platinum
+  type:
+    xpath: "//div[@class='ag-theme-quasarbank']"
+  element:
+    css: "ion-jumbo-refinance > span"
+  name:
+    id: heloc_jumbo
+  ? Kumquat Premier
+  : xpath: "//span[@data-kumquat='1']"
+  quasarWealth: *base
+  1.5: float key
+  2024-03-01: date key
+  999: big int key
+  true: bool key
+  null: null key
+  Beneficiary:
+    xpath_a: "//td[contains(text(),'Quasar "
+    xpath_b: "')]"
+  Jumbo:
+    xpath_prefix: "//ion-quasar-jumbo["
+    xpath_suffix: "]"
+  enumtest:
+    type: Total
+    mode: Overdraft
+    status: closed
+    category: Mortgage
+    format: currency
+...
+---
+page: second
+title: Kumquat second doc

@@ -29,7 +29,7 @@ SECRETS = [
     "wire-transfer-amount", "tenant", "headless=new", "1440,900", "image/png", "failure",
     "Corporation", "seedOrders", "ssn", "CustomerRecord", "ValidationUtils", "isValidAccount",
 ]
-# Domain words that must not survive in identifiers (they may only appear as kept lowercase step phrasing).
+# Domain words that must not survive in identifiers (step phrasing is vocabulary-gated too, see test_step_catalog).
 DOMAIN_IDENTIFIERS = ["OverdraftSettingsPage", "wireTransferAmountInput", "approveLoanButton", "LoanGridHelper",
                       "enterTransferAmount", "chooseTransferType", "approveLoanCheckbox", "OrdersPage",
                       "welcomeBanner", "ADMIN_PASSWORD", "AWS_ACCESS_KEY", "API_TOKEN", "DB_HOST"]
@@ -203,7 +203,9 @@ def test_feature_redaction_shape(files):
     assert 'I log in as "<user>" with password "<password>"' in text      # outline params kept
     assert "| customer | user" in text and "<value>" in text
     assert "<doc>" in text and "Scenario Outline: Scenario" in text and "Rule: Rule 1" in text
-    assert "customer <Name> has these contacts" in text
+    # "Globex" is not on the denylist; it is auto-denylisted from the globex-mail.com address (else <Name>)
+    assert re.search(r"customer (?:<Name>|Company\d+) has these contacts", text)
+    assert "transfer" not in text.lower() and "<word>" in text
     assert "Company" in text   # denylisted words renamed consistently
 
 
@@ -297,9 +299,9 @@ def test_step_catalog_actions_and_params(files):
         "^I am on the Company2 login page$": "goto",
         "I set {string} to {string} in row {string} of the orders grid": "grid_fill",
         "I open order {string}": "grid_click",
-        "I choose {string} from the transfer type dropdown": "select",
+        "I choose {string} from the <word> type dropdown": "select",   # domain word "transfer" gated
         "I tick the approve checkbox": "check",
-        "I hover over the transfer amount": "hover",
+        "I hover over the <word> amount": "hover",
         "^the API seeds (\\d+) orders for Company3$": "unknown",
         "the order total shows {int}": "expect_text",
     }

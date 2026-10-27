@@ -42,6 +42,16 @@ class FeatureWriter:
         self.n_scenario = 0
         self.n_rule = 0
         self.n_examples = 0
+        self.steps_total = 0
+        self.review: Counter = Counter()   # redacted step text that keeps words outside the common-word list
+
+    def _step_text(self, text: str) -> str:
+        """Step text after the keyword, vocabulary-gated (PhraseRedactor mode "text")."""
+        out = self.phrase(text, "text")
+        self.steps_total += 1
+        if self.phrase.unusual_words(out):
+            self.review[out] += 1
+        return out
 
     def render(self, doc) -> str:
         feat = doc.get("feature")
@@ -114,12 +124,12 @@ class FeatureWriter:
 
     def _steps(self, lines, steps, pad) -> None:
         for st in steps:
-            lines.append(f"{pad}{st['keyword'].strip()} {self.phrase(st['text'], 'text')}")
+            lines.append(f"{pad}{st['keyword'].strip()} {self._step_text(st['text'])}")
             if "dataTable" in st:
                 rows = st["dataTable"]["rows"]
                 out = []
                 for i, r in enumerate(rows):
-                    if i == 0:
+                    if i == 0:   # header cells: same vocabulary gate, word by word (no kept first word)
                         out.append([self.phrase(c["value"], "text") for c in r["cells"]])
                     else:
                         out.append([self._cell(c["value"]) for c in r["cells"]])

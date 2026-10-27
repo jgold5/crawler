@@ -8,7 +8,7 @@ import javalang
 
 from .idents import Anonymizer
 from .redact import Renamer
-from .vocab import JAVA_LANG_TYPES, KNOWN_API_NAMES, SAFE_IMPORT_PREFIXES
+from .vocab import JAVA_LANG_TYPES, KNOWN_API_NAMES, KNOWN_TYPES, SAFE_IMPORT_PREFIXES
 
 T = javalang.tree
 
@@ -177,7 +177,7 @@ class Policy:
 
     def qualified(self, dotted: str, static_member: bool = False) -> str:
         """Import path or qualified type name."""
-        if is_safe_import(dotted, self.rename):
+        if self.is_third_party(dotted):
             return dotted
         parts = dotted.split(".")
         member = None
@@ -202,27 +202,41 @@ class Policy:
         return ".".join(out)
 
     # --- simple names
+    def is_third_party(self, fq: str) -> bool:
+        """A single-type import path from an allowlisted third-party root, outside the repo's own packages."""
+        own = self.first_party_pkgs | ({self.prefix} if self.prefix else set())
+        return is_safe_import(fq, self.rename) and not any(fq == p or fq.startswith(p + ".") for p in own)
+
     def type_kept(self, simple: str, scope: Scope | None) -> bool:
-        if simple in self.fp_types:
+        """Kept verbatim only if provably third-party library vocabulary: never a type declared in the repo;
+        a single-type import from an allowlisted root; java.lang; or a well-known library name (KNOWN_TYPES).
+        A wildcard import never unlocks anything that is not on KNOWN_TYPES."""
+        if simple in self.fp_types or self.rename.denied(simple):
             return False
-        if simple in JAVA_LANG_TYPES or simple in ("var",):
-            return True
         if scope is not None:
             fq = scope.explicit.get(simple)
             if fq:
-                return is_safe_import(fq, self.rename)
-            if any(is_safe_import(w, self.rename) for w in scope.wildcards):
-                return True
-        return False
+                return self.is_third_party(fq)
+        return simple in JAVA_LANG_TYPES or simple in KNOWN_TYPES or simple == "var"
+
+    def type_strong(self, simple: str, scope: Scope | None) -> bool:
+        """Kept AND its own constants are public too: java.lang or an explicit allowlisted single-type import
+        (Locale.US, Level.INFO). A type kept only because its simple name is well known is not enough."""
+        if not self.type_kept(simple, scope):
+            return False
+        fq = scope.explicit.get(simple) if scope is not None else None
+        return bool(fq) or simple in JAVA_LANG_TYPES
 
     def type_name(self, simple: str, scope: Scope | None) -> str:
         if "." in simple:
-            first = simple.split(".")[0]
-            if first[:1].islower():
+            parts = simple.split(".")
+            if parts[0][:1].islower():
                 return self.qualified(simple)
-            return ".".join(self.type_name(s, scope) for s in simple.split("."))
-        if len(simple) <= 2 and simple[:1].isupper():
-            return simple                       # type parameters T, K, V, E
+            if self.type_strong(parts[0], scope):      # Map.Entry, WebDriver.Options: nested public types
+                return ".".join([self.rename(parts[0])] + [self.rename(x) for x in parts[1:]])
+            return ".".join(self.type_name(s, scope) for s in parts)
+        if re.fullmatch(r"[A-Z]\d?", simple):
+            return simple                       # type parameters T, K, V, E, T1
         if self.type_kept(simple, scope):
             return self.rename(simple)
         return self.anon(simple, "type")
@@ -230,8 +244,17 @@ class Policy:
     def member(self, name: str, kind: str) -> str:
         """kind: method | field. First-party declarations are anonymized; well-known API names kept."""
         fp = name in (self.fp_methods if kind == "method" else self.fp_fields)
-        if not fp and name in KNOWN_API_NAMES:
-            return self.rename(name)
+        if not fp and name in KNOWN_API_NAMES and not self.rename.denied(name):
+            return name
+        return self.anon(name, kind)
+
+    def kept_member(self, name: str, kind: str, strong: bool = False) -> str:
+        """A member reached through a kept (third-party) qualifier: an allowlisted API name, a constant of a
+        provably public type (strong), or else anonymized like any other name (generic-only names survive)."""
+        if self.rename.denied(name):
+            return self.anon(name, kind)
+        if name in KNOWN_API_NAMES or (strong and re.fullmatch(r"[A-Z][A-Z0-9_]*", name)):
+            return name
         return self.anon(name, kind)
 
     def local(self, name: str) -> str:

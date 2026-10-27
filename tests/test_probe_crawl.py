@@ -178,7 +178,9 @@ def test_test_ids_and_redacted_names(inline_run):
 
 def test_api_names_and_labels(inline_run):
     p = _profile(inline_run[0])
-    assert p["ag_grid"]["api_names"] == ["globexGridApi", "<custom>"]   # someStore doesn't match /grid|api/
+    # globexGridApi carries a brand word (not on the denylist here): only all-generic names are kept verbatim;
+    # someStore doesn't match /grid|api/ either
+    assert p["ag_grid"]["api_names"] == ["<custom>"]
     inp = p["a11y"]["inputs"]
     assert inp["total"] == 3
     assert inp["pct"]["label-for"] > 0 and inp["pct"]["placeholder-only"] > 0 and inp["pct"]["aria-label"] > 0

@@ -83,8 +83,29 @@ def is_safe_attr_name(s: str, deny: Iterable[str] = ()) -> bool:
     return all(p in GENERIC_WORDS or p in FRAMEWORK_PREFIXES for p in s.split("-")[1:])
 
 
+@lru_cache(maxsize=1)
+def api_name_vocab() -> frozenset[str]:
+    """The generic vocabulary shared with `crawler distill` (step / identifier words) plus probe's own words."""
+    words = set(GENERIC_WORDS) | set(FRAMEWORK_PREFIXES) | {"api", "apis", "grid", "grids", "ag"}
+    try:
+        from crawler.distill.vocab import IDENT_GENERIC, STEP_VOCAB
+        words |= set(STEP_VOCAB) | set(IDENT_GENERIC)
+    except ImportError:  # pragma: no cover - distill is part of the package
+        pass
+    return frozenset(words)
+
+
 def is_safe_api_name(s: str, deny: Iterable[str] = ()) -> bool:
-    return bool(_API_NAME.match(s)) and bool(re.search(r"grid|api", s, re.I)) and not _denied(s, list(deny))
+    """`window.<name>` holding a grid API, kept verbatim only if every camelCase word of it is generic vocabulary
+    (grid + Api, orders + Grid + Api). A name with any other word (a brand, product or desk name + Grid + Api)
+    is reported as <custom>. NOTE: never write example identifiers here: source_vocab() whitelists this file's
+    word tokens for the bundle leak scan."""
+    if not (_API_NAME.match(s) and re.search(r"grid|api", s, re.I)) or _denied(s, list(deny)):
+        return False
+    words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", s)
+    vocab = api_name_vocab()
+    return bool(words) and "".join(words) == re.sub(r"[_$]", "", s) and all(
+        w.isdigit() or w.lower() in vocab for w in words)
 
 
 # ---------------------------------------------------------------- typed schema
@@ -241,15 +262,18 @@ def content_leaks(bundle_text: str, sentinels: Iterable[str], exempt: Iterable[s
     Two checks: (1) any bundle word token not in this package's own vocabulary must not be a word seen on
     the site; (2) any multi-token site string (with spaces/punctuation) not made only of vocabulary words
     must not appear verbatim. Numeric-only and version-shaped strings are exempt (counts and versions are allowed).
-    `exempt` lists grid-API property names (allowed by design); they are masked for the substring check only.
+    `exempt` lists grid-API property names that passed `is_safe_api_name` (generic words only); they are masked
+    before both checks. Every raw `window.*` grid-API name the crawl saw is a sentinel, so a non-generic one that
+    reached the bundle is a hit.
     """
     vocab = source_vocab()
-    bundle_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9_$]+", bundle_text)
-                     if len(t) >= 4 and not t.isdigit()}
-    foreign = {t for t in bundle_tokens if t not in vocab and not is_version(t)}
     masked = bundle_text
     for name in sorted(exempt, key=len, reverse=True):
-        masked = masked.replace(name, "<api-name>")
+        if is_safe_api_name(name):    # only generic-word names are exempt; anything else is scanned like text
+            masked = re.sub(rf"(?<![A-Za-z0-9_$]){re.escape(name)}(?![A-Za-z0-9_$])", "<api-name>", masked)
+    bundle_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9_$]+", masked)
+                     if len(t) >= 4 and not t.isdigit()}
+    foreign = {t for t in bundle_tokens if t not in vocab and not is_version(t)}
     hits: list[str] = []
     seen_words: set[str] = set()
     for s in sentinels:

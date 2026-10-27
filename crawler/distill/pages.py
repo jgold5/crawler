@@ -213,7 +213,7 @@ def select(src: Path, patterns, exclude: set[Path]) -> tuple[list[tuple[str, Pat
     """Files selected by the globs -> ([(sort key, path)], refusal counts, warnings). Reads nothing."""
     found: dict[str, Path] = {}
     warns: list[str] = []
-    for pat in patterns or ():
+    for n, pat in enumerate(patterns or (), 1):
         pat = str(pat)
         try:
             hits = [Path(h) for h in _glob.glob(pat, recursive=True)] if os.path.isabs(pat) else list(src.glob(pat))
@@ -221,7 +221,7 @@ def select(src: Path, patterns, exclude: set[Path]) -> tuple[list[tuple[str, Pat
             hits = []
         hits = [h for h in hits if h.is_symlink() or h.is_file()]
         if not hits:
-            warns.append(f"--pages {pat!r} matched no files")
+            warns.append(f"--pages pattern #{n} matched no files")   # never echo the user's pattern
         for h in hits:
             found.setdefault(str(h.absolute()), h)
     counts: Counter = Counter()
@@ -760,7 +760,7 @@ class PageAdapter:
             return "<secret>", "secret"
         if EMAIL_RX.search(s):
             return "<email>", "email"
-        if URL_RX.search(s) or IP_RX.search(s) or hosts_in(s) or re.search(r"\blocalhost\b", s, re.I):
+        if URL_RX.search(s) or IP_RX.search(s) or hosts_in(s, css_ok=True) or re.search(r"\blocalhost\b", s, re.I):
             return "<url>", "url"
         return None
 

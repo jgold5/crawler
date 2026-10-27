@@ -14,15 +14,18 @@ import yaml
 from .check import ALLOWED_TOP, check
 from .features import FeatureWriter, parse_feature, raw_step_texts
 from .idents import Anonymizer
-from .javasrc import read_source, scan, string_values, stub_source
+from .javasrc import comment_texts, read_source, scan, string_values, stub_source
 from .jmodel import Policy, Scope, Unit, common_prefix, index_unit, make_scope
 from .locators import LocatorCollector
 from . import pages as pages_mod
 from .profile import conventions, render_md, test_id_attrs, wait_and_grid_stats
-from .redact import EMAIL_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hosts_in, registrable_label
+from .redact import (EMAIL_RX, URL_RX, PhraseRedactor, Renamer, TagRedactor, hostlike_in, hosts_tld_in,
+                     registrable_label, term_words)
 from .skeleton import Renderer, render_tokens
 from .stepdefs import Catalog, Inference, collect, count_usage, mapping_yaml
-from .vocab import AG_GRID_API, GENERIC_STEMS, PACKAGE_GENERIC, SAFE_IMPORT_PREFIXES, SAFE_WORDS
+from . import vocab as V
+from .vocab import (AG_GRID_API, GENERIC_STEMS, HOST_GENERIC, PACKAGE_GENERIC, SAFE_IMPORT_PREFIXES, SAFE_WORDS,
+                    TAG_WORDS)
 
 SKIP_DIRS = {"target", "build", "out", "bin", "node_modules", "dist", "__pycache__", "venv", "logs",
              "test-output", "allure-results", "reports"}
@@ -83,32 +86,89 @@ def _walk(src: Path, exclude: set[Path], consumed: set[Path] = frozenset()) -> t
     return java, feats, other
 
 
-def _auto_terms(texts: list[str], prefix: str) -> list[str]:
+_CORPUS: frozenset[str] | None = None
+
+
+def _corpus() -> frozenset[str]:
+    """Words the generator itself may write (vocabularies + fixed text in the writers). An auto-detected denylist
+    term that is a substring of one of these would make check() fail on the bundle's own boilerplate."""
+    global _CORPUS
+    if _CORPUS is None:
+        import io
+        import tokenize
+        words: set[str] = set()
+        for name in dir(V):
+            val = getattr(V, name)
+            if isinstance(val, frozenset):
+                for w in val:
+                    words.update(x.lower() for x in re.findall(r"[A-Za-z]+", w))
+        here = Path(__file__).parent
+        skip = {tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.ENCODING}
+        for mod in ("core", "profile", "pages", "stepdefs", "locators", "features", "skeleton", "check"):
+            try:
+                src = (here / f"{mod}.py").read_text(encoding="utf-8")
+                prev = tokenize.NEWLINE
+                for t in tokenize.generate_tokens(io.StringIO(src).readline):
+                    kind = tokenize.tok_name.get(t.type, "")
+                    if kind in ("STRING", "FSTRING_MIDDLE") and not (kind == "STRING" and prev in skip):
+                        words.update(x.lower() for x in re.findall(r"[A-Za-z]+", t.string))  # not docstrings
+                    if t.type not in (tokenize.COMMENT, tokenize.NL):
+                        prev = t.type
+            except (OSError, tokenize.TokenError, SyntaxError):
+                continue
+        _CORPUS = frozenset(words)
+    return _CORPUS
+
+
+def _host_labels(host: str) -> set[str]:
+    """Every non-TLD label of a host, plus the hyphen parts (>= 5 chars) of each label: uat-brandx.corpy-internal.se
+    -> uat-brandx, corpy-internal, brandx, corpy (generic infrastructure words are filtered later)."""
+    labels = [x for x in host.lower().split(".") if x]
+    if len(labels) < 2:
+        return set()
+    out = set()
+    lab = registrable_label(host)
+    if lab:
+        out.add(lab)
+    for x in labels[:-1]:
+        out.add(x)
+        out.update(p for p in x.split("-") if len(p) >= 5)
+    return out
+
+
+def _auto_terms(texts: list[str], prefix: str, host_texts: list[str] = ()) -> list[str]:
+    """Denylist terms detected from the sources: host / email labels and the first-party package prefix.
+
+    `texts` (whole files) are scanned for URLs, emails and well-known-TLD hosts; `host_texts` (string literals,
+    comments, feature and page-file text: never Java code, where `driver.get` looks like a host) also for
+    TLD-agnostic host names (portal.<co>bank.bank, uat-x.<co>-internal.se)."""
     labels = set()
     for t in texts:
         for m in URL_RX.finditer(t):
             host = re.sub(r"^[a-zA-Z][\w+.-]*://", "", m.group(0)).split("/")[0].split(":")[0].split("@")[-1]
-            lab = registrable_label(host)
-            if lab:
-                labels.add(lab)
+            labels |= _host_labels(host)
         for m in EMAIL_RX.finditer(t):
-            lab = registrable_label(m.group(0).split("@", 1)[1])
-            if lab:
-                labels.add(lab)
-        for h in hosts_in(t):
-            lab = registrable_label(h)
-            if lab:
-                labels.add(lab)
+            labels |= _host_labels(m.group(0).split("@", 1)[1])
+        for h in hosts_tld_in(t):
+            labels |= _host_labels(h)
+    for t in host_texts:
+        for h in hostlike_in(t):
+            labels |= _host_labels(h)
     for seg in prefix.split("."):
         if seg and seg.lower() not in PACKAGE_GENERIC:
             labels.add(seg.lower())
     safe = " ".join(SAFE_IMPORT_PREFIXES).lower()
+    generic = PUBLIC_LABELS | SAFE_WORDS | GENERIC_STEMS | HOST_GENERIC | TAG_WORDS | PACKAGE_GENERIC
+    corpus = _corpus()
     out = []
     for lab in sorted(labels):
         lab = lab.lower()
-        if len(lab) < 4 or lab in PUBLIC_LABELS or lab in SAFE_WORDS or lab in GENERIC_STEMS or lab in safe \
-                or not re.fullmatch(r"[a-z0-9-]+", lab) or lab.isdigit():
+        canon = "".join(term_words(lab))
+        if len(lab) < 4 or lab in generic or lab in safe or not re.fullmatch(r"[a-z0-9-]+", lab) \
+                or lab.isdigit() or not canon or all(w in generic or w.isdigit() for w in term_words(lab)):
             continue
+        if any(canon in w for w in corpus):
+            continue                      # would match the bundle's own fixed text
         out.append(lab)
     return out
 
@@ -173,12 +233,14 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
     # ---- read + parse Java (each file independently; failures never stop the run)
     units: list[Unit] = []
     texts: list[str] = []
+    host_texts: list[str] = []
     for p in java_files:
         text = read_source(p)
         if text is None:
             files["java_skipped"] += 1
             continue
         texts.append(text)
+        host_texts.extend(comment_texts(text))
         rel = p.relative_to(src).as_posix()
         cleaned, masked, ncomments, blocks = scan(text)
         stats["comments removed"] += ncomments
@@ -194,6 +256,7 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
                 m = re.search(r"^\s*package\s+([\w.]+)\s*;", cleaned, re.M)
                 u = Unit(rel, None, Scope(package=m.group(1) if m else ""), mode="tokens", stub_text=stub)
         u.raw_strings = string_values(cleaned) + blocks
+        host_texts.extend(u.raw_strings)
         try:
             if u.cu is not None:
                 index_unit(u)
@@ -209,17 +272,20 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
             files["features_skipped"] += 1
             continue
         texts.append(text)
+        host_texts.append(text)
         feature_docs.append(doc)
 
     page_docs, page_texts = pages_mod.load(page_sel, page_counts) if page_sel else ([], [])
     texts += page_texts
+    host_texts += page_texts
     del page_texts
 
     # ---- naming context
     pkgs = [u.scope.package for u in units if u.scope.package]
     prefix = common_prefix(pkgs)
-    terms = user_terms + [t for t in _auto_terms(texts, prefix) if t not in {x.lower() for x in user_terms}]
-    del texts
+    terms = user_terms + [t for t in _auto_terms(texts, prefix, host_texts)
+                          if t not in {x.lower() for x in user_terms}]
+    del texts, host_texts
     rename = Renamer(terms)
     anon = Anonymizer(rename, keep=keep)
     phrase = PhraseRedactor(rename)
@@ -274,11 +340,20 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
             text = "// distill: Java 17 fallback, bodies not analyzed\n" + text
         write_java(pkg, name, text)
 
-    # ---- features
-    fw = FeatureWriter(phrase, tags, stats)
+    # ---- step definitions
     step_texts: list[str] = []
     for doc in feature_docs:
         step_texts += raw_step_texts(doc)
+    defs = collect([u for u in units if u.cu is not None])
+    count_usage(defs, step_texts)
+    del step_texts
+    inf = Inference([c for u in units for c in u.classes])
+    cat = Catalog(defs, inf, policy, phrase)
+    cat.build()
+
+    # ---- features
+    fw = FeatureWriter(phrase, tags, stats)
+    for doc in feature_docs:
         text = fw.render(doc)
         files["features_parsed"] += 1
         d = dst / "features"
@@ -323,13 +398,6 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
     loc_items = lc.items()
     loc_summary = lc.summary()
 
-    # ---- step definitions
-    defs = collect([u for u in units if u.cu is not None])
-    count_usage(defs, step_texts)
-    del step_texts
-    inf = Inference([c for u in units for c in u.classes])
-    cat = Catalog(defs, inf, policy, phrase)
-    cat.build()
 
     # ---- profile
     java, naming, facts = conventions(units, policy)
@@ -365,6 +433,7 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
     stats_out = {"locators": {k: loc_summary[k] for k in ("total", "by_kind", "length_median", "length_p90")},
                  "test_id_attributes": test_id_attrs(loc_summary),
                  "attribute_names": loc_summary["attribute_names"], "waits": waits, "grid": grid}
+    naming = {"identifiers": "kept" if keep else "anonymized", "package_prefix": policy.rename_to, **naming}
     profile = {"java": java, "stats": stats_out, "cucumber": cucumber, "naming": naming, "files": files,
                "facts": facts, "keep_identifiers": keep}
     (dst / "profile.yaml").write_text(
@@ -378,7 +447,10 @@ def _build(src: Path, dst: Path, user_terms: list[str], rename_to: str, keep: bo
         "# Every step definition, redacted, with usage counts and the action inferred from its body.\n"
         + yaml.safe_dump({"steps": cat.entries}, **dump), encoding="utf-8")
     (dst / "step-mappings.draft.yaml").write_text(mapping_yaml(cat), encoding="utf-8")
+    feature_review = {"steps": fw.steps_total, "kept": sum(fw.review.values()),
+                      "examples": [t for t, _ in sorted(fw.review.items(), key=lambda kv: (-kv[1], kv[0]))]}
     md = {**profile, "locator_summary": loc_summary, "waits": waits, "grid": grid, "cucumber": cucumber,
-          "removed": removed, "review": sorted(set(cat.review)), "pages_md": page_md}
+          "removed": removed, "review": sorted(set(cat.review)), "pages_md": page_md,
+          "feature_review": feature_review}
     (dst / "PROFILE.md").write_text(render_md(md), encoding="utf-8")
     return terms

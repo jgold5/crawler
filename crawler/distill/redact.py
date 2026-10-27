@@ -10,8 +10,10 @@ from collections import Counter
 
 from crawler.config import DEFAULT_UNSTABLE_CLASS_PATTERNS, DEFAULT_UNSTABLE_ID_PATTERNS
 
-from .vocab import (FRAMEWORK_ATTRS, FRAMEWORK_TAG_RX, ARIA_ROLES, INPUT_TYPES, CSS_PSEUDOS, GENERIC_STEMS, HTML_TAGS, PLACEHOLDERS, ROLE_WORDS, SAFE_ATTRS, SAFE_WORDS,
-                    TAG_WORDS, VALUE_SUBTYPES, XPATH_AXES, XPATH_FUNCS, XPATH_OPERATOR_NAMES)
+from .vocab import (AG_GRID_WORDS, ARIA_ATTRS, FILE_EXTS, FRAMEWORK_ATTRS, FRAMEWORK_TAG_RX, FRAMEWORK_TAG_WORDS,
+                    ARIA_ROLES, INPUT_TYPES, CSS_PSEUDOS, GENERIC_STEMS, HTML_TAGS, PLACEHOLDERS, ROLE_WORDS,
+                    SAFE_ATTRS, SAFE_WORDS, STEP_VOCAB, TAG_WORDS, VALUE_SUBTYPES, XPATH_AXES, XPATH_FUNCS,
+                    XPATH_OPERATOR_NAMES)
 
 SENTINEL = "\x00"   # stands for a non-literal operand inside a concatenated string template
 
@@ -29,11 +31,17 @@ B64_RX = re.compile(r"[A-Za-z0-9+/_-]{28,}={0,2}")
 PEM_RX = re.compile(r"-----BEGIN [A-Z ]+-----")
 JAVA_ROOTS = {"com", "org", "net", "io", "java", "javax", "jakarta", "edu", "gov", "de", "uk", "fr", "nl", "ch",
               "au", "ca", "jp", "cn", "ru", "br", "eu", "us", "co", "dev", "app", "lombok", "junit", "cucumber"}
+# Leading labels that make a dotted lowercase token a Java package / qualified name rather than a host.
+PACKAGE_ROOTS = frozenset({"com", "org", "net", "io", "java", "javax", "jakarta", "edu", "gov", "lombok", "junit",
+                           "cucumber", "okhttp3"})
 ALLOWED_HOST_SUFFIXES = ("example.com", "example.org", "example.net")
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+# TLD-agnostic: >= 2 dotted lowercase labels, the last one 2-24 letters (portal.kumquatbank.bank, x.zenith-internal.se)
+HOSTLIKE_RX = re.compile(rf"(?<![\w.-])((?:{_LABEL}\.)+[a-z]{{2,24}})(?![\w-]|\.[A-Za-z0-9])")
 
 
-def hosts_in(text: str) -> list[str]:
-    """Host-like dotted tokens (not Java package names, not example.* placeholders)."""
+def hosts_tld_in(text: str) -> list[str]:
+    """Host-like dotted tokens ending in a well-known TLD (any case; not packages, not example.*)."""
     out = []
     for m in HOST_RX.finditer(text):
         h = m.group(1).lower()
@@ -43,6 +51,37 @@ def hosts_in(text: str) -> list[str]:
             continue
         out.append(h)
     return out
+
+
+def hostlike_in(text: str, css_ok: bool = False, roots: frozenset | set = PACKAGE_ROOTS) -> list[str]:
+    """TLD-agnostic host-shaped tokens: dotted lowercase, >= 2 labels, last label 2-24 letters.
+
+    Not hosts: Java package / qualified names (first label com/org/io/..., or followed by `.Upper` / `(`),
+    file names with a known extension, example.* placeholders, and with css_ok also `div.active`-style CSS.
+    """
+    out = []
+    for m in HOSTLIKE_RX.finditer(text):
+        h = m.group(1)
+        labels = h.split(".")
+        nxt = text[m.end():m.end() + 2]
+        if labels[0] in roots or labels[-1] in FILE_EXTS or h.endswith(ALLOWED_HOST_SUFFIXES):
+            continue
+        if nxt[:1] == "(" or (nxt[:1] == "." and nxt[1:2].isupper()):
+            continue                               # driver.get(...), org.x.y.Type
+        if labels[0] in ("this", "super"):
+            continue
+        if css_ok and labels[0] in HTML_TAGS:
+            continue                               # div.active is a CSS selector
+        out.append(h)
+    return out
+
+
+def hosts_in(text: str, css_ok: bool = False) -> list[str]:
+    """Every host-like token: well-known TLDs (any case) plus TLD-agnostic dotted lowercase tokens."""
+    seen = hosts_tld_in(text)
+    if css_ok:
+        seen = [h for h in seen if h.split(".")[0] not in HTML_TAGS]
+    return list(dict.fromkeys(seen + hostlike_in(text, css_ok)))
 
 
 def _b64_secret(tok: str) -> bool:
@@ -89,8 +128,21 @@ def registrable_label(host: str) -> str | None:
 
 
 # ----------------------------------------------------------------------------------------------- denylist
+_TERM_SEP = r"[\s_.\-]{0,3}"          # acme-corp, acme_corp, Acme Corp, ACME.CORP, AcmeCorp all match `AcmeCorp`
+_IDENT_CHAR = re.compile(r"[A-Za-z0-9_\-]")
+
+
+def term_words(t: str) -> list[str]:
+    """`AcmeCorp` -> [acme, corp]; `Zenith Financial` -> [zenith, financial]; `acmecorp.com` -> [acmecorp, com]."""
+    out = []
+    for part in re.split(r"[^0-9A-Za-z]+", t):
+        out += [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", part)]
+    return [w for w in out if w]
+
+
 class Renamer:
-    """Case-insensitive denylist substring renaming: Acme -> Company1, ACME_URL -> COMPANY1_URL."""
+    """Case- and separator-insensitive denylist renaming of the WHOLE identifier / word that contains a term:
+    Acme -> Company1, AcmeLoginPage -> Company1, acme-corp -> company1, ACME_URL -> COMPANY1."""
 
     def __init__(self, terms: list[str]):
         self.base = "Company"
@@ -99,7 +151,8 @@ class Renamer:
             if not any(t in (cand.lower() + "1") or cand.lower() in t for t in lowered):
                 self.base = cand
                 break
-        self.forms: dict[str, str] = {}
+        self.forms: dict[str, str] = {}      # canonical form (alnum lowercase) -> label
+        self.patterns: dict[str, str] = {}   # regex source -> canonical form
         self.terms: list[str] = []
         n = 0
         for t in terms:
@@ -107,41 +160,52 @@ class Renamer:
             if not t or t.lower() in self.terms:
                 continue
             self.terms.append(t.lower())
-            forms = {t.lower(), re.sub(r"[^0-9a-z]", "", t.lower())}
+            variants = [term_words(t)]
             if "." in t:
                 lab = registrable_label(t)
                 if lab:
-                    forms.add(lab)
-            new = [f for f in forms if len(f) >= 2 and f not in self.forms]
+                    variants.append(term_words(lab))
+            new = []
+            for words in variants:
+                canon = "".join(words)
+                if len(canon) >= 2 and canon not in self.forms:
+                    new.append((canon, _TERM_SEP.join(re.escape(w) for w in words)))
             if not new:
                 continue
             n += 1
-            for f in new:
-                self.forms[f] = f"{self.base}{n}"
-        alts = sorted(self.forms, key=lambda f: (-len(f), f))
-        self.rx = re.compile("|".join(re.escape(a) for a in alts), re.I) if alts else None
+            for canon, src in new:
+                self.forms[canon] = f"{self.base}{n}"
+                self.patterns[src] = canon
+        alts = sorted(self.patterns, key=lambda p: (-len(self.patterns[p]), p))
+        self.rx = re.compile("|".join(alts), re.I) if alts else None
         self.token_rx = re.compile(rf"{self.base}\d+", re.I)
         self.hits = 0
+
+    def label_of(self, matched: str) -> str:
+        return self.forms.get(re.sub(r"[^0-9a-z]", "", matched.lower()), f"{self.base}0")
 
     def __call__(self, s: str) -> str:
         if not self.rx or not s:
             return s
-        for _ in range(4):
-            new = self.rx.sub(self._sub, s)
-            if new == s:
-                break
-            s = new
-        return s
-
-    def _sub(self, m: re.Match) -> str:
-        self.hits += 1
-        label = self.forms[m.group(0).lower()]
-        w = m.group(0)
-        if w.isupper():
-            return label.upper()
-        if w.islower():
-            return label.lower()
-        return label
+        out: list[str] = []
+        pos = 0
+        for m in self.rx.finditer(s):
+            a, b = m.start(), m.end()
+            if a < pos:
+                continue
+            while a > pos and _IDENT_CHAR.match(s[a - 1]):
+                a -= 1
+            while b < len(s) and _IDENT_CHAR.match(s[b]):
+                b += 1
+            whole = s[a:b]
+            label = self.label_of(m.group(0))
+            letters = re.sub(r"[^A-Za-z]", "", whole)
+            self.hits += 1
+            out.append(s[pos:a])
+            out.append(label.upper() if letters.isupper() else label.lower() if letters.islower() else label)
+            pos = b
+        out.append(s[pos:])
+        return "".join(out)
 
     def denied(self, s: str) -> bool:
         return bool(self.rx and self.rx.search(s))
@@ -173,7 +237,28 @@ def is_placeholder_seq(s: str) -> bool:
     return bool(_PH_SEQ.fullmatch(s)) and all(is_placeholder(x) for x in PH_TOKEN_RX.findall(s))
 
 
-_AG_STRUCT = re.compile(r"ag-[a-z]+(?:-[a-z]+)*")
+_AG_STRUCT = re.compile(r"ag-([a-z0-9]+(?:-[a-z0-9]+)*)")
+_FW_PREFIXES = frozenset("mat cdk mdc ag ng p nz kendo dx ion".split())
+
+
+def ag_class_ok(t: str) -> bool:
+    """AG Grid structural / theme class (ag-row, ag-header-cell, ag-theme-quartz-dark): every word after `ag-` is
+    AG Grid or generic vocabulary. ag-theme-acmebank or ag-cell-overdraft-limit are app classes, not library ones."""
+    m = _AG_STRUCT.fullmatch(t)
+    return bool(m) and all(w in AG_GRID_WORDS or w in STEP_VOCAB or w.isdigit() for w in m.group(1).split("-"))
+
+
+def framework_tag_ok(name: str) -> bool:
+    """mat-select, p-dropdown, kendo-grid, ag-grid-angular: a UI-library tag prefix followed only by library /
+    generic words. ion-acme-calculator or p-loan-wizard are app components -> <tag>."""
+    if name == "router-outlet":
+        return True
+    if not re.fullmatch(FRAMEWORK_TAG_RX, name):
+        return False
+    parts = name.split("-")
+    return parts[0] in _FW_PREFIXES and all(
+        w in FRAMEWORK_TAG_WORDS or w in AG_GRID_WORDS or w in STEP_VOCAB or w in _FW_PREFIXES or w.isdigit()
+        for w in parts[1:])
 
 
 def class_token_type(t: str) -> str:
@@ -181,7 +266,7 @@ def class_token_type(t: str) -> str:
         return t
     if any(p.search(t) for p in _STATE_CLASS):
         return "<v:state-class>"
-    if _AG_STRUCT.fullmatch(t):
+    if ag_class_ok(t):
         return t                       # AG Grid structural class: public library vocabulary
     if any(p.search(t) for p in _HASHED_CLASS):
         return "<v:hashed-class>"
@@ -234,10 +319,11 @@ _ATTR_WORDS = SAFE_WORDS | GENERIC_STEMS | ROLE_WORDS | frozenset(
 
 
 def _attr_ok(name: str, deny) -> bool:
-    """Known-safe names, aria-*, and data-* whose words are all generic (data-row-key yes, data-acme-id no)."""
+    """Known-safe names, ARIA spec attributes, and data-* whose words are all generic (data-row-key yes,
+    data-acme-id no, aria-acmelabel no)."""
     if deny and deny(name):
         return False
-    if name in SAFE_ATTRS or name in FRAMEWORK_ATTRS or re.fullmatch(r"aria-[a-z]+", name):
+    if name in SAFE_ATTRS or name in FRAMEWORK_ATTRS or name in ARIA_ATTRS:
         return True
     m = re.fullmatch(r"data-([a-z0-9]+(?:-[a-z0-9]+)*)", name)
     return bool(m) and all(w in _ATTR_WORDS for w in m.group(1).split("-"))
@@ -336,7 +422,7 @@ def redact_xpath(s: str, stats: Counter | None = None, deny=None) -> str | None:
                 if text not in XPATH_AXES:
                     return None
                 out.append(text)
-            elif text in HTML_TAGS or re.fullmatch(FRAMEWORK_TAG_RX, text):
+            elif text in HTML_TAGS or framework_tag_ok(text):
                 out.append(text)
             else:
                 out.append("<tag>")  # app-specific custom element; not "*", which would misreport the original
@@ -474,7 +560,7 @@ def redact_css(s: str, strict: bool, stats: Counter | None = None, deny=None) ->
         elif kind in ("star", "sent"):
             out.append("*")
         else:  # ident = tag name
-            if text in HTML_TAGS or re.fullmatch(FRAMEWORK_TAG_RX, text):
+            if text in HTML_TAGS or framework_tag_ok(text):
                 out.append(text)
             elif strict:
                 return None
@@ -518,7 +604,7 @@ def redact_literal(s: str, hint: str | None = None, stats: Counter | None = None
         return "<secret>", "secret"
     if EMAIL_RX.search(plain):
         return "<email>", "email"
-    if URL_RX.search(plain) or hosts_in(plain) or IP_RX.search(plain) or re.search(r"\blocalhost\b", plain):
+    if URL_RX.search(plain) or hosts_in(plain, css_ok=True) or IP_RX.search(plain) or re.search(r"\blocalhost\b", plain):
         return "<url>", "url"
     if _NUM_RX.fullmatch(plain):
         return "<int>", "number"
@@ -559,7 +645,7 @@ _PHRASE_TOKEN = re.compile(rf"""
 |(?P<q>"(?:[^"\\]|\\.)*"|(?<![\w'])'(?:[^'\\]|\\.)*'(?![\w']))
 |(?P<url>\b[a-zA-Z][\w+.-]*://\S+|\bwww\.\S+)
 |(?P<email>[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)
-|(?P<host>(?<![\w.-])(?:[a-z0-9-]+\.)+(?:{TLDS})(?![\w-]))
+|(?P<host>(?:(?<![\w.-])(?:[a-z0-9-]+\.)+(?:{TLDS})(?![\w-])|{HOSTLIKE_RX.pattern})(?:[:/][^\s"'<>]*)?)
 |(?P<ph><[A-Za-z][\w -]*>)
 |(?P<num>\d+(?:[.,:]\d+)*)
 |(?P<word>[^\W\d_][\w'’-]*)
@@ -568,14 +654,23 @@ _PHRASE_TOKEN = re.compile(rf"""
 """, re.X | re.S)
 _SAFE_CLASS = re.compile(r"\[\^?(?:\\.|[A-Za-z]-[A-Za-z]|\d-\d|[^\w\]])*\]")
 CUKE_TYPES = {"", "int", "float", "word", "string", "double", "long", "byte", "short", "bigdecimal", "biginteger"}
+_WORD_PART = re.compile(r"[-'’]")
+
+
+def _is_host_token(tok: str) -> bool:
+    head = re.split(r"[:/]", tok, maxsplit=1)[0]
+    return bool(hosts_tld_in(head) or hostlike_in(head))
 
 
 class PhraseRedactor:
     """Step phrases (step-definition patterns and feature step text).
 
-    mode="pattern": quoted words are kept as phrasing (still word-filtered); small numbers kept.
-    mode="text":    quoted strings -> "<string>", numbers -> <int> (feature files).
-    Capitalized words that are not at sentence start and not common words -> <Name>.
+    Every word is vocabulary-gated, in both modes: kept only if it is generic step vocabulary (vocab.STEP_VOCAB:
+    common English / UI / testing words), a denylist token (Company1) or a placeholder; else <Name> if it has a
+    capital letter, <word> otherwise. There is no "sentence start" exemption; non-ASCII words are always <word>.
+
+    mode="pattern": step-definition patterns. Quoted text keeps its (gated) words; small numbers kept.
+    mode="text":    feature step text and data-table headers. Quoted strings -> "<string>", numbers -> <int>.
     """
 
     def __init__(self, rename: Renamer):
@@ -584,15 +679,15 @@ class PhraseRedactor:
         self.param_map: dict[str, str] = {}
 
     def __call__(self, s: str, mode: str = "text") -> str:
+        r = self.rename(s)
+        if r != s:
+            self.stats["denylisted words"] += 1
+        return self._redact(r, mode)
+
+    def _redact(self, s: str, mode: str) -> str:
         out: list[str] = []
-        start = True
-        pending = False
         for m in _PHRASE_TOKEN.finditer(s):
             kind, tok = m.lastgroup, m.group(0)
-            if kind == "ws":
-                start = start or pending
-            elif not (kind == "other" and tok in ".!?"):
-                pending = False
             if kind == "qcap" or kind == "esc":
                 out.append(tok)
             elif kind == "cls":
@@ -608,64 +703,71 @@ class PhraseRedactor:
                 if is_placeholder(inner) or re.fullmatch(r"<[A-Za-z][\w -]*>", inner):
                     out.append(qc + self._ph(inner[1:-1]) + qc)
                 elif re.fullmatch(r"\{[^{}\s]*\}", inner):
-                    out.append(qc + self(inner, mode) + qc)
+                    out.append(qc + self._redact(inner, mode) + qc)
                 elif mode == "pattern" and not re.search(r"[^\W\d_]", re.sub(r"\\.", "", inner)):
                     out.append(tok)
                 elif mode == "pattern":
-                    out.append(qc + self(inner, mode) + qc)
+                    out.append(qc + self._redact(inner, mode) + qc)
                 else:
                     out.append(qc + "<string>" + qc)
                     self.stats["quoted strings"] += 1
-                start = False
+            elif kind == "host" and not _is_host_token(tok):
+                # a file name (index.html) or package (com.x.y): its words go through the word filter
+                out.append(re.sub(r"[^\W\d_][\w'’-]*", lambda w: self.word(w.group(0)), tok))
             elif kind in ("url", "host"):
                 out.append("<url>")
                 self.stats["urls"] += 1
-                start = False
             elif kind == "email":
                 out.append("<email>")
                 self.stats["emails"] += 1
-                start = False
             elif kind == "ph":
                 out.append(self._ph(tok[1:-1]))
-                start = False
             elif kind == "num":
                 if mode == "pattern" and re.fullmatch(r"\d{1,2}", tok):
                     out.append(tok)
                 else:
                     out.append("<int>")
                     self.stats["numbers"] += 1
-                start = False
             elif kind == "word":
-                out.append(self.word(tok, start))
-                start = False
+                out.append(self.word(tok))
             elif kind == "ws":
                 out.append(" ")
             else:
                 out.append(tok)
-                if tok in ".!?":
-                    pending = True
-                elif tok not in "\"'":
-                    start = False
         return "".join(out)
 
-    def word(self, w: str, sentence_start: bool) -> str:
+    @staticmethod
+    def known(w: str) -> bool:
+        """Generic step vocabulary. Possessives and hyphenated compounds count when every part is known
+        (user's, sign-in); single ASCII letters carry nothing."""
+        lw = w.lower()
+        if w == "I" or (len(w) == 1 and w.isascii()) or lw in STEP_VOCAB:
+            return True
+        parts = [p for p in _WORD_PART.split(lw) if p]
+        if parts and parts[-1] == "s" and len(parts) > 1:
+            parts = parts[:-1]
+        return len(parts) > 1 and all(p in STEP_VOCAB for p in parts)
+
+    def word(self, w: str) -> str:
         r = self.rename(w)
         if r != w:
             self.stats["denylisted words"] += 1
             return r
-        if self.rename.is_token(w):
+        if re.fullmatch(self.rename.token_rx.pattern, w, re.I):
             return w
         if any(c.isdigit() for c in w) or looks_secret_token(w):
             self.stats["words with digits"] += 1
             return "<v>"
-        if w == "I" or w.lower() in SAFE_WORDS:
+        if not w.isascii():
+            self.stats["non-English words"] += 1
+            return "<word>"
+        if self.known(w):
             return w
         if any(c.isupper() for c in w):
-            if sentence_start and w[0].isupper() and w[1:].islower():
-                return w
             self.stats["proper-noun-like words"] += 1
             return "<Name>"
-        return w
+        self.stats["uncommon words"] += 1
+        return "<word>"
 
     def _ph(self, inner: str) -> str:
         if inner in PLACEHOLDERS:
@@ -681,7 +783,7 @@ class PhraseRedactor:
         if not bad:
             words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+|[^\W\d_]+", r)
             for w in words:
-                if self.rename.is_token(w) or w.lower() in SAFE_WORDS or w.lower() in GENERIC_STEMS:
+                if self.rename.is_token(w) or w.lower() in STEP_VOCAB:
                     continue
                 bad = True
                 break
@@ -696,12 +798,14 @@ class PhraseRedactor:
 
     def needs_review(self, s: str) -> bool:
         """Kept phrase that still has words outside the common vocabulary (for PROFILE.md review list)."""
-        for m in _PHRASE_TOKEN.finditer(s):
-            if m.lastgroup == "word":
-                w = m.group(0)
-                if w != "I" and w.lower() not in SAFE_WORDS and not self.rename.is_token(w):
-                    return True
-        return False
+        return bool(self.unusual_words(s))
+
+    def unusual_words(self, s: str) -> list[str]:
+        out = []
+        for w in re.findall(r"[^\W\d_][\w'’-]*", re.sub(r"<[A-Za-z][\w -]*>|\{[^{}\s]*\}|\\.", " ", s)):
+            if w != "I" and w.lower() not in SAFE_WORDS and not self.rename.is_token(w):
+                out.append(w)
+        return out
 
 
 # ----------------------------------------------------------------------------------------------- tags

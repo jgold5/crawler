@@ -9,11 +9,17 @@ from __future__ import annotations
 import re
 
 from .redact import Renamer
-from .vocab import CLICK_VERBS, FILL_VERBS, GENERIC_STEMS, PACKAGE_GENERIC, ROLE_WORDS, VERBS
+from .vocab import CLICK_VERBS, FILL_VERBS, GENERIC_STEMS, PACKAGE_GENERIC, ROLE_WORDS, SHORT_OK, VERBS
 
 _WORD_RX = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _FIELD_ROLES = {"input", "field", "fields", "dropdown", "select", "checkbox", "radio", "toggle", "text", "label"}
 _ACTION_ROLES = {"button", "btn", "link", "tab", "menu", "item", "items", "icon"}
+
+
+def short_ok(name: str) -> bool:
+    """A 1-2 character identifier that carries no information: a single letter (i, e, T), a letter + digit
+    (T1), or a generic two-letter word (id, by, el, ok, ui ...). Anything else that short (initials) is not."""
+    return bool(re.fullmatch(r"[A-Za-z_$]\d?", name)) or name.lower() in SHORT_OK
 
 
 def split_words(name: str) -> list[str]:
@@ -83,7 +89,12 @@ class Anonymizer:
             return {"type": f"Type{n}", "ann": f"Type{n}", "method": f"item{n}", "param": f"arg{n}",
                     "local": f"arg{n}"}.get(kind, f"item{n}")
         if len(name) <= 2:
-            return name
+            if short_ok(name):
+                return name
+            n = self._stem_id([name])            # QW, Zf: initials are as telling as the full name
+            self.count += 1
+            return {"type": f"Type{n}", "ann": f"Type{n}", "method": f"item{n}", "param": f"arg{n}",
+                    "local": f"arg{n}", "const": f"ITEM{n}"}.get(kind, f"item{n}")
         words = split_words(name)
         style = style_of(name)
         lower = [w.lower() for w in words]
@@ -124,7 +135,7 @@ class Anonymizer:
         return join_words(verbs + [f"{pre}{n}"] + roles, style)
 
     def package_segment(self, seg: str) -> str:
-        if self.keep or (seg.isascii() and (seg.lower() in PACKAGE_GENERIC or len(seg) <= 2)):
+        if self.keep or (seg.isascii() and (seg.lower() in PACKAGE_GENERIC or short_ok(seg))):
             return self.rename(seg).lower()
         return self.rename(f"pkg{self._stem_id([seg])}")
 
