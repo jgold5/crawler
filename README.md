@@ -44,8 +44,10 @@ WSL (GPU path); the crawler itself only runs a headless browser inside WSL, whic
 1. `C:\Users\<you>\.wslconfig` (then `wsl --shutdown` in PowerShell and reopen the terminal):
    ```ini
    [wsl2]
-   networkingMode=mirrored   # WSL can reach Windows Chrome at localhost:9222
-   memory=6GB                # cap WSL so it can't take Windows down
+   # WSL can reach Windows Chrome at localhost:9222
+   networkingMode=mirrored
+   # cap WSL so it can't take Windows down
+   memory=6GB
    ```
 2. In PowerShell:
    `& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\crawler-chrome"`
