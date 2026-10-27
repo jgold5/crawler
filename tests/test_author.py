@@ -393,11 +393,8 @@ def test_unknown_first_page_and_missing_url(tmp_path):
     p = _cli(tmp_path / "f.txt", "--repo", ROOT / "tests/fixtures/repo", "--version", "aggrid",
              "--config", FIX / "site.yaml", "--out", tmp_path / "out")
     assert p.returncode == 2 and "line 1: unknown page 'Nowhere'" in p.stderr
-    (tmp_path / "g.txt").write_text("go to Login\n")      # in the repository, but no url in site.yaml
-    p = _cli(tmp_path / "g.txt", "--repo", ROOT / "tests/fixtures/repo", "--version", "aggrid",
-             "--config", FIX / "site.yaml", "--out", tmp_path / "out")
-    assert p.returncode == 2 and "page 'login' has no url in site.yaml pages" in p.stderr
-    assert re.search(r"menu is not supported", p.stderr)
+    # A page in the repository with no url in site.yaml is NOT an error any more: it's a context switch
+    # (see test_page_without_url_switches_context_from_base_url).
 
 
 # ---------------------------------------------------------------------------------------------- audit regressions
@@ -527,12 +524,13 @@ def test_answer_hint_keeps_options(author_sites, tmp_path):  # noqa: F811
     assert f"--aliases '{aliases}'" in (out / "ASK.md").read_text()
 
 
-def test_page_without_url_switches_context_from_base_url(author_sites, tmp_path):  # noqa: F811
+def test_page_without_url_switches_context_from_base_url(author_sites, browser, pw, tmp_path):  # noqa: F811
     """No URL for the page: the run starts at base_url and `go to` only switches to that page's XML + iframe."""
     url, _ = author_sites
     f, repo, cfg, out = workspace(tmp_path, url, flow='go to Settings\nset Display name to "Jane Q"\n')
     cfg.write_text(f"base_url: {url}/shell.html?page=settings\nauth: {{storage_state: auth.json}}\n", encoding="utf-8")
-    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, runs=1, echo=lambda *a: None)
+    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, runs=1, browser=browser,
+                 playwright=pw, echo=lambda *a: None)
     assert res.exit_code == 0, res.errors
     assert 'Given user switches to the "settings" page' in res.feature
     assert 'When user fills "Display name" textfield as "Jane Q"' in res.feature
