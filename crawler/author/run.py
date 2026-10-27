@@ -171,6 +171,7 @@ class LineRec:
     frame_slot: Slot | None = None
     grid_name: str | None = None
     secret: bool = False
+    switch: bool = False                    # goto without a URL: switch page context, don't navigate
     resolved: dict = field(default_factory=dict)    # run -> how it was found
     verify: dict = field(default_factory=dict)      # run -> (ok, actual, expected)
     ms: dict = field(default_factory=dict)          # run -> ms
@@ -436,10 +437,15 @@ class Author:
                     first_goto = False
                     continue
                 if not ref.url:
-                    problems.append(EnglishError(
-                        ln.n, f"page {ref.key!r} has no url in site.yaml pages "
-                              f"(navigating through the app's menu is not supported yet); add "
-                              f"pages: {{{ref.cfg_name or ref.written}: {{url: /...}}}}"))
+                    # No URL: `go to X` switches context to page X (its XML + iframe) without navigating;
+                    # the flow reaches the page by clicking through the app (base_url is the start page).
+                    if first_goto and not (self.cfg.base_url or "").strip():
+                        problems.append(EnglishError(
+                            ln.n, f"page {ref.key!r} has no url and site.yaml has no base_url to start from",
+                            [f"add pages: {{{ref.cfg_name or ref.written}: {{url: /...}}}}", "or set base_url"]))
+                        continue
+                    first_goto = False
+                    self.records.append(LineRec(replace(ln, verb="switch to"), "goto", pageref=ref, switch=True))
                     continue
                 first_goto = False
                 self.records.append(LineRec(ln, "goto", pageref=ref))
@@ -758,7 +764,10 @@ class Author:
     # ------------------------------------------------------------------ goto + iframe
     def _goto(self, rec: LineRec, c: _Ctx) -> None:
         ref = rec.pageref
-        c.page.goto(ref.url, wait_until="domcontentloaded")
+        if not rec.switch:
+            c.page.goto(ref.url, wait_until="domcontentloaded")
+        elif c.page.url in ("", "about:blank"):
+            c.page.goto(self.cfg.base_url, wait_until="domcontentloaded")   # the flow starts by switching
         rep = c.tracker.wait([c.page.main_frame])
         c.key = ref.key
         if not rep.ok:
