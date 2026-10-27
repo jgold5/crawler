@@ -1,6 +1,6 @@
-"""Authentication: borrow the session from the user's logged-in Chrome, then crawl headless.
+"""Authentication, borrow mode: copy the session out of the user's logged-in Chrome, then crawl headless.
+(The other way in, driving that Chrome itself, and the choice between them: crawler/nav/session.py.)
 
-This is the one supported way in:
   1. The user starts Chrome with `--remote-debugging-port=9222` and logs in normally (SSO/MFA included).
   2. `harvest_auth()` attaches over CDP, copies cookies + localStorage + sessionStorage, and disconnects.
      The user's tabs are only read; no credentials are stored anywhere.
@@ -58,8 +58,8 @@ def harvest_auth(cdp_endpoint: str, out_path: str | Path, *, playwright: Playwri
         browser = playwright.chromium.connect_over_cdp(cdp_endpoint)
     except Exception as e:
         raise RuntimeError(
-            f"Could not reach Chrome at {cdp_endpoint}. Start it with --remote-debugging-port=9222, "
-            f"log in to the site, then retry."
+            f"Could not reach Chrome at {cdp_endpoint}. Start it with --remote-debugging-port=9222 "
+            f"(see README Login), log in to the site, then retry."
         ) from e
     try:
         if not browser.contexts:

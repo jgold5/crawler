@@ -116,7 +116,7 @@ class Session:
             ctx = self.browser.contexts[0]
             page = ctx.new_page()
             self._pages.append(page)
-            page.on("popup", self._popups.append)      # popups our tab opens are ours: closed with it
+            page.on("popup", lambda p: self._popups.append(p))  # popups our tab opens are ours: closed with it
             try:
                 page.set_viewport_size(dict(self.cfg.viewport))
             except PlaywrightError:

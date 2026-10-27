@@ -31,7 +31,7 @@ sudo pacman -S --needed nss atk at-spi2-core libcups libdrm libxkbcommon libxcom
 
 Update later: `~/.venvs/crawler/bin/pip install --force-reinstall --no-deps "git+https://github.com/jgold5/crawler@claude/bold-wozniak-d492l5"`.
 
-## Login (probe / author)
+## Login (probe / navmap / author)
 
 Start your own Chrome with a debug port, log in to the app normally (SSO/MFA fine), leave a tab open:
 
@@ -54,9 +54,22 @@ WSL (GPU path); the crawler itself only runs a headless browser inside WSL, whic
    `& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\crawler-chrome"`
 3. From WSL, check: `curl -s http://localhost:9222/json/version` (should print JSON).
 
-The tool borrows that session over CDP for about a second (cookies, localStorage, sessionStorage),
-caches it in `.crawler/auth.json` (mode 600) for an hour, and crawls in its own headless browser. Close
-that Chrome when you're done; while the port is open, other local programs can control it.
+How `probe`, `navmap` and `author` use that Chrome (`--session`, or `session:` in site.yaml):
+
+- **`auto`** (default): borrow (below); if the borrowed start page looks like a login page (a password
+  field, a redirect to another host such as an SSO page, or a `login_url_patterns` regex in site.yaml),
+  drive instead and say so.
+- **`borrow`**: copy the session over CDP for about a second (cookies, localStorage, sessionStorage),
+  cache it in `.crawler/auth.json` (mode 600) for an hour, and crawl in our own headless browser. This
+  can't carry corporate logins (Windows integrated auth / Kerberos / NTLM, device compliance, client
+  certificates, browser-bound tokens). A cached login that lands on a login page is deleted and borrowed
+  again; if that Chrome holds nothing for the app, nothing is cached and you're told to log in there.
+- **`drive`**: run inside that Chrome itself, visibly, in a **new tab** per run (that debug profile only;
+  your other tabs aren't touched, and our tabs are closed at the end, also on errors/Ctrl-C). Whatever
+  the login needs is already there. Runs are "fresh tabs in your logged-in session": a fresh page and
+  sessionStorage each run, but cookies/localStorage are shared. `--headed` doesn't apply.
+
+Close that Chrome when you're done; while the port is open, other local programs can control it.
 
 ## Development
 
