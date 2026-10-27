@@ -545,35 +545,27 @@ class Author:
         return text
 
     # ------------------------------------------------------------------ browser session
-    def _new_context(self, browser, storage_state):
-        from ..nav.connect import new_auth_context
-        opts = {"viewport": dict(self.cfg.viewport)}
-        ctx = new_auth_context(browser, storage_state, **opts) if storage_state else browser.new_context(**opts)
-        ReadyTracker.install_init_script(ctx)
-        pats = [p for p in (self.cfg.block_url_patterns or []) if p]
-        if pats:
-            rx = re.compile("|".join(f"(?:{p})" for p in pats))
-            ctx.route(rx, lambda route: route.abort())
-        ctx.set_default_timeout(self.timeout)
-        return ctx
-
-    def run_all(self, browser, storage_state=None) -> tuple[int, list[int]]:
-        """All runs. Returns (exit code, per-run ms)."""
+    def run_all(self, session, storage_state=None) -> tuple[int, list[int]]:
+        """All runs, each in a fresh page of ``session`` (a nav.session.Session: a fresh context per run when
+        borrowing, a fresh TAB of the user's logged-in Chrome when driving: fresh document and sessionStorage, but
+        the profile's cookies/localStorage are shared by the runs). A plain Browser borrows ``storage_state``.
+        Returns (exit code, per-run ms)."""
+        from ..nav.ready import MUTATION_JS
+        from ..nav.session import Session
+        if not isinstance(session, Session):
+            session = Session("borrow", self.cfg, browser=session, storage_state=storage_state)
+        self.runs_desc = session.describe()
         run_ms: list[int] = []
         worst = EXIT_OK
         for run in range(1, self.runs + 1):
             t0 = time.monotonic()
-            ctx = self._new_context(browser, storage_state)
+            page = session.new_page(init_scripts=[MUTATION_JS])
             try:
-                page = ctx.new_page()
                 c = _Ctx(run, page, ReadyTracker(page, self.cfg, stuck_sigs=self.stuck_spinners))
                 code = self._run(c)
             finally:
                 run_ms.append(round((time.monotonic() - t0) * 1000))
-                try:
-                    ctx.close()
-                except PlaywrightError:
-                    pass
+                session.close_page(page)    # drive mode: only our tab; the user's other tabs are never touched
             self.echo(f"run {run}/{self.runs}: {run_ms[-1] / 1000:.1f} s")
             if code == EXIT_ASK:
                 return EXIT_ASK, run_ms

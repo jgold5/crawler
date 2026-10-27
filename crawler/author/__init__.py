@@ -19,7 +19,7 @@ from .slots import build_edits
 
 
 def _storage_state(cfg: SiteConfig, no_auth: bool, playwright, echo) -> str | None:
-    """The ONE auth mechanism: a borrowed login (crawler.nav.connect), harvested again when stale."""
+    """A borrowed login (crawler.nav.connect), harvested again when stale. (The commands use nav.session.)"""
     if no_auth:
         return None
     from ..nav.connect import harvest_auth, storage_state_fresh
@@ -33,11 +33,15 @@ def _storage_state(cfg: SiteConfig, no_auth: bool, playwright, echo) -> str | No
 def author(flow, *, repo_root, version: str | None = None, config=None, cfg: SiteConfig | None = None,
            out_dir="author-out", runs: int | None = None, no_auth: bool = False, apply: bool = False,
            answers=None, aliases=None, playwright=None, browser=None, headless: bool = True, echo=print,
-           command: str | None = None, navmap=None) -> AuthorResult:
+           command: str | None = None, navmap=None, session: str | None = None) -> AuthorResult:
     """Run the whole `crawler author` command. ``playwright``/``browser`` may be passed in (tests share one).
 
     ``navmap`` (or site.yaml ``navmap:``): navmap.yaml from `crawler navmap`; `go to X` for a page without a url
-    then clicks X's tab (and its lazy option) and switches to X's iframe."""
+    then clicks X's tab (and its lazy option) and switches to X's iframe.
+
+    ``session``: borrow | drive | auto (default: site.yaml ``session:``), see crawler/nav/session.py. When driving,
+    each run is a fresh TAB of the user's logged-in Chrome (fresh document/sessionStorage, shared cookies and
+    localStorage), not a fresh browser context: "verified in N runs" then means N fresh tabs of that session."""
     t0 = time.monotonic()
     out = Path(out_dir)
     if cfg is None:
@@ -69,19 +73,22 @@ def author(flow, *, repo_root, version: str | None = None, config=None, cfg: Sit
     for name in ("ASK.md", "flow.feature", "xml.diff"):
         (out / name).unlink(missing_ok=True)
 
-    own_pw = own_browser = None
+    from ..nav.session import SessionError, open_session
+    own_pw = sess = None
     try:
-        if browser is None:
-            if playwright is None:
-                from playwright.sync_api import sync_playwright
-                own_pw = sync_playwright().start()
-                playwright = own_pw
-            own_browser = browser = playwright.chromium.launch(headless=headless)
-        state = _storage_state(cfg, no_auth, playwright, echo)
-        code, run_ms = a.run_all(browser, state)
+        if browser is None and playwright is None:
+            from playwright.sync_api import sync_playwright
+            own_pw = sync_playwright().start()
+            playwright = own_pw
+        try:
+            sess = open_session(cfg, playwright, browser, mode=session, no_auth=no_auth, headless=headless,
+                                echo=echo, shot_dir=out)
+        except SessionError as e:
+            return AuthorResult(EXIT_FAILED, out, records=a.records, errors=[str(e)])
+        code, run_ms = a.run_all(sess)
     finally:
-        if own_browser is not None:
-            own_browser.close()
+        if sess is not None:
+            sess.close()
         if own_pw is not None:
             own_pw.stop()
 

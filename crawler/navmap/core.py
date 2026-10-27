@@ -87,6 +87,9 @@ class NavMapper:
         self.bar_frame_pages: set[str] = set()       # pages whose iframe entry selects the bar's frame
         self.entries = []                            # every element entry of every page (not iframe entries)
         self.frame_entries = {}                      # page key -> its iframe entry (static, selects a frame)
+        self.runs_desc = "each in a fresh browser context"      # drive mode: fresh tabs (see nav/session.py)
+        self.runs_phrase = f"{self.runs} fresh session(s)"
+        self.driving = False
         for k in repo.pages():
             try:
                 es = repo.entries(k)
@@ -176,25 +179,21 @@ class NavMapper:
         return PageHit(None, "unknown", name, src, None, min(sugg, key=len) if sugg else None)
 
     # ------------------------------------------------------------------ runs
-    def _context(self, browser, storage_state):
-        from ..nav.connect import new_auth_context
-        opts = {"viewport": dict(self.cfg.viewport)}
-        ctx = new_auth_context(browser, storage_state, **opts) if storage_state else browser.new_context(**opts)
-        ReadyTracker.install_init_script(ctx)
-        pats = [p for p in (self.cfg.block_url_patterns or []) if p]
-        if pats:
-            rx = re.compile("|".join(f"(?:{p})" for p in pats))
-            ctx.route(rx, lambda route: route.abort())
-        ctx.set_default_timeout(int(self.cfg.timeout_ms))
-        return ctx
-
-    def run_all(self, browser, storage_state=None) -> tuple[int, list[int], list[str]]:
+    def run_all(self, session, storage_state=None) -> tuple[int, list[int], list[str]]:
+        """Every run in a fresh page of ``session`` (a nav.session.Session; a plain Browser borrows ``storage_state``
+        into a fresh context per run)."""
+        from ..nav.ready import MUTATION_JS
+        from ..nav.session import Session
+        if not isinstance(session, Session):
+            session = Session("borrow", self.cfg, browser=session, storage_state=storage_state)
+        self.runs_desc = session.describe()
+        self.runs_phrase = session.runs_phrase(self.runs)
+        self.driving = session.driving
         run_ms: list[int] = []
         for run in range(1, self.runs + 1):
             t0 = time.monotonic()
-            ctx = self._context(browser, storage_state)
+            page = session.new_page(init_scripts=[MUTATION_JS])
             try:
-                page = ctx.new_page()
                 ex = Explorer(self, run, page, ReadyTracker(page, self.cfg))
                 ex.start()
                 if run == 1:
@@ -208,10 +207,7 @@ class NavMapper:
                 return EXIT_FAILED, run_ms, [f"run {run}: {str(e).splitlines()[0]}"]
             finally:
                 run_ms.append(round((time.monotonic() - t0) * 1000))
-                try:
-                    ctx.close()
-                except PlaywrightError:
-                    pass
+                session.close_page(page)    # drive mode: only our tab; the user's other tabs are never touched
             self.echo(f"run {run}/{self.runs}: {run_ms[-1] / 1000:.1f} s")
         return EXIT_OK, run_ms, []
 
@@ -239,10 +235,13 @@ class NavMapper:
         lines.append(f"diagnosis: loaded {d['url']!r} (title {d['title']!r}); base_url is {self.cfg.base_url!r}")
         if d["url"] in ("about:blank", "") or d["url"].startswith("chrome-error:"):
             lines.append("diagnosis: the app never loaded: check base_url in site.yaml and that this machine can reach it")
+        elif d["password"] and self.driving:
+            lines.append("diagnosis: this looks like a LOGIN page in your own Chrome: log in in that Chrome "
+                         "(the one started with --remote-debugging-port=9222) and run again")
         elif d["password"]:
             lines.append("diagnosis: this looks like a LOGIN page: the session wasn't borrowed. Log in in the Chrome "
                          "started with --remote-debugging-port=9222, keep a tab open on the app, delete "
-                         ".crawler/auth.json and run again")
+                         ".crawler/auth.json and run again (or use --session drive to run in that Chrome itself)")
         elif d["bodyText"] < 20:
             lines.append("diagnosis: the page is (nearly) empty: wrong base_url, or the app is still loading "
                          "(raise timeout_ms in site.yaml)")
@@ -642,15 +641,12 @@ class NavMapper:
         return idx
 
 
-def _storage_state(cfg: SiteConfig, no_auth: bool, playwright, echo) -> str | None:
-    from ..author import _storage_state as author_state
-    return author_state(cfg, no_auth, playwright, echo)
-
-
 def navmap(*, repo_root, version: str | None = None, config=None, cfg: SiteConfig | None = None,
            out_dir="navmap-out", runs: int | None = None, tabs=None, no_auth: bool = False, apply: bool = False,
-           playwright=None, browser=None, headless: bool = True, echo=print) -> NavResult:
-    """Run the whole `crawler navmap` command (``playwright``/``browser`` may be passed in: tests share one)."""
+           playwright=None, browser=None, headless: bool = True, echo=print, session: str | None = None) -> NavResult:
+    """Run the whole `crawler navmap` command (``playwright``/``browser`` may be passed in: tests share one).
+
+    ``session``: borrow | drive | auto (default: site.yaml ``session:``), see crawler/nav/session.py."""
     from .output import write_ask, write_outputs
     t0 = time.monotonic()
     out = Path(out_dir)
@@ -668,19 +664,24 @@ def navmap(*, repo_root, version: str | None = None, config=None, cfg: SiteConfi
     for name in ("ASK.md", "navmap.yaml", "xml.diff", "NAVIGATE.md", "report.md"):
         (out / name).unlink(missing_ok=True)
 
-    own_pw = own_browser = None
+    from ..nav.session import SessionError, open_session
+    own_pw = sess = None
     try:
-        if browser is None:
-            if playwright is None:
-                from playwright.sync_api import sync_playwright
-                own_pw = sync_playwright().start()
-                playwright = own_pw
-            own_browser = browser = playwright.chromium.launch(headless=headless)
-        state = _storage_state(cfg, no_auth, playwright, echo)
-        code, run_ms, errors = nm.run_all(browser, state)
+        if browser is None and playwright is None:
+            from playwright.sync_api import sync_playwright
+            own_pw = sync_playwright().start()
+            playwright = own_pw
+        try:
+            sess = open_session(cfg, playwright, browser, mode=session, no_auth=no_auth, headless=headless,
+                                echo=echo, shot_dir=out)
+        except SessionError as e:
+            res = NavResult(EXIT_FAILED, out, errors=[str(e)])
+            write_outputs(out, nm, res)
+            return res
+        code, run_ms, errors = nm.run_all(sess)
     finally:
-        if own_browser is not None:
-            own_browser.close()
+        if sess is not None:
+            sess.close()
         if own_pw is not None:
             own_pw.stop()
 

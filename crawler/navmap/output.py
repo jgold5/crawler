@@ -79,7 +79,7 @@ def navmap_data(nm, res) -> dict:
 
 _HEADER = """\
 # crawler navmap: the app's tab bar -> (lazy) dropdown options -> pages (each in its content iframe).
-# Every xpath was verified in {runs} fresh session(s), AFTER opening the option's tab (`after_tab`).
+# Every xpath was verified in {runs}, AFTER opening the option's tab (`after_tab`).
 # name: the visible label; entry: the XML entry on page `nav_page` (see xml.diff for new/fixed ones);
 # status: ok | broken (opens nothing) | unknown (no repository page fits its iframe) | unstable | skipped.
 # pages: page key -> the tab (and option) that opens it. `crawler author --navmap <this file>` uses it.
@@ -89,7 +89,7 @@ _HEADER = """\
 def write_navmap(out: Path, nm, res) -> Path:
     p = out / "navmap.yaml"
     body = yaml.safe_dump(navmap_data(nm, res), sort_keys=False, allow_unicode=True, width=160)
-    p.write_text(_HEADER.format(runs=nm.runs) + body, encoding="utf-8")
+    p.write_text(_HEADER.format(runs=nm.runs_phrase) + body, encoding="utf-8")
     return p
 
 
@@ -100,7 +100,7 @@ def report_text(nm, res) -> str:
     st = {0: "completed", 1: "failed", 2: "not started", 3: "stopped: several tab bars (see ASK.md)"}
     L.append(f"- Status: **{st.get(res.exit_code, res.exit_code)}**")
     L.append(f"- Start page: {_code(nm.cfg.base_url)}")
-    L.append(f"- Runs: {len(res.run_ms)} of {nm.runs} (each in a fresh browser context)"
+    L.append(f"- Runs: {len(res.run_ms)} of {nm.runs} ({nm.runs_desc})"
              + (", times: " + ", ".join(f"{ms / 1000:.1f} s" for ms in res.run_ms) if res.run_ms else ""))
     L.append(f"- Wall time: {res.total_ms / 1000:.1f} s")
     for e in res.errors:

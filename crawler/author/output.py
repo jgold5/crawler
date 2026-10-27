@@ -141,7 +141,8 @@ def report_text(title: str, author, result) -> str:
     err = next((r for r in recs if r.status == "error"), None)
     st = f"stopped at line {err.line.n} (error, nothing proposed)" if err else status.get(result.exit_code, result.exit_code)
     L.append(f"- Status: **{st}**")
-    L.append(f"- Runs: {result.runs_done} of {author.runs} (each in a fresh browser context)"
+    L.append(f"- Runs: {result.runs_done} of {author.runs} "
+             f"({getattr(author, 'runs_desc', None) or 'each in a fresh browser context'})"
              + (", times: " + ", ".join(f"{ms / 1000:.1f} s" for ms in result.run_ms) if result.run_ms else ""))
     L.append(f"- Wall time: {result.total_ms / 1000:.1f} s")
     counts = {}
