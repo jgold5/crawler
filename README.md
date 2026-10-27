@@ -38,6 +38,19 @@ Start your own Chrome with a debug port, log in to the app normally (SSO/MFA fin
 chrome --remote-debugging-port=9222 --user-data-dir=$HOME/.crawler-chrome
 ```
 
+**On WSL, use Windows Chrome for this, not a Linux Chrome.** A headed Linux Chrome under WSLg can crash
+WSL (GPU path); the crawler itself only runs a headless browser inside WSL, which is fine.
+
+1. `C:\Users\<you>\.wslconfig` (then `wsl --shutdown` in PowerShell and reopen the terminal):
+   ```ini
+   [wsl2]
+   networkingMode=mirrored   # WSL can reach Windows Chrome at localhost:9222
+   memory=6GB                # cap WSL so it can't take Windows down
+   ```
+2. In PowerShell:
+   `& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\crawler-chrome"`
+3. From WSL, check: `curl -s http://localhost:9222/json/version` (should print JSON).
+
 The tool borrows that session over CDP for about a second (cookies, localStorage, sessionStorage),
 caches it in `.crawler/auth.json` (mode 600) for an hour, and crawls in its own headless browser. Close
 that Chrome when you're done; while the port is open, other local programs can control it.
