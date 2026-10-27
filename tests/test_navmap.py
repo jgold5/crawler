@@ -336,3 +336,15 @@ def test_author_without_navmap_keeps_switching(site_url, pw, browser, tmp_path):
     assert res.exit_code == 0, (tmp_path / "o" / "report.md").read_text()
     assert 'Given user switches to the "dashboard" page' in res.feature
     assert not any(s.page == "shell" for s in res.slots)
+
+
+def test_no_tab_bar_diagnoses_a_login_page(site_url, pw, browser, tmp_path):
+    """User report: 'no tab bar found ... it didn't go to the site'. Say where the run ended up and why."""
+    repo, cfgp, out = nav_workspace(tmp_path, site_url)
+    cfg = replace(load_config(cfgp), base_url=f"{site_url}/login.html")   # what an un-borrowed session lands on
+    res = navmap(repo_root=repo, version="aggrid", cfg=cfg, out_dir=out, playwright=pw, browser=browser,
+                 runs=1, echo=lambda *a: None)
+    text = "\n".join(res.errors)
+    assert res.exit_code != EXIT_OK and "no tab bar found" in text
+    assert "login.html" in text and "LOGIN page" in text
+    assert (out / "screenshot.png").is_file()

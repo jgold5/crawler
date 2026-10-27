@@ -215,6 +215,48 @@ class NavMapper:
             self.echo(f"run {run}/{self.runs}: {run_ms[-1] / 1000:.1f} s")
         return EXIT_OK, run_ms, []
 
+    _DIAG_JS = """() => {
+      const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const lists = [...document.querySelectorAll('ul,ol')].filter(vis);
+      return {
+        url: location.href, title: document.title,
+        password: !!document.querySelector('input[type=password]'),
+        lists: lists.length,
+        biggestList: Math.max(0, ...lists.map(l => [...l.children].filter(c => c.tagName === 'LI' && vis(c)).length)),
+        frames: [...document.querySelectorAll('iframe,frame')].map(f => f.getAttribute('name') || f.id || '(unnamed)'),
+        bodyText: (document.body && document.body.innerText || '').trim().length,
+      };
+    }"""
+
+    def _diagnose(self, ex: Explorer) -> list[str]:
+        """Where the run actually ended up (local terminal + out dir only): the usual causes are a wrong
+        base_url, a login page (session not borrowed), or an app that hadn't rendered its nav."""
+        lines: list[str] = []
+        try:
+            d = ex.page.main_frame.evaluate(self._DIAG_JS)
+        except PlaywrightError as e:
+            return [f"diagnosis: could not read the page ({str(e).splitlines()[0]})"]
+        lines.append(f"diagnosis: loaded {d['url']!r} (title {d['title']!r}); base_url is {self.cfg.base_url!r}")
+        if d["url"] in ("about:blank", "") or d["url"].startswith("chrome-error:"):
+            lines.append("diagnosis: the app never loaded: check base_url in site.yaml and that this machine can reach it")
+        elif d["password"]:
+            lines.append("diagnosis: this looks like a LOGIN page: the session wasn't borrowed. Log in in the Chrome "
+                         "started with --remote-debugging-port=9222, keep a tab open on the app, delete "
+                         ".crawler/auth.json and run again")
+        elif d["bodyText"] < 20:
+            lines.append("diagnosis: the page is (nearly) empty: wrong base_url, or the app is still loading "
+                         "(raise timeout_ms in site.yaml)")
+        lines.append(f"diagnosis: {d['lists']} visible lists (largest has {d['biggestList']} items); "
+                     f"frames: {', '.join(d['frames']) or 'none'}")
+        try:
+            self.out.mkdir(parents=True, exist_ok=True)
+            shot = self.out / "screenshot.png"
+            ex.page.screenshot(path=str(shot), full_page=True)
+            lines.append(f"diagnosis: screenshot of what it saw: {shot}")
+        except PlaywrightError:
+            pass
+        return lines
+
     def _find_bar(self, ex: Explorer) -> tuple[int, list[str]]:
         self.bars = ex.detect(self.tabs or None)
         confirmed = [b for b in self.bars if b.confirmed]
@@ -223,7 +265,8 @@ class NavMapper:
                       f"({'; '.join(b.probes)})")
         if not confirmed:
             return EXIT_FAILED, ["no tab bar found: no candidate's items open a dropdown"
-                                 + (f" (candidates: {'; '.join(b.describe() for b in self.bars)})" if self.bars else "")]
+                                 + (f" (candidates: {'; '.join(b.describe() for b in self.bars)})" if self.bars else "")
+                                 ] + self._diagnose(ex)
         if len(confirmed) > 1:
             return EXIT_ASK, []
         self.bar = confirmed[0]
