@@ -111,8 +111,11 @@ def _keyword(line: Line, cfg: dict) -> str:
 
 def render(line: Line, element_name: str | None = None, cfg: Any = None, *,
            grid_name: str | None = None, page_name: str | None = None,
-           keyword: str | None = None) -> StepRender:
-    """Render ``line`` with ``element_name`` (the XML entry name) as its element {string}."""
+           keyword: str | None = None, row_base: int = 0) -> StepRender:
+    """Render ``line`` with ``element_name`` (the XML entry name) as its element {string}.
+
+    ``row_base`` (SiteConfig.grid_row_base) numbers ordinal rows: `the first row` -> ``row "<row_base>"``;
+    `row N` is always rendered as written."""
     rules = load_rules(cfg)
     lit = rules.get("literals") or {}
     action = line.action
@@ -130,7 +133,8 @@ def render(line: Line, element_name: str | None = None, cfg: Any = None, *,
             "seconds": line.timeout or lit.get("wait_seconds", 30),
         }
         if line.row is not None:
-            values["row"] = str(line.row.index) if line.row.index is not None else None
+            n = line.step_row(row_base)
+            values["row"] = str(n) if n is not None else None
             values["row_key"] = line.row.key_value
         if action in ("check", "uncheck"):
             values["bool"] = str(lit.get(action, "true" if action == "check" else "false"))
@@ -167,10 +171,10 @@ def _why(line: Line) -> str:
 
 def to_step(line: Line, element_name: str | None = None, cfg: Any = None, *,
             grid_name: str | None = None, page_name: str | None = None,
-            keyword: str | None = None) -> str | None:
+            keyword: str | None = None, row_base: int = 0) -> str | None:
     """The owner's step text for ``line`` (keyword included), or None: flag the line."""
     return render(line, element_name, cfg, grid_name=grid_name, page_name=page_name,
-                  keyword=keyword).text
+                  keyword=keyword, row_base=row_base).text
 
 
 def explain(line: Line) -> str:
@@ -196,7 +200,9 @@ def explain(line: Line) -> str:
     elif line.action == "select":
         parts.append("the open dropdown")
     if line.row is not None:
-        if line.row.index is not None:
+        if line.row.index is not None and line.row_ordinal:
+            parts.append(f"in displayed row #{line.row.index}")
+        elif line.row.index is not None:
             parts.append(f"in row {line.row.index}")
         else:
             parts.append(f'in the row where "{line.row.key_column}" is "{line.row.key_value}"')

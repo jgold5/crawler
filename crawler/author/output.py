@@ -50,6 +50,8 @@ def _hide(r, text):
 def _slot_cell(s: Slot | None) -> str:
     if s is None:
         return ""
+    if s.kind == "grid":
+        return _grid_cell(s)
     if s.verdict == "reuse":
         return f"reused **{_md(s.name)}**"
     if s.verdict == "fix":
@@ -57,6 +59,55 @@ def _slot_cell(s: Slot | None) -> str:
     if s.verdict == "new":
         return f"new **{_md(s.name)}**"
     return f"**unstable** {_md(s.name)}: {_md(s.reason)}"
+
+
+def _grid_cell(s: Slot) -> str:
+    what = {"reuse": "reused", "fix": "fixed", "new": "new"}.get(s.verdict)
+    if what is None:
+        return f"**unstable** grid {_md(s.name)}: {_md(s.reason)}"
+    why = f" ({_md(s.reason)})" if s.verdict == "fix" else ""
+    return f"{what} grid **{_md(s.name)}**{why}"
+
+
+def _text(v) -> str:
+    return "(not read)" if v is None else repr(v)
+
+
+def _grid_lines(r) -> list[str]:
+    """Per grid line: the grid entry and its root locator, column check, row index, cell text before/after."""
+    L: list[str] = []
+    s = r.slot
+    if s is not None and s.kind == "grid":
+        loc = s.final or s.current
+        L.append(f"- Grid entry: {_grid_cell(s)} on page `{s.page}` (matched by {s.found_by}): {_code(loc)}")
+        if s.verdict == "fix":
+            L.append(f"  - old: {_code(s.current)}")
+        for n in s.notes:
+            L.append(f"  - {_md(n)}")
+    if r.column is not None:
+        ok, header, msg = r.column
+        L.append(f"- Column: {'✓' if ok else '✗'} {_md(header)}")
+    for run, g in sorted(r.grid.items()):
+        rows = g.get("rows")
+        of = f" of {rows}" if rows is not None else ""
+        if "row" not in g and "key" not in g:
+            continue
+        if "key" in g:
+            col, val = g["key"]
+            found = f"row {g['row']}" if "row_index" in g else "not found"
+            L.append(f"- Row (run {run}): row where {_md(col)} is {_md(val)} → {found}{of}")
+        else:
+            L.append(f"- Row (run {run}): row {g['row']}{of}"
+                     + (f" (row-index {g['row_index']})" if g.get("row_index") is not None else ""))
+        if "before" in g:
+            L.append(f"- Cell (run {run}): before {_md(_text(_mask(r, g.get('before'))))}, "
+                     f"after {_md(_text(_mask(r, g.get('after'))))}")
+    by_msg: dict[str, list[int]] = {}
+    for run, msg in sorted(r.failures.items()):
+        by_msg.setdefault(msg, []).append(run)
+    for msg, runs in by_msg.items():
+        L.append(f"- **Failed** (run{'s' if len(runs) > 1 else ''} {', '.join(map(str, runs))}): {_md(msg)}")
+    return L
 
 
 def report_text(title: str, author, result) -> str:
@@ -76,7 +127,10 @@ def report_text(title: str, author, result) -> str:
     L.append("- Entries: " + (", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "none"))
     flagged = [r for r in recs if r.step is None and r.status != "pending"]
     vf = [r for r in recs if any(not v[0] for v in r.verify.values())]
-    L.append(f"- Flagged lines: {len(flagged)}; failed checks: {len(vf)}")
+    fl = [r for r in recs if r.failures]
+    L.append(f"- Flagged lines: {len(flagged)}; failed checks: {len(vf)}; failed lines: {len(fl)}")
+    if getattr(author, "grid_config_missing", False):
+        L.append("- Grid config not found in repo: grid columns were checked against the live grid only")
     L.append("")
     L += ["## Lines", "", "| # | English | Step | Element | Locator | ms per run |", "|---|---|---|---|---|---|"]
     for r in recs:
@@ -95,14 +149,15 @@ def report_text(title: str, author, result) -> str:
         L.append(f"- Understood: {_md(_hide(r, explain(r.line)))}")
         if r.step:
             L.append(f"- Step: {_hide(r, _code(r.step))}")
-        else:
+        elif not r.failures:      # a failed line says why below
             L.append(f"- **Flagged**: {_md(r.flagged or 'not reached')}")
         for n in r.step_notes:
             L.append(f"- Step note: {_md(n)}")
         for run, how in sorted(r.resolved.items()):
             L.append(f"- Found (run {run}): {_md(how)}")
         s = r.slot
-        if s is not None:
+        L += _grid_lines(r)
+        if s is not None and s.kind != "grid":
             L.append(f"- Entry: {_slot_cell(s)} on page `{s.page}` (matched by {s.found_by})")
             if s.verdict == "fix":
                 L.append(f"  - old: {_code(s.current)}")
@@ -116,8 +171,6 @@ def report_text(title: str, author, result) -> str:
             L.append(f"- Iframe: {_slot_cell(fs)}: {_code(fs.final or fs.current)}")
             if fs.verdict == "fix":
                 L.append(f"  - old: {_code(fs.current)}")
-        if r.grid_name:
-            L.append(f"- Grid: {_md(r.grid_name)}")
         for run, (ok, actual, expected) in sorted(r.verify.items()):
             L.append(f"- Check (run {run}): **{'pass' if ok else 'FAIL'}**: expected {_md(repr(_mask(r, expected)))}, "
                      f"got {_md(repr(_mask(r, actual)))}")
@@ -131,7 +184,7 @@ def report_text(title: str, author, result) -> str:
     if slots:
         L += ["## Entries", "", "| Page | Entry | Verdict | Why | Lines | Locator |", "|---|---|---|---|---|---|"]
         for s in slots:
-            nm = s.name if s.kind == "element" else f"{s.name} (iframe)"
+            nm = s.name if s.kind == "element" else f"{s.name} ({s.kind})"
             L.append(f"| {s.page} | {_md(nm)} | {s.verdict} | {_md(s.reason)} | "
                      f"{', '.join(map(str, s.lines))} | {_code(s.final or s.current)} |")
         L.append("")

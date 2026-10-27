@@ -47,13 +47,33 @@ class Line:
     timeout: int | None = None          # `for at most N seconds`
     raw_value: str | None = None        # value before date normalization
     notes: list[str] = field(default_factory=list)
+    # `row.index` holds the number as written: `row N` -> N (the owner's numbering, see
+    # SiteConfig.grid_row_base); `the second row` -> 2 with row_ordinal=True (a displayed position)
+    row_ordinal: bool = False
 
-    def to_target(self) -> Target | GridTarget | None:
-        """The engine-side target this line means."""
+    def step_row(self, base: int = 0) -> int | None:
+        """The row number the owner's steps take (`in row "N"`): `row N` -> N as written; the k-th row ->
+        ``base + k - 1`` (``base`` = SiteConfig.grid_row_base). None: no index row."""
+        if self.row is None or self.row.index is None or self.row.key_value is not None:
+            return None
+        return base + self.row.index - 1 if self.row_ordinal else self.row.index
+
+    def grid_row(self, base: int = 0) -> RowRef | None:
+        """The row for crawler.grid, whose ``RowRef.index`` is 1-based displayed order:
+        ``index = N - base + 1`` for `row N`; the k-th row is index k. Key rows pass through."""
+        if self.row is None:
+            return None
+        n = self.step_row(base)
+        if n is None:
+            return self.row
+        return RowRef(index=n - base + 1, key_column=self.row.key_column)
+
+    def to_target(self, row_base: int = 0) -> Target | GridTarget | None:
+        """The engine-side target this line means (``row_base``: SiteConfig.grid_row_base)."""
         if self.target is None:
             return None
         if self.row is not None and self.grid is not None:
-            return GridTarget(row=self.row, column=self.target, grid=self.grid)
+            return GridTarget(row=self.grid_row(row_base), column=self.target, grid=self.grid)
         return Target(query=self.target, within=self.section, nth=self.nth, kind=self.kind)
 
 
@@ -229,7 +249,7 @@ def _modifiers(s: str, ctx: _Ctx, line: dict) -> str:
         line["row"] = RowRef(key_value=ctx.restore(m["val"]), key_column=ctx.restore(m["col"]))
         s = _cut(s, m)
     elif m := _ROW_ORD.search(s):
-        line["row"] = RowRef(index=_ord(m[1])); s = _cut(s, m)
+        line["row"] = RowRef(index=_ord(m[1])); line["row_ordinal"] = True; s = _cut(s, m)
     elif m := _ROW_IDX.search(s):
         line["row"] = RowRef(index=int(m[1])); s = _cut(s, m)
     if m := _GRID_RE.search(s):

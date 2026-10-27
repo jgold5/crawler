@@ -30,8 +30,14 @@ Feature: Settings trades orders
     When user fills date "Trade Date" textfield as "T+2"
     When user clicks the "Close Trade Entry" button
     When user navigates to the "orders" page
-    # FLAGGED: line 12 "set Quantity in the row where Order ID is A-950 to 5": no existing step addresses a row by key \
-for this action (only 'validates ... in the row with ... equals')
+    When user fills the "Quantity" column in row "0" of the "Orders" grid as "5"
+    Then user validates the "Quantity" column in row "0" of the "Orders" grid equals "5"
+    # FLAGGED: line 14 "set Qty in row 0 of the Orders grid to 7": column 'Qty' not found in grid 'Orders'; \
+columns: Order ID, Customer, Quantity, Status, Priority, Notes, Product, SKU, Category, Unit Price, Total, Currency, \
+Order Date, Ship Date, Carrier, Tracking #, Warehouse, Sales Rep, Channel, Discount, Tax, Payment, Terms, Created By, \
+Updated At, Region, Actions
+    # FLAGGED: line 15 "in the Orders grid, set Quantity in the row where Order ID is A-950 to 5": no existing step \
+addresses a row by key for this action (only 'validates ... in the row with ... equals')
     Then user validates the "Quantity" in the row with "A-950" equals "5"
 """
 
@@ -62,14 +68,20 @@ def _added(diff: str) -> list[str]:
 def realistic(author_sites, browser, pw, tmp_path_factory):  # noqa: F811
     url, _ = author_sites
     res, repo, out, wall = _run(tmp_path_factory.mktemp("realistic"), url, browser=browser, playwright=pw)
-    print(f"\n[timing] realistic flow, 12 lines x 2 runs: {wall:.1f} s wall "
+    print(f"\n[timing] realistic flow, 15 lines x 2 runs: {wall:.1f} s wall "
           f"(runs {', '.join(f'{ms / 1000:.1f} s' for ms in res.run_ms)})")
     return res, repo, out, wall
 
 
+def _only_qty_failed(res, out):
+    """The realistic flow's one failure is line 14 (a column the grid does not have): exit 1, outputs written."""
+    assert res.exit_code == 1, (out / "report.md").read_text()
+    assert [r.line.n for r in res.records if r.status != "ok"] == [14], (out / "report.md").read_text()
+
+
 def test_realistic_feature_uses_the_owners_steps(realistic):
     res, _repo, out, _wall = realistic
-    assert res.exit_code == 0, (out / "report.md").read_text()
+    _only_qty_failed(res, out)
     assert (out / "flow.feature").read_text() == REALISTIC_FEATURE
     assert not (out / "ASK.md").exists()
 
@@ -85,10 +97,9 @@ def test_realistic_xml_diff(realistic):
             "[normalize-space()=&apos;Save&apos;]</locatorValue>") in added
     # new entries, in each file's own style
     assert '<element name="Saved">' in added
-    assert '<element name="Quantity">' in added
-    assert ("<xpath_a>//ag-grid-angular[@aria-label='Orders']//*[@row-index][.//*[@col-id='orderId']"
-            "[normalize-space()='</xpath_a>") in added
-    assert "<xpath_b>']]//*[@col-id='quantity']</xpath_b>" in added
+    # grid lines never add per-cell / per-column entries: the grid's root entry "Orders" is reused as is
+    assert not [ln for ln in diff.splitlines() if ln.startswith("+++ ") and ln.endswith("/orders.xml")]
+    assert not [ln for ln in added if "xpath_a" in ln or "Quantity" in ln or "row-index" in ln]
     # a new page file for Trades: its iframe and the four new entries
     assert "+++ b/" in diff and "trades.xml" in diff and "--- /dev/null" in diff
     assert "<iframe>//iframe[@name='appFrame-trades']</iframe>" in added
@@ -109,10 +120,12 @@ def test_realistic_verdicts_and_two_run_verification(realistic):
     want = {("settings", "App Frame"): "reuse", ("settings", "Display name"): "reuse", ("settings", "Save"): "fix",
             ("settings", "Saved"): "new", ("trades", "iframe"): "new", ("trades", "Refresh Open Trades"): "new",
             ("trades", "New Trade"): "new", ("trades", "Trade Date"): "new", ("trades", "Close Trade Entry"): "new",
-            ("orders", "iframe"): "reuse", ("orders", "Quantity"): "new"}
+            ("orders", "iframe"): "reuse", ("orders", "Orders"): "reuse"}
     assert {k: s.verdict for k, s in slots.items()} == want
     assert slots[("settings", "Save")].reason == "ambiguous: matches 2"
-    assert slots[("orders", "Quantity")].dynamic and slots[("orders", "Quantity")].lines == [12, 13]
+    grid = slots[("orders", "Orders")]
+    assert (grid.kind, grid.dynamic, grid.found_by, grid.lines) == ("grid", False, "name", [12, 13, 14, 15, 16])
+    assert grid.final == "//ag-grid-angular[@aria-label='Orders']"
     for s in res.slots:
         # every slot was checked in both fresh sessions, and the proposal verified in each use of each run
         assert {u.run for u in s.uses} == {1, 2}, s.name
@@ -122,27 +135,132 @@ def test_realistic_verdicts_and_two_run_verification(realistic):
         else:
             assert all(u.entry["same"] for u in s.uses), s.name
     by_line = {r.line.n: r for r in res.records}
-    assert all(r.status == "ok" for r in res.records)
+    assert all(r.status == "ok" for r in res.records if r.line.n != 14)
     assert by_line[5].verify == {1: (True, "displayed", "displayed"), 2: (True, "displayed", "displayed")}
-    assert by_line[13].verify[1][0] and by_line[13].verify[2][0] and by_line[13].verify[2][1] == "5"
-    assert by_line[12].flagged and by_line[12].step is None
+    # row "0" is the first displayed row (AG Grid row-index 0), in each run (the rows are shuffled per load)
+    for run in (1, 2):
+        assert by_line[12].grid[run]["row_index"] == 0 and by_line[12].grid[run]["row"] == 0
+        assert by_line[12].grid[run]["after"] == "5" and by_line[12].grid[run]["rows"] == 1000
+        assert by_line[13].verify[run] == (True, "5", "5")
     assert "angular" in by_line[12].resolved[1]                      # AG Grid's ng fast path, inside the iframe
+    # a column the grid does not have: the line fails clearly, listing every header (scrolled-out ones too)
+    qty = by_line[14]
+    assert qty.status == "failed" and qty.step is None and qty.column[0] is False
+    assert qty.failures[1].startswith("column 'Qty' not found in grid 'Orders'; columns: Order ID, Customer, Quantity")
+    assert qty.failures[1].endswith("Updated At, Region, Actions") and "row" not in qty.grid[1]   # no action
+    # fill by key: flagged (no owner step takes a key), but the found row index is reported, with the step that works
+    key = by_line[15]
+    assert key.step is None and "row by key" in key.flagged
+    for run in (1, 2):
+        g = key.grid[run]
+        assert g["key"] == ("Order ID", "A-950") and g["row"] == g["row_index"] and g["after"] == "5"
+        assert by_line[16].grid[run]["row"] == g["row"] and by_line[16].verify[run] == (True, "5", "5")
+    hint = next(n for n in key.notes if n.startswith("by position"))
+    assert f'`When user fills the "Quantity" column in row "{key.grid[1]["row"]}" of the "Orders" grid as "5"`' in hint
     report = (out / "report.md").read_text()
-    assert "fixed **Save** (ambiguous: matches 2)" in report and "new **Quantity**" in report
+    assert "fixed **Save** (ambiguous: matches 2)" in report and "reused grid **Orders**" in report
     assert "reused **Display name**" in report and "**FLAGGED**" in report
     assert "Runs: 2 of 2" in report and "Check (run 2): **pass**" in report
+    assert ("- Grid entry: reused grid **Orders** on page `orders` (matched by name): "
+            "`//ag-grid-angular[@aria-label='Orders']`") in report
+    assert "- Column: ✓ Quantity" in report and "- Column: ✗ Qty" in report
+    assert "- Row (run 1): row 0 of 1000 (row-index 0)" in report
+    assert f"- Row (run 1): row where Order ID is A-950 → row {key.grid[1]['row']} of 1000" in report
+    assert re.search(r"- Cell \(run 1\): before '\d+', after '5'", report)
+    assert "**Failed** (runs 1, 2): column 'Qty' not found in grid 'Orders'" in report
+    assert report.count("Grid config not found in repo") == 1
 
 
 def test_realistic_cross_origin(author_sites, browser, pw, tmp_path, realistic):  # noqa: F811
     url, alt = author_sites
     res, _repo, out, _wall = _run(tmp_path, url, alt, browser=browser, playwright=pw)
-    assert res.exit_code == 0, (out / "report.md").read_text()
+    _only_qty_failed(res, out)
     assert (out / "flow.feature").read_text() == REALISTIC_FEATURE
     same = realistic[0]
     assert {k: (s.verdict, s.final) for k, s in _slots(res).items()} == \
         {k: (s.verdict, s.final) for k, s in _slots(same).items()}
     goto = {r.line.n: r for r in res.records}[6]
     assert "(cross-origin)" in goto.resolved[1] and "appFrame-trades /trades.html" in goto.resolved[1]
+
+
+# ---------------------------------------------------------------------------------------------- grid lines
+
+ONE_GRID_FLOW = """\
+go to Orders One
+set Quantity in row 2 to 9
+verify Quantity in row 2 is 9
+set Quantity in the first row to 4
+verify Quantity in row 0 of the Orders grid is 4
+verify Quantity in row 5000 is 1
+"""
+
+
+def test_single_grid_page_new_grid_entry_and_row_numbers(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """No grid named and exactly one grid on the page: it is used. The page's XML has no entry for the grid, so a
+    new one (named after the grid, holding its ROOT locator) is proposed; rows are 0-based displayed rows."""
+    url, _ = author_sites
+    res, repo, out, _ = _run(tmp_path, url, flow=ONE_GRID_FLOW, name="one_grid.txt", browser=browser, playwright=pw)
+    assert res.exit_code == 1, (out / "report.md").read_text()       # line 6: row 5000 does not exist
+    feature = (out / "flow.feature").read_text()
+    for step in ('When user fills the "Quantity" column in row "2" of the "Orders" grid as "9"',
+                 'Then user validates the "Quantity" column in row "2" of the "Orders" grid equals "9"',
+                 'When user fills the "Quantity" column in row "0" of the "Orders" grid as "4"',
+                 'Then user validates the "Quantity" column in row "0" of the "Orders" grid equals "4"'):
+        assert step in feature
+    assert "# FLAGGED: line 6 \"verify Quantity in row 5000 is 1\": row 5000 not found in grid 'Orders' " \
+           "(1000 rows: row 0 to row 999)" in feature
+    rec = {r.line.n: r for r in res.records}
+    for run in (1, 2):
+        assert [rec[n].grid[run]["row_index"] for n in (2, 3, 4, 5)] == [2, 2, 0, 0]   # AG Grid @row-index
+        assert rec[3].verify[run] == (True, "9", "9") and rec[5].verify[run] == (True, "4", "4")
+    grid = _slots(res)[("orders-one", "Orders")]
+    assert (grid.kind, grid.verdict, grid.found_by) == ("grid", "new", "new")
+    assert grid.final == "//ag-grid-angular[@aria-label='Orders']" and grid.lines == [2, 3, 4, 5, 6]
+    # the only edit: the grid's root entry, added to orders-one.xml (never an entry per cell or column)
+    assert len(res.edits) == 1 and res.edits[0].path.name == "orders-one.xml"
+    added = _added(res.diff)
+    assert added == ['<element name="Orders">', "<locatorType>xpath</locatorType>",
+                     "<locatorValue>//ag-grid-angular[@aria-label=&apos;Orders&apos;]</locatorValue>", "</element>"] \
+        or added == ['<element name="Orders">', "<locatorType>xpath</locatorType>",
+                     "<locatorValue>//ag-grid-angular[@aria-label='Orders']</locatorValue>", "</element>"]
+    report = (out / "report.md").read_text()
+    assert "- Grid entry: new grid **Orders** on page `orders-one` (matched by new)" in report
+
+
+def test_grid_row_base_one(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """grid_row_base: 1 — `row 1` is the first displayed row (row-index 0); `the first row` renders as row "1"."""
+    url, _ = author_sites
+    flow = "go to Orders One\nset Quantity in row 1 to 9\nverify Quantity in the first row is 9\nverify Quantity in row 0 is 9\n"
+    f, repo, cfg, out = workspace(tmp_path, url, flow=flow, name="base1.txt")
+    cfg.write_text(cfg.read_text() + "grid_row_base: 1\n")
+    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, runs=1, browser=browser,
+                 playwright=pw, echo=lambda *a: None)
+    rec = {r.line.n: r for r in res.records}
+    assert rec[2].step == 'When user fills the "Quantity" column in row "1" of the "Orders" grid as "9"'
+    assert rec[3].step == 'Then user validates the "Quantity" column in row "1" of the "Orders" grid equals "9"'
+    assert rec[2].grid[1]["row_index"] == 0 and rec[3].grid[1]["row_index"] == 0
+    assert rec[3].verify[1] == (True, "9", "9")
+    assert rec[4].failures[1] == "row 0 not found in grid 'Orders' (1000 rows: row 1 to row 1000)"
+
+
+def test_two_grids_ask_then_answer(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """No grid named on a page with two grids: ask (listing the grids); `--answer <line>=<grid no>` picks one."""
+    url, _ = author_sites
+    flow = "go to Orders\nset Quantity in row 0 to 5\n"
+    f, repo, cfg, out = workspace(tmp_path, url, flow=flow, name="two_grids.txt")
+    common = dict(repo_root=repo, version="aggrid", config=cfg, out_dir=out, runs=1, browser=browser, playwright=pw,
+                  echo=lambda *a: None)
+    res = author(f, **common)
+    assert res.exit_code == 3
+    ask = (out / "ASK.md").read_text()
+    assert "# Which grid did you mean?" in ask and "## Line 2: set Quantity in row 0 to 5" in ask
+    assert "1. 'Orders' (aria-label)\n2. 'Customers' (heading)" in ask
+    assert '--answer "2=<grid no>"' in ask
+    assert not (out / "flow.feature").exists()
+    res = author(f, answers={2: 1}, **common)
+    assert res.exit_code == 0, (out / "report.md").read_text()
+    assert 'When user fills the "Quantity" column in row "0" of the "Orders" grid as "5"' in (out / "flow.feature").read_text()
+    assert not (out / "ASK.md").exists() and res.edits == []      # the "Orders" grid entry is reused
 
 
 # ---------------------------------------------------------------------------------------------- fixes + apply

@@ -21,7 +21,6 @@ from pathlib import Path
 from playwright.sync_api import Error as PlaywrightError
 
 from ..config import SiteConfig
-from ..grid.xpath import xpath_literal
 from ..repo import Edit, LocatorRepo, RepoEntry, Span, apply as repo_apply
 from .quality import fragility
 
@@ -96,10 +95,10 @@ class Use:
 class Slot:
     page: str
     name: str
-    kind: str = "element"              # element | iframe
+    kind: str = "element"              # element | iframe | grid (a grid's ROOT entry, used by grid lines)
     entry: RepoEntry | None = None     # existing entry (None: new)
     new_page: bool = False             # the page has no XML file yet
-    dynamic: bool = False              # row template
+    dynamic: bool = False              # an existing xpath_a/xpath_b entry (never proposed for grid cells)
     cands: list[Cand] = field(default_factory=list)
     uses: list[Use] = field(default_factory=list)
     lines: list[int] = field(default_factory=list)
@@ -125,28 +124,6 @@ def entry_items(entry: RepoEntry, values: list[str]) -> list[tuple[str, str]]:
     if not entry.dynamic:
         return [(entry.kind, entry.value or "")]
     return [(entry.kind, entry.render(v)) for v in values]
-
-
-def grid_cands(cell, cfg: SiteConfig) -> list[Cand]:
-    """XML row templates from a resolved grid cell: the row param split out of each verified candidate."""
-    out: list[Cand] = []
-    tpl = cell.template
-    param = tpl.params[0] if tpl.params else "row"
-    example = tpl.example.get(param, "")
-    lit = xpath_literal(example) if example else ""
-    if not lit or "concat(" in lit:
-        return out
-    hole = lit.replace(example, "{" + param + "}")
-    seen = set()
-    for c in cell.candidates:
-        if c.xpath.count(lit) != 1:
-            continue
-        x = c.xpath.replace(lit, hole)
-        if x in seen:
-            continue
-        seen.add(x)
-        out.append(Cand(x, c.strategy, c.score, fragility(x, "xpath", cfg, c.strategy, template=True), param))
-    return out
 
 
 def static_cands(cands, cfg: SiteConfig) -> list[Cand]:
@@ -274,5 +251,5 @@ def human_name(name: str) -> str:
     return re.sub(r"\s+", " ", name or "").strip()
 
 
-__all__ = ["Cand", "Use", "Slot", "check", "entry_items", "grid_cands", "static_cands", "decide", "build_edits",
+__all__ = ["Cand", "Use", "Slot", "check", "entry_items", "static_cands", "decide", "build_edits",
            "norm", "CHECK_JS"]

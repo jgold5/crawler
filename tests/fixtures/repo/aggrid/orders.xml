@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <pageDefinition>
     <iframe>//iframe[contains(@name, 'appFrame-orders')]</iframe>
-    <element name="Orders grid">
+    <element name="Orders">
         <locatorType>xpath</locatorType>
         <locatorValue>//ag-grid-angular[@aria-label='Orders']</locatorValue>
     </element>

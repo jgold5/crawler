@@ -13,7 +13,7 @@
  */
 (function () {
   "use strict";
-  var VERSION = 7;
+  var VERSION = 8;
   if (window.__crawlerGrid && window.__crawlerGrid.VERSION === VERSION) return;
 
   // ------------------------------------------------------------------ utils
@@ -964,9 +964,58 @@
     return !!findOption(text).option;
   }
 
+  // ------------------------------------------------------------------ grid summary (crawler.author)
+  // The grid as a whole: every column (scrolled-out ones included), the displayed row count and the
+  // verified anchors of its root. `el` is the grid's .ag-root-wrapper.
+  async function info(spec, apis) {
+    var t0 = now(), deadline = t0 + (spec.timeoutMs || 10000), timings = {}, notes = [];
+    var g;
+    for (;;) {
+      g = findGrid(spec);
+      if (g.w || !g.retry || now() > deadline) break;
+      await frame();
+    }
+    if (!g.w) return { result: { ok: false, error: g.error, alternatives: g.alternatives || [] }, el: null };
+    var w = g.w, desc = describe(w), quiet = 0;
+    while (now() < deadline) {
+      if (!w.isConnected) return { result: { ok: false, retry: true, error: "Grid was removed from the page while waiting" }, el: null };
+      if (!loading(w)) { if (rowsOf(w).length || noRows(w) || ++quiet > 30) break; } else quiet = 0;
+      await frame();
+    }
+    var apiSrc = { api: null }, api = getApi(w, g.def, notes, apis, apiSrc);
+    var cols = await columns(w, api, deadline, timings);
+    var count = null;
+    if (api && api.getDisplayedRowCount) { try { count = api.getDisplayedRowCount(); } catch (e) { count = null; } }
+    if (count == null) {   // aria-rowcount counts the header rows too
+      var ge = ariaGrid(w), rc = ge ? parseInt(ge.getAttribute("aria-rowcount") || "", 10) : NaN, hdr = {};
+      Array.prototype.forEach.call(w.querySelectorAll(".ag-header [role=row][aria-rowindex]"), function (r) { hdr[r.getAttribute("aria-rowindex")] = 1; });
+      if (!isNaN(rc) && rc >= 0) count = Math.max(0, rc - Object.keys(hdr).length);
+    }
+    var grids = allGrids();
+    return { result: {
+      ok: true, grid: gridTitle(desc), gridName: desc.label || desc.heading || null, gridHow: g.how,
+      gridDef: g.def ? g.def.name : null, layout: layoutOf(w), apiSource: apiSrc.api,
+      columns: cols.map(function (c) { return { colId: c.colId, header: c.header || "", index: c.index || null, section: c.section || "center" }; }),
+      rowCount: count, gridCount: grids.length, grids: listing(grids), notes: notes,
+      anchors: anchorsFor(w, spec.js || {}).map(function (a) { return { xpath: a.xp, strategy: a.strategy }; }),
+      timings: { total: Math.round(now() - t0), columns: timings.columns }
+    }, el: w };
+  }
+  // the grid's root: the wrapper, its ARIA grid, or a host/container holding no other grid
+  function isRoot(el, w) { return el === w || el === ariaGrid(w) || hostChain(w).indexOf(el) >= 0; }
+  function rootCheck(items, w) {
+    return items.map(function (it) {
+      var nodes;
+      try { nodes = it[0] === "css" ? Array.prototype.slice.call(document.querySelectorAll(it[1])) : xpAll(it[1]); }
+      catch (e) { return { n: -1, same: false, any: false }; }
+      return { n: nodes.length, same: nodes.length === 1 && isRoot(nodes[0], w), any: nodes.some(function (x) { return isRoot(x, w); }) };
+    });
+  }
+
   window.__crawlerGrid = {
     VERSION: VERSION, resolve: resolve, reveal: reveal, cellInfo: cellInfo, editorRoot: editorRoot,
     editorKind: editorKind, findOption: findOption, scrollOptions: scrollOptions, lit: lit, norm: norm,
+    info: info, rootCheck: rootCheck,
     listGrids: function () { return allGrids().map(function (w) { return gridTitle(describe(w)); }); }
   };
 })();

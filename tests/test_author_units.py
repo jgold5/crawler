@@ -96,6 +96,35 @@ def test_refine_role_context_and_that_row():
     assert ls[4].target == "Quantity" and ls[4].row == ls[3].row and ls[4].verify_op == "equals"
 
 
+def test_refine_that_row_keeps_ordinal_rows():
+    ls = refine(parse("go to Orders\nset Quantity in the first row of the Orders grid to 5\nverify Quantity in that row is 5\n"))
+    assert ls[2].row == ls[1].row and ls[2].row_ordinal and ls[2].grid == "Orders"
+    assert ls[2].step_row(0) == 0 and ls[2].step_row(1) == 1
+
+
+@pytest.mark.parametrize("text, base, row_index", [
+    ("row 0", 0, 0), ("row 2", 0, 2), ("the first row", 0, 0), ("the third row", 0, 2),
+    ("row 1", 1, 0), ("row 3", 1, 2), ("the first row", 1, 0),
+])
+def test_row_numbers_hit_displayed_rows_of_a_sorted_grid(page, site_url, text, base, row_index):
+    """`row N` (N from grid_row_base) is the N-th DISPLAYED row (AG Grid @row-index), also after a sort: what
+    the owner's GridActions means by a row index. Nothing converts twice (English -> crawler.grid -> DOM)."""
+    from crawler.grid import resolve_cell
+    page.context.add_init_script("localStorage.setItem('auth','1')")
+    page.goto(f"{site_url}/orders.html?seed=11&rows=300", wait_until="domcontentloaded")
+    page.wait_for_function("() => window.ordersGridApi && window.ordersGridApi.getDisplayedRowCount() === 300")
+    page.evaluate("() => window.ordersGridApi.applyColumnState({state: [{colId: 'quantity', sort: 'desc'}],"
+                  " defaultState: {sort: null}})")
+    ln = parse(f"go to Orders\nset Customer in {text} of the Orders grid to x\n")[1]
+    cell = resolve_cell(page, ln.to_target(base), SiteConfig(grid_row_base=base), 10_000)
+    assert cell.row_index == row_index
+    assert cell.handle.evaluate("el => el.closest('[row-index]').getAttribute('row-index')") == str(row_index)
+    want = page.evaluate("i => window.ordersGridApi.getDisplayedRowAtIndex(i).data.customer", row_index)
+    assert cell.handle.evaluate("el => el.textContent.trim()") == want
+    qty = page.evaluate("() => [0, 1, 2].map(i => window.ordersGridApi.getDisplayedRowAtIndex(i).data.quantity)")
+    assert qty == sorted(qty, reverse=True)                     # the grid really is sorted
+
+
 def test_actual_date_and_answers():
     today = dt.date.today()
     assert actual_date("T", False, "%Y-%m-%d") == today.isoformat()

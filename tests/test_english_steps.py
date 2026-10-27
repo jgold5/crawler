@@ -139,6 +139,31 @@ def test_element_grid_page_names_override():
         'When user navigates to the "TradeEntry" page'
 
 
+def test_row_numbers_render_verbatim_and_ordinals_use_the_base():
+    """`row N` keeps N as written; `the first row` is row "<grid_row_base>" (0 by default)."""
+    assert step("set Quantity in row 0 of the Orders grid to 5") == \
+        'When user fills the "Quantity" column in row "0" of the "Orders" grid as "5"'
+    assert step("set Quantity in row 2 of the Orders grid to 5", row_base=1) == \
+        'When user fills the "Quantity" column in row "2" of the "Orders" grid as "5"'
+    assert step("set Quantity in the first row of the Orders grid to 5") == \
+        'When user fills the "Quantity" column in row "0" of the "Orders" grid as "5"'
+    assert step("set Quantity in the first row of the Orders grid to 5", row_base=1) == \
+        'When user fills the "Quantity" column in row "1" of the "Orders" grid as "5"'
+    assert step("verify Status in the second row of the Orders grid is Open") == \
+        'Then user validates the "Status" column in row "1" of the "Orders" grid equals "Open"'
+
+
+def test_grid_double_click_and_right_click_steps():
+    assert step("double click Trade Id in row 2 of the Open Trades grid") == \
+        'When user double clicks the "Trade Id" column in row "2" of the "Open Trades" grid'
+    assert step("double click Trade Id in row 2") is None          # only the grid step exists
+
+
+def test_explain_ordinal_row():
+    assert explain(parse("set Price in the second row to 10")[0]) == \
+        'line 1: fill "Price" in displayed row #2 with "10"'
+
+
 def test_grid_without_row_uses_plain_family():
     assert step("click Refresh in the Open Trades grid") == 'When user clicks the "Refresh" button'
 

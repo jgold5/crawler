@@ -73,6 +73,9 @@ rules:
   - action: right_click
     when: {row: index}
     template: user right clicks the {element} in row {row} field
+  - action: double_click
+    when: {row: index, grid: true}
+    template: user double clicks the {element} column in row {row} of the {grid} grid
 
   # ---- fill: dates
   - action: fill

@@ -132,8 +132,8 @@ def _what(target: GridTarget) -> str:
     return f"cell {target.column!r} in {row}{grid}"
 
 
-def run_engine(page, spec: dict, timeout_ms: int) -> tuple[dict, Any]:
-    """Run __crawlerGrid.resolve until it succeeds, fails for good, or time runs out."""
+def run_engine(page, spec: dict, timeout_ms: int, entry: str = "resolve") -> tuple[dict, Any]:
+    """Run __crawlerGrid.<entry> (resolve | info) until it succeeds, fails for good, or time runs out."""
     deadline = time.monotonic() + max(timeout_ms, 1) / 1000.0
     last: dict = {"ok": False, "error": "timed out", "alternatives": []}
     while True:
@@ -142,8 +142,8 @@ def run_engine(page, spec: dict, timeout_ms: int) -> tuple[dict, Any]:
             return last, None
         try:
             ensure_grid_engine(page)
-            jh = page.evaluate_handle("([spec, apis]) => window.__crawlerGrid.resolve(spec, apis)",
-                                      [dict(spec, timeoutMs=remaining), _apis(page, spec)])
+            jh = page.evaluate_handle("([spec, apis, fn]) => window.__crawlerGrid[fn](spec, apis)",
+                                      [dict(spec, timeoutMs=remaining), _apis(page, spec), entry])
             res = jh.get_property("result").json_value()
             el = jh.get_property("el").as_element() if res.get("ok") else None
         except PlaywrightError as e:
@@ -231,3 +231,55 @@ def suggest_name(target: GridTarget, cell: ResolvedCell) -> str:
         if prefix:
             base = prefix + base[:1].upper() + base[1:]
     return base
+
+
+# ---------------------------------------------------------------------------------------------- whole grid
+
+@dataclass
+class GridInfo:
+    """A grid as a whole (crawler.author): its root, every column (scrolled-out ones included), row count."""
+    handle: Any                      # ElementHandle of the grid's .ag-root-wrapper
+    grid: str                        # human description, e.g. "'Orders' (aria-label)"
+    name: str | None                 # aria-label / heading text
+    how: str                         # how it was found: only grid | alias | aria-label | heading
+    columns: list[dict]              # [{colId, header, index, section}] in displayed order
+    row_count: int | None            # displayed rows (after filter), None when unknown
+    anchors: list[dict]              # verified root locators, best first: [{xpath, strategy}]
+    grid_count: int = 1
+    grids: list[str] = field(default_factory=list)   # every grid on the page, described
+    api_source: str | None = None
+    layout: str = ""
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def headers(self) -> list[str]:
+        return [c.get("header") or c.get("colId") or "" for c in self.columns]
+
+
+def grid_info(page, grid: str | None, cfg: SiteConfig, timeout_ms: int) -> GridInfo:
+    """Find the grid (by name, or the page's only grid when ``grid`` is None) and describe it."""
+    defs = [{"name": name, "selector": d.selector, "keyColumn": d.key_column, "apiExpr": d.api_expr}
+            for name, d in (cfg.grids or {}).items() if (d.kind or "ag-grid") == "ag-grid"]
+    spec = {"grid": grid, "defs": defs, "js": cfg.js_config(), "timeoutMs": int(timeout_ms)}
+    res, el = run_engine(page, spec, timeout_ms, entry="info")
+    if not res.get("ok") or el is None:
+        what = f"grid {grid!r}" if grid else "grid"
+        raise GridError(f"{what}: {res.get('error') or 'not found'}", res.get("alternatives") or [])
+    return GridInfo(handle=el, grid=res.get("grid", ""), name=res.get("gridName"), how=res.get("gridHow", ""),
+                    columns=list(res.get("columns") or []), row_count=res.get("rowCount"),
+                    anchors=list(res.get("anchors") or []), grid_count=int(res.get("gridCount") or 1),
+                    grids=list(res.get("grids") or []), api_source=res.get("apiSource"),
+                    layout=res.get("layout", ""), notes=list(res.get("notes") or []))
+
+
+def check_roots(page, items: list[tuple[str, str]], handle) -> list[dict]:
+    """[(kind, locator)] -> [{n, same, any}]: does each locator select exactly the root of the grid ``handle``
+    (its wrapper, ARIA grid, or a host/container holding no other grid)?"""
+    if not items:
+        return []
+    ensure_grid_engine(page)
+    try:
+        return page.evaluate("([items, w]) => window.__crawlerGrid.rootCheck(items, w)",
+                             [[list(i) for i in items], handle])
+    except PlaywrightError:
+        return [{"n": -1, "same": False, "any": False} for _ in items]

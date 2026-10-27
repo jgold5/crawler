@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tests/test_author*.py: the single-grid Orders page (tests/site/orders.html without the Customers grid,
+     served by the overlay in test_author_support). It has NO entry for the grid itself, so `crawler author`
+     proposes a new grid-root entry named after the grid. -->
+<pageDefinition>
+    <iframe>//iframe[contains(@name, 'appFrame-orders-one')]</iframe>
+    <element name="Export">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[normalize-space()='Export']</locatorValue>
+    </element>
+</pageDefinition>

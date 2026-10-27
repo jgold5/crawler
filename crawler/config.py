@@ -119,6 +119,7 @@ class SiteConfig:
     timeout_ms: int = 10_000
     viewport: dict[str, int] = field(default_factory=lambda: {"width": 1440, "height": 900})
     root: str = "."  # directory of site.yaml; relative paths resolve against it
+    grid_row_base: int = 0  # the number the owner's grid steps give the first displayed row (`in row "0"`)
 
     def js_config(self) -> dict[str, Any]:
         """The subset passed into the in-page engine (camelCase for JS)."""

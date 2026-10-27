@@ -17,6 +17,8 @@ pages:
     url: /shell.html?page=tradesORIGIN
   Orders:
     url: /shell.html?page=ordersORIGIN
+  Orders One:
+    url: /shell.html?page=orders-oneORIGIN
   Dashboard:
     url: /shell.html?page=dashboardORIGIN
 grids:

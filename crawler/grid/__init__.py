@@ -16,8 +16,8 @@ Fast paths: GridDef.api_expr, else Angular dev builds' ng.getComponent(<ag-grid-
 else frame-driven virtual scrolling of the grid's own scrollers. See crawler/grid/aggrid.js.
 """
 from .actions import act_on_cell
-from .resolve import GridError, ResolvedCell, ensure_grid_engine, resolve_cell, suggest_name
+from .resolve import GridError, GridInfo, ResolvedCell, check_roots, ensure_grid_engine, grid_info, resolve_cell, suggest_name
 from .xpath import camel, fill_template, xpath_literal
 
-__all__ = ["ResolvedCell", "GridError", "resolve_cell", "act_on_cell", "suggest_name",
+__all__ = ["ResolvedCell", "GridError", "GridInfo", "resolve_cell", "grid_info", "check_roots", "act_on_cell", "suggest_name",
            "ensure_grid_engine", "xpath_literal", "fill_template", "camel"]

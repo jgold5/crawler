@@ -9,5 +9,8 @@ click New Trade
 set Trade Date to 2 days from today
 click x in the Trade Entry dialog
 go to Orders
-set Quantity in the row where Order ID is A-950 to 5
+in the Orders grid, set Quantity in row 0 to 5
+verify Quantity in row 0 of the Orders grid is 5
+set Qty in row 0 of the Orders grid to 7
+in the Orders grid, set Quantity in the row where Order ID is A-950 to 5
 verify Quantity in that row is 5

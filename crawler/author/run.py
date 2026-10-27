@@ -22,14 +22,15 @@ from ..aliases import AliasStore, describe_target
 from ..config import SiteConfig
 from ..english import EnglishError, Line, parse_lines, render
 from ..frames import FrameError, describe_frame, frame_for, iframe_candidates
-from ..grid import GridError, act_on_cell, resolve_cell
+from ..grid import GridError, act_on_cell, check_roots, grid_info, resolve_cell
 from ..locators import generate, suggest_name
-from ..model import GridTarget, Target
+from ..model import GridTarget, RowRef, Target
 from ..nav.ready import ReadyTracker
 from ..repo import LocatorRepo, RepoKeyError
 from ..resolver import ResolveError, resolve
 from .pages import PageRef, content_frame, find_page, match_name
-from .slots import Cand, Slot, Use, check, decide, entry_items, grid_cands, norm, static_cands
+from .quality import fragility
+from .slots import Cand, Slot, Use, check, decide, entry_items, norm, static_cands
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ASK = 0, 1, 2, 3
 
@@ -80,6 +81,11 @@ class LineRec:
     error: str | None = None
     # run-1 binding state
     values: list[str] = field(default_factory=list)  # values a dynamic existing entry is rendered with
+    # grid lines
+    grid: dict = field(default_factory=dict)        # run -> {grid, row, row_index, rows, key, before, after}
+    column: tuple | None = None                     # (ok, header as written/found, message)
+    grid_query: str | None = None                   # the grid name used to find it (line, or --answer)
+    failures: dict = field(default_factory=dict)    # run -> why the line failed (the flow goes on)
 
 
 @dataclass
@@ -109,6 +115,19 @@ class _Ask(Exception):
 
 class _Stop(Exception):
     pass
+
+
+class _AskGrid(Exception):
+    """A grid line names no grid and the page has several."""
+
+    def __init__(self, rec: LineRec, page_key: str, message: str, grids: list[str]):
+        super().__init__(message)
+        self.rec, self.page_key, self.message, self.grids = rec, page_key, message, list(grids)
+
+
+_ROOT_PREF = {"aria-label": 0, "test-id": 1, "heading": 2, "id": 3, "class": 4}   # grid root locators, best first
+_ROW_GONE = ("No row with", "is not in the grid", "hidden by the grid's filter", "is not displayed",
+             "not unique")
 
 
 class _GridFrame:
@@ -143,11 +162,12 @@ def refine(lines: list[Line]) -> list[Line]:
     ``<name> <role> in <Context>`` (no section word) and ``... in that row`` (the previous line's row)."""
     out: list[Line] = []
     prev_row = prev_grid = None
+    prev_ord = False
     for ln in lines:
         t = ln.target or ""
         if ln.row is None and (m := re.match(r"^(?P<e>.+?)\s+in\s+(?:that|the\s+same)\s+row$", t, re.I)):
             if prev_row is not None:
-                ln = replace(ln, target=m["e"], row=prev_row, grid=ln.grid or prev_grid,
+                ln = replace(ln, target=m["e"], row=prev_row, row_ordinal=prev_ord, grid=ln.grid or prev_grid,
                              notes=ln.notes + ["'that row': the previous line's row"])
         elif ln.section is None and ln.action not in ("goto", "close") and (
                 m := re.match(rf"^(?P<e>.+?)\s+(?P<r>{_ROLE_WORDS})\s+(?:in|on|of|within|inside)\s+(?:the\s+)?(?P<c>.+)$",
@@ -156,7 +176,7 @@ def refine(lines: list[Line]) -> list[Line]:
                     "select": "dropdown"}.get(m["r"].lower(), m["r"].lower())
             ln = replace(ln, target=m["e"], kind=ln.kind or kind, section=m["c"])
         if ln.row is not None:
-            prev_row, prev_grid = ln.row, ln.grid
+            prev_row, prev_grid, prev_ord = ln.row, ln.grid, ln.row_ordinal
         out.append(ln)
     return out
 
@@ -234,6 +254,8 @@ class Author:
         self.slot_list: list[Slot] = []
         self.date_fmt = str((cfg.vars or {}).get("date_format", "%m/%d/%Y"))
         self.ask_path: Path | None = None
+        self.row_base = int(getattr(cfg, "grid_row_base", 0) or 0)
+        self.grid_config_missing = False   # the repository has no grid config (columns checked live only)
 
     # ------------------------------------------------------------------ prepare (no browser)
     def prepare(self) -> list[str]:
@@ -331,8 +353,12 @@ class Author:
                     self._element(rec, c)
                 if rec.status == "pending":
                     rec.status = "ok"
-                if rec.verify.get(c.run) and not rec.verify[c.run][0]:
+                if (rec.verify.get(c.run) and not rec.verify[c.run][0]) or rec.failures.get(c.run):
                     failed = True
+            except _AskGrid as a:
+                rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
+                self._ask_grid(a)
+                return EXIT_ASK
             except _Ask as a:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 self._ask(a)
@@ -437,15 +463,13 @@ class Author:
             i += 1
         return f"{name} {i}"
 
-    def _names(self, line: Line, grid: bool) -> list[str]:
+    def _names(self, line: Line) -> list[str]:
         t = line.target or ""
         names = []
         if line.alias:
             names.append(line.alias)
         if line.action == "close":
             names += [f"Close {t}", f"{t} Close"]
-        elif grid:
-            names += [t] + ([f"{t} {line.grid}", f"{line.grid} {t}"] if line.grid else [])
         else:
             if line.section:
                 s = line.section
@@ -461,13 +485,14 @@ class Author:
         except RepoKeyError:
             return []
 
-    def _bind(self, rec: LineRec, c: _Ctx, handle, cands: list[Cand], *, grid: bool, values: list[str],
+    def _bind(self, rec: LineRec, c: _Ctx, handle, cands: list[Cand], *, values: list[str],
               new_name, context: str | None = None) -> Slot:
-        """Run 1: the slot (XML entry) this line uses. Name -> case-insensitive name -> locator hit -> new."""
+        """Run 1: the slot (XML entry) this line uses. Name -> case-insensitive name -> locator hit -> new.
+        (Grid lines bind the grid's root entry instead: see ``_bind_grid``.)"""
         page, line = c.key, rec.line
         entries = self._entries(page)
         pend = [s for s in self.slot_list if s.page == page and s.kind == "element"]
-        names = self._names(line, grid)
+        names = self._names(line)
         for how, eq in (("name", lambda a, b: a == b), ("name (case-insensitive)", lambda a, b: norm(a) == norm(b))):
             for nm in names:
                 s = next((s for s in pend if eq(s.name, nm)), None)
@@ -491,15 +516,13 @@ class Author:
         res = check(c.frame, items, handle)
         hits = [(o, it) for o, it, r in zip(owners, items, res) if r.get("same")]
         if hits:
-            from .quality import fragility
             hits.sort(key=lambda h: (bool(fragility(h[1][1], h[1][0], self.cfg)), len(h[1][1])))
             (kind, obj), _ = hits[0]
             if kind == "slot":
                 return obj
             return self._slot(page, obj.name, entry=obj, dynamic=obj.dynamic, cands=cands, found_by="locator hit")
         name = self._free_name(page, line.alias or new_name(), context if context is not None else (line.section or ""))
-        return self._slot(page, name, entry=None, new_page=not c.in_repo, dynamic=grid, cands=cands,
-                          found_by="new")
+        return self._slot(page, name, entry=None, new_page=not c.in_repo, cands=cands, found_by="new")
 
     def _record_use(self, rec: LineRec, c: _Ctx, handle, values: list[str], row_value: str | None) -> None:
         s = rec.slot
@@ -525,7 +548,7 @@ class Author:
     def _target(self, rec: LineRec):
         ln = rec.line
         if rec.kind == "grid":
-            return GridTarget(row=ln.row, column=ln.target or "", grid=ln.grid)
+            return GridTarget(row=ln.grid_row(self.row_base), column=ln.target or "", grid=ln.grid or rec.grid_query)
         if ln.action == "close":
             return Target(query="close", within=ln.target, kind="icon")
         return Target(query=ln.target, within=ln.section, nth=ln.nth, kind=ln.kind)
@@ -580,7 +603,7 @@ class Author:
         if c.run == 1:
             rec.secret = bool(handle.evaluate(_IS_SECRET_JS))
             cands = static_cands(generate(c.frame, handle, self.cfg), self.cfg)
-            rec.slot = self._bind(rec, c, handle, cands, grid=False, values=values,
+            rec.slot = self._bind(rec, c, handle, cands, values=values,
                                   new_name=lambda: suggest_name(c.frame, handle, self.cfg))
             rec.values = values
             if r.evidence:
@@ -599,69 +622,187 @@ class Author:
             return handle
         return h or handle
 
+    # ------------------------------------------------------------------ grid lines
+    # The owner's grid steps are generic (GridActions): the grid is found by its key, an XML entry named after
+    # the grid that holds the grid ROOT locator; the column by its header text; the row by its displayed index
+    # (`row "N"`, numbered from SiteConfig.grid_row_base). So a grid line never gets a per-cell entry: it checks
+    # the grid entry, the column header and the row, then acts on the cell.
+
     def _grid(self, rec: LineRec, c: _Ctx) -> None:
         ln = rec.line
         gf = _GridFrame(c.frame)
-        cell = self._resolve_cell(rec, c, gf)
-        rec.resolved[c.run] = (f"cell {cell.col_header!r} of row {cell.key_value or ln.row.index!r} in grid {cell.grid} "
-                               f"[{cell.strategy}{', ' + cell.api_source if cell.api_source else ''}]")
-        row_value = ln.row.key_value if ln.row.key_value is not None else str(ln.row.index)
-        values = [row_value] if ln.row.key_value is not None else [str(ln.row.index), str(ln.row.index - 1)]
+        info = self._grid_find(rec, c, gf)
+        g = rec.grid.setdefault(c.run, {})
+        g["grid"], g["rows"] = info.grid, info.row_count
         if c.run == 1:
-            cands = grid_cands(cell, self.cfg)
-            key_header = ln.row.key_column or cell.key_col_id or "key"
-            rec.slot = self._bind(rec, c, cell.handle, cands, grid=True, values=values,
-                                  new_name=lambda: (cell.col_header if ln.row.key_value is not None
-                                                    else f"{cell.col_header} in row"),
-                                  context=f"by {key_header}" if ln.row.key_value is not None else "by index")
-            rec.values = values
-            rec.grid_name = ln.grid or self._grid_entry_name(c, cell) or cell.grid_name
-            rec.notes += [n for n in cell.notes if n not in rec.notes]
-        self._record_use(rec, c, cell.handle, rec.values, row_value)
-        if c.run == 1:
-            self._render(rec, rec.slot.name, grid_name=rec.grid_name)
-        self._act_grid(rec, c, gf, cell)
+            rec.slot = self._bind_grid(rec, c, gf, info)
+            rec.grid_name = rec.slot.name
+        self._record_grid_use(rec, c, gf, info)
+        gname = ln.grid or rec.grid_name or info.name or "?"
 
-    def _resolve_cell(self, rec: LineRec, c: _Ctx, gf):
-        """resolve_cell; when the line names no grid and the page has several, the one grid where the
-        row and column exist (never a guess between two that both have them)."""
-        target = self._target(rec)
+        # column: a live header (exact, then case/space-insensitive); every column counts, scrolled out or not
+        header, msg = self._column(ln.target or "", info.headers, gname)
+        if c.run == 1:
+            rec.column = (header is not None, header or ln.target, msg)
+            cfg_cols = self._repo_grid_columns(c.key, rec.grid_name)
+            if header is not None and cfg_cols is not None and norm(header) not in {norm(x) for x in cfg_cols}:
+                rec.notes.append(f"column {header!r} is not in the repository's grid config for {rec.grid_name!r}")
+        if header is None:
+            self._fail_line(rec, c, msg)
+            return
+
+        # row: index rows must exist; key rows are found by the grid module (their 0-based index is reported)
+        rows = info.row_count
+        span = f"{rows} rows: row {self.row_base} to row {self.row_base + rows - 1}" if rows else f"{rows} rows"
+        if ln.row.key_value is None:
+            n = ln.step_row(self.row_base)
+            idx0 = n - self.row_base
+            g["row"] = n
+            if idx0 < 0 or (rows is not None and idx0 >= rows):
+                self._fail_line(rec, c, f"row {n} not found in grid {gname!r} ({span})")
+                return
+            target = GridTarget(row=RowRef(index=idx0 + 1), column=header, grid=rec.grid_query or ln.grid)
+        else:
+            g["key"] = (ln.row.key_column or "key", ln.row.key_value)
+            target = GridTarget(row=ln.row, column=header, grid=rec.grid_query or ln.grid)
         try:
-            return resolve_cell(gf, target, self.cfg, self.timeout)
+            cell = resolve_cell(gf, target, self.cfg, self.timeout)
         except GridError as e:
-            if target.grid or "grids on the page" not in e.message:
+            if not any(t in e.message for t in _ROW_GONE):
                 raise
-            names = [m[1] for a in e.alternatives if (m := re.match(r"^'(.+?)'", a))]
-            found = []
-            for nm in names:
-                try:
-                    found.append((nm, resolve_cell(gf, replace(target, grid=nm), self.cfg, min(self.timeout, 5000))))
-                except GridError:
-                    continue
-            if len(found) != 1:
-                raise GridError(e.message + (f" (the row and column exist in {len(found)} of them)" if found else ""),
-                                e.alternatives) from None
-            if c.run == 1:
-                rec.notes.append(f"grid {found[0][0]!r}: the only grid on the page with this row and column")
-            return found[0][1]
+            self._fail_line(rec, c, e.message)
+            return
+        g["row_index"] = cell.row_index
+        g["row"] = (cell.row_index if cell.row_index is not None else 0) + self.row_base
+        rec.resolved[c.run] = (f"grid {info.grid} [{info.how}], column {header!r}, row {g['row']} "
+                               f"(row-index {cell.row_index})"
+                               + (f" [{info.api_source or cell.api_source}]" if (info.api_source or cell.api_source) else ""))
+        if c.run == 1:
+            rec.notes += [n for n in cell.notes if n not in rec.notes and not n.startswith("row located by displayed index")]
+            self._render(rec, header, grid_name=rec.grid_name)
+            if ln.row.key_value is not None and rec.step is None:
+                alt = render(replace(ln, row=RowRef(index=g["row"]), row_ordinal=False), element_name=header,
+                             grid_name=rec.grid_name, row_base=self.row_base).text
+                if alt:
+                    rec.notes.append(f"by position, `{alt}` would work now (row where {g['key'][0]} is {g['key'][1]} "
+                                     f"is row {g['row']} in run 1; a position changes when rows are added, removed, "
+                                     f"sorted or filtered)")
 
-    def _grid_entry_name(self, c: _Ctx, cell) -> str | None:
-        if not cell.grid_xpath:
+        act_on_cell(gf, cell, "locate", None, self.cfg, self.timeout)
+        g["before"] = _norm_text(cell.handle.evaluate(_READ_JS))
+        self._act_grid(rec, c, gf, cell)
+        try:
+            act_on_cell(gf, cell, "locate", None, self.cfg, self.timeout)
+            g["after"] = _norm_text(cell.handle.evaluate(_READ_JS))
+        except (GridError, PlaywrightError):
+            g["after"] = None
+
+    def _grid_find(self, rec: LineRec, c: _Ctx, gf):
+        """The line's grid; with no grid named: the page's only grid, or the one picked by --answer (else ask)."""
+        ln = rec.line
+        query = ln.grid or rec.grid_query
+        try:
+            return grid_info(gf, query, self.cfg, self.timeout)
+        except GridError as e:
+            if query or "grids on the page" not in e.message:
+                raise
+            listing = list(e.alternatives)
+            k = self.answers.get(ln.n)
+            if k is not None and 1 <= k <= len(listing) and (m := re.match(r"^'(.+?)' \(", listing[k - 1])):
+                rec.grid_query = m[1]
+                del self.answers[ln.n]
+                rec.notes.append(f"grid {m[1]!r}: answer {k} of {len(listing)} grids on the page")
+                return grid_info(gf, rec.grid_query, self.cfg, self.timeout)
+            if k is not None:
+                raise _Stop(f"--answer {ln.n}={k}: pick one of the {len(listing)} grids by number "
+                            f"(a named one): {', '.join(listing)}") from None
+            raise _AskGrid(rec, c.key, f"{len(listing)} grids on the page and the line names none", listing) from None
+
+    def _grid_entries(self, page: str):
+        return [e for e in self._entries(page) if not e.dynamic]
+
+    def _bind_grid(self, rec: LineRec, c: _Ctx, gf, info) -> Slot:
+        """Run 1: the grid's XML entry (its root locator). Name -> case/space-insensitive name -> an entry whose
+        locator selects the grid root -> new (named after the grid)."""
+        page, ln = c.key, rec.line
+        # the grid's own identity first: an id/test-id may sit on a page container that merely holds the only grid
+        anchors = sorted(info.anchors, key=lambda a: _ROOT_PREF.get(a["strategy"], 9))
+        cands = [Cand(a["xpath"], a["strategy"], 0.0, fragility(a["xpath"], "xpath", self.cfg, a["strategy"]))
+                 for a in anchors]
+        names = [n for n in dict.fromkeys([ln.grid, rec.grid_query, info.name]) if n]
+        pend = [s for s in self.slot_list if s.page == page and s.kind == "grid"]
+        entries = self._grid_entries(page)
+        squash = lambda s: re.sub(r"\s+", "", (s or "").casefold())  # noqa: E731
+        for how, eq in (("name", lambda a, b: a == b), ("name (case/space-insensitive)", lambda a, b: squash(a) == squash(b))):
+            for nm in names:
+                s = next((s for s in pend if eq(s.name, nm)), None)
+                if s is not None:
+                    return s
+                e = next((e for e in entries if eq(e.name, nm)), None)
+                if e is not None:
+                    return self._slot(page, e.name, kind="grid", entry=e, cands=cands, found_by=how)
+        items, owners = [], []
+        for e in entries:
+            items.append((e.kind, e.value or ""))
+            owners.append(("entry", e))
+        for s in pend:
+            if s.entry is None and s.cands:
+                items.append(("xpath", s.cands[0].loc))
+                owners.append(("slot", s))
+        res = check_roots(gf, items, info.handle)
+        hits = [(o, it) for o, it, r in zip(owners, items, res) if r.get("same")]
+        if hits:
+            hits.sort(key=lambda h: (bool(fragility(h[1][1], h[1][0], self.cfg)), len(h[1][1])))
+            (kind, obj), _ = hits[0]
+            if kind == "slot":
+                return obj
+            return self._slot(page, obj.name, kind="grid", entry=obj, cands=cands, found_by="locator hit (grid root)")
+        name = self._free_name(page, ln.grid or rec.grid_query or info.name or "Grid")
+        return self._slot(page, name, kind="grid", entry=None, new_page=not c.in_repo, cands=cands, found_by="new")
+
+    def _record_grid_use(self, rec: LineRec, c: _Ctx, gf, info) -> None:
+        s = rec.slot
+        if rec.line.n not in s.lines:
+            s.lines.append(rec.line.n)
+        items = ([(s.entry.kind, s.entry.value or "")] if s.entry is not None else []) + [("xpath", x.loc) for x in s.cands]
+        res = check_roots(gf, items, info.handle)
+        u = Use(rec.line.n, c.run)
+        if s.entry is not None:
+            u.entry, u.entry_render, res = res[0], s.entry.value, res[1:]
+        u.cands = [bool(r.get("same")) for r in res]
+        s.uses.append(u)
+
+    @staticmethod
+    def _column(written: str, headers: list[str], grid: str) -> tuple[str | None, str]:
+        """(live header, "") or (None, why): exact, then case/space-insensitive; never a col-id or a guess."""
+        squash = lambda s: re.sub(r"\s+", "", (s or "").casefold())  # noqa: E731
+        hits = [h for h in headers if h == written] or [h for h in headers if squash(h) == squash(written)]
+        hits = list(dict.fromkeys(hits))
+        if len(hits) == 1:
+            return hits[0], ""
+        cols = ", ".join(h for h in headers if h)
+        if hits:
+            return None, f"column {written!r} matches {len(hits)} columns in grid {grid!r}; columns: {cols}"
+        return None, f"column {written!r} not found in grid {grid!r}; columns: {cols}"
+
+    def _repo_grid_columns(self, page: str, grid: str | None) -> list[str] | None:
+        """The repository's grid config (column list) for this grid, when the repository has one."""
+        fn = getattr(self.repo, "grid_columns", None)
+        if fn is None:
+            self.grid_config_missing = True
             return None
         try:
-            gh = c.frame.evaluate_handle(
-                "xp => document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue",
-                cell.grid_xpath).as_element()
-        except PlaywrightError:
+            return list(fn(page, grid) or [])
+        except Exception:  # noqa: BLE001 - no config for this grid
             return None
-        if gh is None:
-            return None
-        statics = [e for e in self._entries(c.key) if not e.dynamic]
-        res = check(c.frame, [(e.kind, e.value or "") for e in statics], gh)
-        for e, r in zip(statics, res):
-            if r.get("n") == 1 and r.get("same"):
-                return e.name
-        return None
+
+    def _fail_line(self, rec: LineRec, c: _Ctx, msg: str) -> None:
+        """The line cannot work as written: reported (flagged in the feature); the flow goes on."""
+        rec.failures[c.run] = msg
+        rec.status = "failed"
+        if c.run == 1:
+            rec.step, rec.flagged = None, msg
+        self.echo(f"line {rec.line.n}: FAILED (run {c.run}): {msg}")
 
     # ------------------------------------------------------------------ steps
     def _render(self, rec: LineRec, element_name: str | None, *, grid_name: str | None = None,
@@ -671,7 +812,7 @@ class Author:
             ln = replace(ln, action="click", page=None)
         if ln.action == "close":
             page_name = ln.target
-        sr = render(ln, element_name=element_name, grid_name=grid_name, page_name=page_name)
+        sr = render(ln, element_name=element_name, grid_name=grid_name, page_name=page_name, row_base=self.row_base)
         rec.step, rec.step_notes = sr.text, list(sr.notes)
         if sr.text is None:
             rec.flagged = sr.reason or "no existing step fits"
@@ -833,6 +974,27 @@ class Author:
         self.echo(f"line {n}: {a.message.splitlines()[0]}")
         self.echo(f"  {len(cands)} candidate(s) with screenshots in {ask_md}")
         self.echo(f"  answer:  {cmd} --answer \"{n}=<candidate no>\"")
+
+    def _ask_grid(self, a: _AskGrid) -> None:
+        """ASK.md for a grid line that names no grid on a page with several: list the grids."""
+        rec = a.rec
+        rec.status, rec.error = "asked", a.message
+        n = rec.line.n
+        cmd = self.command or "crawler author FLOW.txt ..."
+        self.out.mkdir(parents=True, exist_ok=True)
+        named = [g for g in a.grids if re.match(r"^'(.+?)' \(", g)]
+        example = re.match(r"^'(.+?)' \(", named[0])[1] if named else "<name>"
+        md = [f"# Which grid did you mean?", "", f"## Line {n}: {rec.line.text}", "",
+              f"`{rec.line.text}` on page `{a.page_key}`: {a.message}.", ""]
+        md += [f"{i}. {g}" for i, g in enumerate(a.grids, 1)]
+        md += ["", "Answer with a grid number and run again:", "",
+               f"    {cmd} --answer \"{n}=<grid no>\"", "",
+               f"or name the grid in the line (`... of the {example} grid`).", ""]
+        ask_md = self.out / "ASK.md"
+        ask_md.write_text("\n".join(md), encoding="utf-8")
+        self.ask_path = ask_md
+        self.echo(f"line {n}: {a.message}: {', '.join(a.grids)}")
+        self.echo(f"  answer:  {cmd} --answer \"{n}=<grid no>\"")
 
     # ------------------------------------------------------------------ verdicts
     def decide(self) -> None:

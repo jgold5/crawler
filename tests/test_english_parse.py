@@ -289,8 +289,35 @@ def test_bullets_comments_blank_lines():
 def test_to_target():
     assert one("click the refresh icon in the Tools section").to_target() == Target(
         query="refresh", within="Tools", kind="icon")
+    # `row N` is the owner's number (0-based by default: SiteConfig.grid_row_base); crawler.grid's RowRef.index
+    # is 1-based displayed order: index = N - base + 1
     assert one("set Qty in row 1 of the Orders grid to 2").to_target() == GridTarget(
+        row=RowRef(index=2), column="Qty", grid="Orders")
+    assert one("set Qty in row 0 of the Orders grid to 2").to_target() == GridTarget(
         row=RowRef(index=1), column="Qty", grid="Orders")
+    assert one("set Qty in row 1 of the Orders grid to 2").to_target(row_base=1) == GridTarget(
+        row=RowRef(index=1), column="Qty", grid="Orders")
+    # the k-th row is a displayed position whatever the base
+    for base in (0, 1):
+        assert one("set Qty in the first row of the Orders grid to 2").to_target(base).row == RowRef(index=1)
+        assert one("set Qty in the third row of the Orders grid to 2").to_target(base).row == RowRef(index=3)
+    # key rows pass through
+    key = one("set Qty in the row where Order ID is A-1 of the Orders grid to 2")
+    assert key.to_target().row == RowRef(key_value="A-1", key_column="Order ID")
+
+
+@pytest.mark.parametrize("text,base,step_row,grid_index", [
+    ("set Price in row 0 to 10", 0, 0, 1),
+    ("set Price in row 2 to 10", 0, 2, 3),
+    ("set Price in row 2 to 10", 1, 2, 2),
+    ("set Price in the first row to 10", 0, 0, 1),
+    ("set Price in the first row to 10", 1, 1, 1),
+    ("set Price in the 3rd row to 10", 0, 2, 3),
+])
+def test_row_numbers(text, base, step_row, grid_index):
+    ln = one(text)
+    assert ln.step_row(base) == step_row and ln.grid_row(base) == RowRef(index=grid_index)
+    assert ln.row_ordinal == (" the " in text)
 
 
 # ---------------------------------------------------------------- dates

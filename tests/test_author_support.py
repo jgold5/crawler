@@ -1,7 +1,8 @@
 """Shared helpers for tests/test_author*.py (no tests here).
 
 The fixture app (tests/site) is served through an overlay that adds a "Trade Date" field to the Trade Entry
-dialog of trades.html (patched at test time; tests/site itself is untouched), on two ports (two origins).
+dialog of trades.html, and an `orders-one.html`: orders.html without its Customers grid (a page with exactly one
+grid). Both are patched at test time (tests/site itself is untouched); served on two ports (two origins).
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import functools
 import http.server
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -34,7 +36,20 @@ def overlay_dir(tmp: Path) -> Path:
     src = (SITE / "trades.html").read_text(encoding="utf-8")
     assert src.count(_QTY_ROW) == 1, "trades.html changed: update the Trade Date patch"
     (d / "trades.html").write_text(src.replace(_QTY_ROW, _QTY_ROW + "' +\n      '     " + _DATE_ROW), encoding="utf-8")
+    (d / "orders-one.html").write_text(single_grid_orders(), encoding="utf-8")
     return d
+
+
+_CUSTOMERS_HOST = 'var customersHost = document.querySelector("section:last-of-type .grid-host");'
+
+
+def single_grid_orders() -> str:
+    """orders.html with one grid: the Customers section is gone (its grid is built off-document)."""
+    src = (SITE / "orders.html").read_text(encoding="utf-8")
+    section = re.compile(r'\s*<section class="panel">\s*<h2>Customers</h2>.*?</section>', re.S)
+    assert len(section.findall(src)) == 1 and src.count(_CUSTOMERS_HOST) == 1, "orders.html changed: update the patch"
+    src = section.sub("", src)
+    return src.replace(_CUSTOMERS_HOST, 'var customersHost = document.createElement("div");')
 
 
 class _Overlay(http.server.SimpleHTTPRequestHandler):
@@ -81,6 +96,7 @@ def workspace(tmp: Path, url: str, alt: str | None = None, flow: str | None = No
     """tmp/{repo (copy), site.yaml, auth.json, <flow>}: returns (flow path, repo root, config path, out dir)."""
     repo = tmp / "repo"
     shutil.copytree(REPO, repo)
+    shutil.copytree(FIX / "repo", repo, dirs_exist_ok=True)     # + orders-one: a page without a grid entry
     origin = f"&origin=alt&alt={alt}" if alt else ""
     cfg = (FIX / "site.yaml").read_text(encoding="utf-8").replace("BASE_URL", url).replace("ORIGIN", origin)
     (tmp / "site.yaml").write_text(cfg, encoding="utf-8")
