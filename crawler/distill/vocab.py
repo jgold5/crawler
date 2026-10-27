@@ -489,8 +489,15 @@ dropdown dropdowns checkbox checkboxes radio toggle toggles spinner loader file 
 """)
 
 # Words a step phrase may keep verbatim (feature step text, table headers and step-definition patterns).
+# Generic UI-test vocabulary that appears in the owner's own step phrasing (assertions, widget kinds, modifiers).
+STEP_TEST_WORDS = _words("""
+textfield textfields textbox textboxes textarea combobox listbox dropdowns checkboxes radios toggle toggles
+equal equals equality exactly exact contains containing matches matching greater less than fewer more least most
+displayed displaying hidden visible invisible enabled disabled selected unselected checked unchecked highlighted
+blank empty populated present absent stored storing value values copies copy paste pastes pasted specifically
+""")
 STEP_VOCAB = (SAFE_WORDS | GENERIC_STEMS | ROLE_WORDS | _inflect(VERBS | STEP_VERBS) | STEP_FUNCTION_WORDS
-              | STEP_IRREGULAR | STEP_NOUNS)
+              | STEP_IRREGULAR | STEP_NOUNS | STEP_TEST_WORDS)
 # Words an identifier may consist of and still be "generic" (what idents.Anonymizer keeps unanonymized), plus the
 # stems the anonymizer itself emits (Type3, item4, field5Input, action6Button, arg7, pkg8).
 IDENT_GENERIC = GENERIC_STEMS | VERBS | ROLE_WORDS | _words("type item field action arg pkg external example x")

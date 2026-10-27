@@ -105,8 +105,9 @@ def test_realistic_xml_diff(realistic):
     assert "<iframe>//iframe[@name='appFrame-trades']</iframe>" in added
     for name in ("Refresh Open Trades", "New Trade", "Trade Date", "Close Trade Entry"):
         assert f'<element name="{name}">' in added
-    assert ("<locatorValue>//mat-card[.//mat-card-title[normalize-space()='Open Trades']]//button[.//i[contains(concat("
-            "' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]</locatorValue>") in added
+    # The engine emits the short FA form when no other class on the page extends the icon name.
+    assert ("<locatorValue>//mat-card[.//mat-card-title[normalize-space()='Open Trades']]"
+            "//button[.//i[contains(@class,'fa-arrows-rotate')]]</locatorValue>") in added
     assert "<locatorValue>//input[@id=//label[normalize-space()='Trade Date']/@for]</locatorValue>" in added
     # bad-but-unused entries are left alone; reused entries untouched
     for untouched in ("mui-4821", "css-a1b2c3", "Display name", "App Frame", "appFrame-orders", "Quantity in row",
