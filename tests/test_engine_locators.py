@@ -119,9 +119,15 @@ def test_nbsp_kept_like_xpath_normalize_space(page):
     h = el(page, "button")
     cs = generate(page, h, CFG)
     assert_sound(page, h, cs)
-    assert cs[0].strategy == "text" and "Save draft" in cs[0].xpath
+    # text that already holds an NBSP gets the NBSP-insensitive form (survives NBSP <-> space either way)
+    assert cs[0].strategy == "text"
+    assert cs[0].xpath == "//button[normalize-space(translate(.,' ',' '))='Save draft']"
+    # the exact NBSP form is kept as a fallback candidate
+    assert any(c.xpath == "//button[normalize-space()='Save draft']" for c in cs)
     # a plain-space version would NOT match: proves we mirror XPath semantics
     assert page.evaluate("() => window.__crawler.count(\"//button[normalize-space()='Save draft']\")") == 0
+    page.evaluate("() => { document.querySelector('button').textContent = 'Save draft' }")
+    assert verify(page, cs[0].xpath, h)
     assert page.evaluate("() => window.__crawler.norm('  a  b\\n c ')") == "a  b c"
 
 
@@ -427,3 +433,110 @@ def test_dialog_anchor_via_aria_labelledby_when_no_heading_child(page):
     assert_sound(page, b1, cs)
     assert cs[0].xpath == ("//div[@aria-labelledby=//span[normalize-space()='Delete order']/@id]"
                            "//button[normalize-space()='OK']")
+
+
+def test_nested_heading_anchor_beats_positional(page):
+    # card > header(h3 + meta) > ...: //div[.//h3[...]] is not unique (every ancestor div has it), the exact
+    # child path is; no positional [n] when a heading names the container
+    page.set_content("""
+      <div class="cards">
+        <div class="card x1"><div class="hd"><h3>Recent orders</h3><span>3 new</span></div><button>View details</button></div>
+        <div class="card x1"><div class="hd"><h3>Top customer</h3><span>this month</span></div>
+          <div class="body"><div><div>Bob</div></div></div><div class="actions"><button>View details</button></div></div>
+        <div class="x1"><div><div class="t"><h4>Deep</h4><small>m</small></div></div><button>View details</button></div>
+      </div>""")
+    b = page.query_selector_all("button")
+    cs = generate(page, b[1], CFG)
+    assert_sound(page, b[1], cs)
+    assert cs[0].xpath == "//div[div/h3[normalize-space()='Top customer']]//button[normalize-space()='View details']"
+    assert cs[0].strategy == "anchored"
+    assert not any(re.search(r"\[\d+\]", c.xpath) for c in cs[:1])
+    cs = generate(page, b[2], CFG)                 # heading 3 levels down
+    assert_sound(page, b[2], cs)
+    assert cs[0].xpath == "//div[div/div/h4[normalize-space()='Deep']]//button[normalize-space()='View details']"
+
+
+def test_nested_heading_wrapper_must_be_a_header(page):
+    # the first heading lives in a sibling card (its own container): never names the outer wrapper
+    page.set_content("""
+      <div class="grid"><section><div><h3>Alpha</h3></div><button>Open</button></section>
+        <section><div><h3>Beta</h3></div><button>Open</button></section></div>""")
+    b = page.query_selector_all("button")[1]
+    cs = generate(page, b, CFG)
+    assert_sound(page, b, cs)
+    assert "'Beta'" in cs[0].xpath and "Alpha" not in " ".join(c.xpath for c in cs)
+
+
+def test_row_key_anchor_for_row_icons(page):
+    page.set_content("""
+      <table><thead><tr><th>Id</th><th>Pair</th><th>Notional</th><th></th></tr></thead><tbody>
+        <tr><td>B-1</td><td>EUR/USD</td><td>1,000,000</td><td><a href=""><i class="fa fa-pencil"></i></a> <a href=""><i class="fa fa-trash-o"></i></a></td></tr>
+        <tr><td>B-2</td><td>GBP/USD</td><td>500,000</td><td><a href=""><i class="fa fa-pencil"></i></a> <a href=""><i class="fa fa-trash-o"></i></a></td></tr>
+        <tr><td>B-3</td><td>EUR/USD</td><td>750,000</td><td><a href=""><i class="fa fa-pencil"></i></a> <a href=""><i class="fa fa-trash-o"></i></a></td></tr>
+      </tbody></table>""")
+    a = page.query_selector_all("a")[2]          # row B-2, pencil
+    cs = generate(page, a, CFG)
+    assert_sound(page, a, cs)
+    assert cs[0].strategy == "row-key"
+    # an id-shaped key is matched as the cell's first word
+    assert cs[0].xpath == ("//tr[td[starts-with(concat(normalize-space(),' '),'B-2 ')]]"
+                           "//a[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-pencil ')]]")
+    # survives a re-sort of the rows (the positional index would not) and a note added after the key
+    page.evaluate("() => { const b = document.querySelector('tbody'); [...b.children].reverse().forEach(r => b.appendChild(r)); }")
+    assert verify(page, cs[0].xpath, a)
+    page.evaluate("() => { document.querySelectorAll('td').forEach(td => { if (td.textContent === 'B-2') td.textContent = 'B-2 (v2)'; }); }")
+    assert verify(page, cs[0].xpath, a)
+    # ...but never another key that merely starts the same (B-20)
+    page.evaluate("() => { document.querySelectorAll('td').forEach(td => { if (td.textContent === 'B-3') td.textContent = 'B-20'; }); }")
+    assert verify(page, cs[0].xpath, a)
+    # a non-key column whose text repeats (EUR/USD) is never the key; the Id column is preferred
+    xs = [c.xpath for c in cs if c.strategy == "row-key"]
+    assert not any("EUR/USD" in x for x in xs)
+
+
+def test_row_key_in_role_rows_and_list_items_not_ag_grid(page):
+    page.set_content("""
+      <div role="table"><div role="row"><div role="cell">Alpha</div><button>Edit</button></div>
+        <div role="row"><div role="cell">Beta</div><button>Edit</button></div></div>
+      <ul><li><span class="n">Ann</span> <button>Remove</button></li><li><span class="n">Bo</span> <button>Remove</button></li></ul>
+      <div class="ag-root-wrapper"><div role="row" row-index="0"><div role="gridcell">K-1</div><button>Open</button></div>
+        <div role="row" row-index="1"><div role="gridcell">K-2</div><button>Open</button></div></div>""")
+    b = page.query_selector_all("[role=table] button")[1]
+    cs = generate(page, b, CFG)
+    assert_sound(page, b, cs)
+    assert cs[0].xpath == "//div[div[normalize-space()='Beta']]//button[normalize-space()='Edit']"
+    assert cs[0].strategy == "row-key"
+    li = page.query_selector_all("li button")[1]
+    cs = generate(page, li, CFG)
+    assert_sound(page, li, cs)
+    assert cs[0].xpath == "//li[.//span[normalize-space()='Bo']]//button[normalize-space()='Remove']"
+    ag = page.query_selector_all(".ag-root-wrapper button")[1]   # AG Grid rows belong to crawler.grid
+    assert not any(c.strategy == "row-key" for c in generate(page, ag, CFG))
+
+
+def test_svg_title_text_ranks_below_icon_identity(page):
+    # FA SVG mode renders title="Save layout" as <svg><title>; FA drops it when it re-renders the icon
+    page.set_content("""
+      <button><svg data-icon="floppy-disk" data-prefix="fas" class="svg-inline--fa"><title>Save layout</title><path d="M0 0"/></svg></button>
+      <button aria-label="Close"><svg data-icon="xmark" class="svg-inline--fa"><title>Close</title><path d="M0 0"/></svg></button>
+      <button><svg data-icon="xmark" class="svg-inline--fa"><path d="M0 0"/></svg></button>""")
+    b = page.query_selector_all("button")
+    cs = generate(page, b[0], CFG)
+    assert_sound(page, b[0], cs)
+    assert cs[0].xpath == "//button[.//*[local-name()='svg'][@data-icon='floppy-disk']]"
+    xs = [c.xpath for c in cs]
+    txt = "//button[normalize-space()='Save layout']"
+    assert txt in xs and xs.index(txt) > 0
+    assert generate(page, b[1], CFG)[0].xpath == "//button[@aria-label='Close']"
+
+
+def test_nbsp_heading_anchor_is_nbsp_insensitive(page):
+    page.set_content("""
+      <section><div class="hd"><h3>Open invoices</h3><small>$5 due</small></div><button>View details</button></section>
+      <section><div class="hd"><h3>Paid</h3></div><button>View details</button></section>""")
+    b = page.query_selector("button")
+    cs = generate(page, b, CFG)
+    assert_sound(page, b, cs)
+    assert "translate(.,' ',' ')" in cs[0].xpath and "'Open invoices'" in cs[0].xpath
+    page.evaluate("() => { document.querySelector('h3').textContent = 'Open invoices'; }")
+    assert verify(page, cs[0].xpath, b)

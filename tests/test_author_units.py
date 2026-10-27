@@ -344,3 +344,11 @@ def test_date_hint_is_decided_by_the_element(page):
     assert (as_text.is_date, as_text.value) == (False, "T")
     now = Author._date_hint(None, _r(parse("go to X\nset Search to now\n")[1]), page.query_selector("#d"))
     assert (now.is_date, now.value) == (True, "T")
+
+
+def test_font_awesome_short_form_is_not_class_fragile():
+    from crawler.author.quality import fragility
+    assert fragility("//button[.//i[contains(@class,'fa-arrows-rotate')]]") == fragility(
+        "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]")
+    assert fragility("//button[contains(@class,'btn-primary')]")      # ordinary classes still flagged
+    assert fragility("//button[.//i[contains(@class,'fa-pen')]]")     # single-word FA name: substring-unsafe

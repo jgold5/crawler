@@ -176,10 +176,72 @@ def test_click_label_and_its_checkbox_is_not_ambiguous(page):
 
 
 def test_click_fallback_to_innermost_text(page):
-    page.set_content("""
+    # menu items styled as clickable (pointer cursor; Angular (click) leaves no attribute)
+    page.set_content("""<style>.menu li { cursor: pointer }</style>
       <ul class="menu"><li><div class="x"><span>Reports</span></div></li><li><span>Orders</span></li></ul>""")
     r = res(page, "click", query="Reports")
     assert same(page, r.handle, page.query_selector("span"))
+
+
+@pytest.mark.parametrize("action", ["click", "hover", "right_click", "double_click"])
+def test_click_text_fallback_rejects_non_interactive_text(page, action):
+    page.set_content("""
+      <h1>Trades</h1><p>Open trades are listed below.</p>
+      <div onclick="void 0"><span>Archive</span></div>
+      <a href="#x"><h3>Reports</h3></a>""")
+    with pytest.raises(ResolveError) as ei:      # a heading that merely shows the word is not a click target
+        res(page, action, timeout=300, query="trades")
+    assert "not clickable" in ei.value.alternatives[0] and 'h1 "Trades"' in ei.value.alternatives[0]
+    assert "non-clickable" in ei.value.message
+    # inside a clickable (handler / link): accepted
+    assert res(page, action, query="Archive").handle.evaluate("e => e.localName") in ("span", "div")
+    assert res(page, action, query="Reports").handle.evaluate("e => e.closest('a') !== null")
+    # locate (verify) still finds plain text
+    assert res(page, "locate", query="Trades").handle.evaluate("e => e.localName") == "h1"
+
+
+def test_modal_open_click_resolves_inside_topmost_dialog(page):
+    page.set_content("""
+      <section><h2>API keys</h2><button>Delete</button><button>Cancel</button></section>
+      <div class="backdrop"><div role="dialog" aria-modal="true" aria-labelledby="t">
+        <h2 id="t">Delete account?</h2><button>Cancel</button><button>Delete</button></div></div>""")
+    dlg_delete = page.query_selector_all("button")[3]
+    r = res(page, "click", query="Delete")
+    assert same(page, r.handle, dlg_delete)
+    assert same(page, res(page, "click", query="Cancel").handle, page.query_selector_all("button")[2])
+    # explicitly behind the modal: still honoured
+    r = res(page, "click", query="Delete", within="API keys")
+    assert same(page, r.handle, page.query_selector("section button"))
+    # a second modal stacked on top wins over the first
+    page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+        '<div role="dialog" aria-modal="true"><h2>Confirm</h2><button>Delete</button></div>')""")
+    r = res(page, "click", query="Delete")
+    assert r.handle.evaluate("e => e.parentElement.querySelector('h2').textContent") == "Confirm"
+    # verifying (locate) is not a click: both still visible, so still ambiguous
+    page.evaluate("() => document.querySelectorAll('[role=dialog]')[1].remove()")
+    with pytest.raises(ResolveError):
+        res(page, "locate", query="Delete", timeout=300)
+    # no modal: equal matches stay ambiguous
+    page.evaluate("() => document.querySelector('[aria-modal]').removeAttribute('aria-modal')")
+    with pytest.raises(ResolveError):
+        res(page, "click", query="Delete", timeout=300)
+
+
+def test_locate_toast_text_promotes_to_live_region(page):
+    page.set_content("""
+      <form aria-label="Sign in form"><div role="alert" class="error">Please enter your email.</div></form>
+      <div class="toast-region" aria-live="polite">
+        <div class="toast" role="status"><svg viewBox="0 0 1 1"><path d="M0 0"/></svg><span>Saved</span></div></div>""")
+    r = res(page, "locate", query="Saved")
+    assert r.handle.get_attribute("role") == "status"
+    cs = generate(page, r.handle, CFG)
+    assert cs[0].xpath == "//div[@role='status']"
+    alert = page.query_selector("[role=alert]")
+    cs = generate(page, alert, CFG)
+    assert cs[0].xpath == "//div[@role='alert']"     # not //form[@aria-label='Sign in form']//div[@role='alert']
+    # a click on the toast text is not promoted
+    page.evaluate("() => document.querySelector('.toast').style.cursor = 'pointer'")
+    assert res(page, "click", query="Saved").handle.evaluate("e => e.localName") == "span"
 
 
 def test_locate_innermost_and_hidden_ignored(page):

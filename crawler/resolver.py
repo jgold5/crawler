@@ -10,6 +10,11 @@ table, and context (`within`: dialog title, card/panel heading, grid name, toolb
 case/whitespace-insensitive, then word overlap, then synonyms; an inexact (fuzzy or synonym) match is used
 only when it is the single reasonable candidate in scope. Equally good matches are never guessed between:
 ResolveError lists them. ``aliases`` (crawler.aliases.AliasStore) is consulted first when given.
+
+Clicks (click/hover/right_click/double_click) never fall back to text that cannot be clicked (a heading with
+no role, handler, tabindex or pointer cursor, not inside a clickable): that times out with the text listed as
+"not clickable". With a modal dialog open, matches inside the topmost modal win over the ones behind its
+backdrop. A located toast/alert text resolves to its live region (role=status|alert|log, aria-live).
 """
 from __future__ import annotations
 

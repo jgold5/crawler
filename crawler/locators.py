@@ -8,7 +8,16 @@ element's own locators come from ``crawler.frames.iframe_candidates``).
 Icon clickables are anchored on the icon's identity, never on the ``<i>``/``<svg>`` itself:
 ``//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]`` or
 ``//button[.//*[local-name()='svg'][@data-icon='arrows-rotate']]``, scoped by a card/dialog/section
-anchor when not unique. Material tooltips give ``//button[@aria-describedby=//div[normalize-space()='X']/@id]``.
+anchor when not unique. When the FA name is compound and no class on the page contains it as a longer name
+(``fa-arrows-rotate``, not ``fa-eye`` next to ``fa-eye-slash``), the short ``contains(@class,'fa-arrows-rotate')``
+form is offered too. Material tooltips give ``//button[@aria-describedby=//div[normalize-space()='X']/@id]``.
+
+Anchors, best first: test-id/id, aria-label, a heading child (``//section[h2[...]]``), a heading 2-3 levels
+down in a header wrapper (``//div[div/h3[...]]``), and for repeated rows (plain tables, ``[role=row]``, list
+items; AG Grid is left to ``crawler.grid``) a **row key**: ``//tr[td[normalize-space()='B-2']]//a[...]``, on a
+cell text no sibling row has, key-like columns first. Row-key candidates carry strategy ``row-key`` (the key is
+data) and still rank above a positional ``[n]``. Text that is not rendered (an FA SVG ``<title>``) ranks below
+the icon identity; text holding an NBSP gets an NBSP-insensitive ``normalize-space(translate(...))`` form.
 """
 from __future__ import annotations
 

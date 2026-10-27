@@ -22,7 +22,10 @@ FLAG_ID = "generated id"
 
 _LIT = re.compile(r"'[^']*'|\"[^\"]*\"")
 # a Font Awesome icon identity is stable by construction: not a class dependency
-_FA = re.compile(r"contains\(\s*concat\(\s*' '\s*,\s*normalize-space\(\s*@class\s*\)\s*,\s*' '\s*\)\s*,\s*' fa-[\w-]+ '\s*\)")
+# Font Awesome icon identity is stable vocabulary, not a fragile class: the full token form, and the short
+# form the engine emits only for compound names no other class on the page extends.
+_FA = re.compile(r"contains\(\s*concat\(\s*' '\s*,\s*normalize-space\(\s*@class\s*\)\s*,\s*' '\s*\)\s*,\s*' fa-[\w-]+ '\s*\)"
+                 r"|contains\(\s*@class\s*,\s*'fa-[a-z0-9]+(?:-[a-z0-9]+)+'\s*\)")
 _NEAR = re.compile(r"(?:following|preceding)(?:-sibling)?::[\w*-]+(?:\[[^\]]*\])?\[1\]")
 _STRATEGY_FLAGS = {"positional": FLAG_POS, "indexed": FLAG_POS, "grid-cell-index": FLAG_POS, "class": FLAG_CLASS}
 

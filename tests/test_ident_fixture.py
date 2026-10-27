@@ -36,10 +36,10 @@ def has(handle, sel) -> bool:
 
 @pytest.mark.parametrize("key,within,icon_sel,xpath", [
     ("blotter", None, ".fa-refresh", "//a[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-refresh ')]]"),
-    ("risk", None, ".fa-sync-alt", "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-sync-alt ')]]"),
+    ("risk", None, ".fa-sync-alt", "//button[.//i[contains(@class,'fa-sync-alt')]]"),
     ("positions", None, "svg[data-icon='arrows-rotate']", "//button[.//*[local-name()='svg'][@data-icon='arrows-rotate']]"),
     ("trades", "Open Trades", ".fa-arrows-rotate",
-     "//mat-card[.//mat-card-title[normalize-space()='Open Trades']]//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]"),
+     "//mat-card[.//mat-card-title[normalize-space()='Open Trades']]//button[.//i[contains(@class,'fa-arrows-rotate')]]"),
 ])
 def test_refresh_icon_every_generation(page, site_url, key, within, icon_sel, xpath):
     fr = app(page, site_url, key)
@@ -70,10 +70,11 @@ def test_two_refresh_icons_ambiguous_then_within(page, site_url):
 def test_x_in_the_trade_entry_dialog(page, site_url):
     fr = app(page, site_url, "trades")
     res(fr, query="New Trade").handle.click()
-    with pytest.raises(ResolveError) as ei:                 # the notice banner has an x too
-        res(fr, query="x", timeout=1500)
-    assert len(ei.value.alternatives) == 2
+    # the notice banner has an x too, but it is behind the modal (its backdrop blocks it): the dialog's x
+    behind = res(fr, query="x")
+    assert behind.handle.evaluate("e => e.hasAttribute('mat-dialog-close')")
     r = res(fr, query="x", within="Trade Entry dialog")
+    assert fr.evaluate("([a, b]) => a === b", [behind.handle, r.handle])
     assert r.handle.evaluate("e => e.hasAttribute('mat-dialog-close')")
     assert r.location == 'dialog "Trade Entry"' and r.context == "Trade Entry"
     cs = generate(fr, r.handle, CFG)
@@ -135,11 +136,14 @@ def test_legacy_markup_icons(page, site_url):
     fr = app(page, site_url, "risk")
     more = res(fr, query="more")                                               # bare <i> with a (click) binding
     assert more.handle.evaluate("e => e.localName") == "i"
-    assert generate(fr, more.handle, CFG)[0].xpath == "//i[contains(concat(' ',normalize-space(@class),' '),' fa-ellipsis-h ')]"
+    assert generate(fr, more.handle, CFG)[0].xpath == "//i[contains(@class,'fa-ellipsis-h')]"
     assert res(fr, query="close").handle.evaluate("e => e.getAttribute('role')") == "button"
     assert has(res(fr, query="delete").handle, ".fa-trash-alt")
     fr = app(page, site_url, "positions")
-    assert res(fr, query="Save layout").matched_by == "title"                   # FA SVG mode <title>
+    sl = res(fr, query="Save layout")
+    assert sl.matched_by == "title"                                            # FA SVG mode <title>
+    # the <title> is not rendered and FA drops it on re-render: the icon identity is the locator
+    assert generate(fr, sl.handle, CFG)[0].xpath == "//button[.//*[local-name()='svg'][@data-icon='floppy-disk']]"
     assert has(res(fr, query="close").handle, "svg[data-icon=xmark]")
 
 

@@ -68,17 +68,29 @@
   }
   function text(el) { return norm(el.textContent); }
 
-  /** Human-visible text: like textContent but skipping SVG (icon <title>s), script and style. */
+  /** Human-visible text: like textContent but skipping SVG (icon <title>s), script, style and [hidden] content. */
   function displayText(el) {
-    if (!el.querySelector('svg,script,style,template,noscript')) return text(el);
+    if (!el.querySelector('svg,script,style,template,noscript,[hidden]')) return text(el);
     var out = '';
     (function walk(n) {
       for (var c = n.firstChild; c; c = c.nextSibling) {
         if (c.nodeType === 3) out += c.data;
-        else if (c.nodeType === 1 && isHtml(c) && !/^(script|style|template|noscript)$/.test(c.localName)) walk(c);
+        else if (c.nodeType === 1 && isHtml(c) && !/^(script|style|template|noscript)$/.test(c.localName) &&
+                 !c.hasAttribute('hidden')) walk(c);
       }
     })(el);
     return norm(out);
+  }
+
+  var NBSP = '\u00a0';
+  /**
+   * Text-equality predicate on the context node. Text that contains NBSP gets an NBSP-insensitive form
+   * (translate NBSP to space, then normalize), which also survives the NBSP being replaced by a plain space;
+   * plain text keeps the short normalize-space() form.
+   */
+  function textEq(t) {
+    if (t.indexOf(NBSP) < 0) return 'normalize-space()=' + lit(t);
+    return 'normalize-space(translate(.,' + lit(NBSP) + ",' '))=" + lit(norm(t.split(NBSP).join(' ')));
   }
 
   /** XPath 1.0 string literal for s; concat() when s contains both quote kinds. */
@@ -693,14 +705,20 @@
       var tx = text(el);
       if (tx && tx.length <= 2000) {
         var click = isClickable(el), dt = displayText(el);
-        if (dt && dt !== tx && dt.length <= 60 && stableText(dt)) {
+        if (!dt) {
+          // all of the text is non-rendered (an FA SVG <title>, hidden content): FA drops the <title> when it
+          // re-renders the icon, so this ranks below the icon identity, aria-label and tooltips
+          if (tx.length <= 60 && stableText(tx)) add('normalize-space()=' + lit(tx), 'text', 50);
+        } else if (dt !== tx && dt.length <= 60 && stableText(dt)) {
           // string-value polluted by icon text (<svg><title>): match the visible part
           var inner = null, ds = el.querySelectorAll('*');
           for (var di = 0; di < ds.length; di++) if (isHtml(ds[di]) && text(ds[di]) === dt) { inner = ds[di]; break; }
-          if (inner) add('.//' + tagOf(inner) + '[normalize-space()=' + lit(dt) + ']', 'text', click ? 72 : 66);
+          if (inner) add('.//' + tagOf(inner) + '[' + textEq(dt) + ']', 'text', click ? 72 : 66);
           else add('contains(normalize-space(),' + lit(dt) + ')', 'text', click ? 62 : 58);
         } else if (tx.length <= 60 && stableText(tx)) {
-          add('normalize-space()=' + lit(tx), 'text', click ? 75 : 68);
+          add(textEq(tx), 'text', click ? 75 : 68);
+          // the NBSP-insensitive form can match more elements: keep the exact form as a fallback
+          if (tx.indexOf(NBSP) >= 0) add('normalize-space()=' + lit(tx), 'text', click ? 73 : 66);
         } else {
           var pre = stablePrefix(tx, 32);
           if (pre) add('starts-with(normalize-space(),' + lit(pre) + ')', 'text', 60);
@@ -727,6 +745,8 @@
     iconsOf(el).slice(0, 2).forEach(function (ic) {
       var ip = iconPred(ic, el);
       if (ip) add(ip, 'icon', 70);
+      var sp = iconPred(ic, el, true);
+      if (sp && sp !== ip) { add(sp, 'icon', 71); out[out.length - 1].short = true; }
     });
     TOOLTIP_ATTRS.forEach(function (a) {
       var v = attr(el, a);
@@ -736,7 +756,10 @@
     if (t === 'input' && el.hasAttribute('type')) add('@type=' + lit(attr(el, 'type')), 'type', inputType(el) === 'text' ? 35 : 50);
     if (t === 'button' && el.hasAttribute('type')) add('@type=' + lit(attr(el, 'type')), 'type', 45);
     var r = attr(el, 'role');
-    if (r && /^[a-z ]+$/.test(r)) add('@role=' + lit(r), 'role', 40);
+    // a live region (alert, status, log) is usually the only one of its role: the short role locator ranks high
+    if (r && /^[a-z ]+$/.test(r)) add('@role=' + lit(r), 'role', LIVE_ROLES[role(el)] ? 78 : 40);
+    var live = attr(el, 'aria-live');
+    if (live && /^(polite|assertive)$/.test(live) && !r) add('@aria-live=' + lit(live), 'role', 70);
     var classes = (el.getAttribute('class') || '').split(/[ \t\r\n]+/).filter(function (c) {
       return stableClass(c) && !isFaNoise(c) && !(c.lastIndexOf('fa-', 0) === 0 && iconsOf(el).length);
     });
@@ -748,9 +771,33 @@
   }
 
   var CLASS_HAS = function (c) { return "contains(concat(' ',normalize-space(@class),' '),' " + c + " ')"; };
+  var LIVE_ROLES = { alert: 1, status: 1, log: 1 };
 
-  /** Predicate (relative to the clickable el) that pins icon ic, e.g. .//i[contains(...,' fa-arrows-rotate ')]. */
-  function iconPred(ic, el) {
+  /**
+   * The short contains(@class,'fa-x') form is exact only while no class anywhere in the document has
+   * 'fa-x' as a proper substring (fa-eye vs fa-eye-slash, fa-pen vs fa-pen-to-square). Single-word names are
+   * prefixes of other FA names too often to trust the current page alone.
+   */
+  function faShortSafe(cls) {
+    if (!/^fa-[a-z0-9]+-[a-z0-9-]+$/.test(cls)) return false;
+    var list = document.querySelectorAll('[class*="' + cls + '"]');
+    for (var i = 0; i < list.length; i++) {
+      var cs = (list[i].getAttribute('class') || '').split(/[ \t\r\n]+/);
+      for (var j = 0; j < cs.length; j++) if (cs[j] !== cls && cs[j].indexOf(cls) >= 0) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Predicate (relative to the clickable el) that pins icon ic, e.g. .//i[contains(...,' fa-arrows-rotate ')].
+   * short: the contains(@class,'fa-x') form, or '' when it could match a longer FA name (see faShortSafe).
+   */
+  function iconPred(ic, el, short) {
+    if (short) {
+      if (!ic.cls || ic.svg || ic.glyph || ic.mat || !faShortSafe(ic.cls)) return '';
+      var sp = 'contains(@class,' + lit(ic.cls) + ')';
+      return ic.node === el ? sp : './/' + tagOf(ic.node) + '[' + sp + ']';
+    }
     var n = ic.node;
     if (ic.glyph) return '';
     if (ic.svg && n.hasAttribute('data-icon')) {
@@ -798,8 +845,93 @@
     return out;
   }
 
-  /** Anchor xpaths for ancestor a, best first: [{xp, w, kind}]. Unverified. */
-  function anchorXPaths(a) {
+  // AG Grid rows are handled by crawler/grid (row identity x column), never by the static row-key anchor.
+  var AG_SEL = 'ag-grid-angular,ag-grid-vue,ag-grid-react,.ag-root-wrapper,.ag-row,[row-index]';
+  var KEY_HEADER = /(^|[^a-z])(id|code|key|ref|no|num|number|#)([^a-z]|$)/i;
+  var KEY_VALUE = /^[A-Za-z]{0,6}[-_\/.]?\d+([-_\/.]?[A-Za-z0-9]+)*$/;
+
+  /** Rows of the repeated structure a belongs to (a table row, [role=row], a repeated list item), or null. */
+  function rowSiblings(a) {
+    var p = a.parentElement;
+    if (!p || !isHtml(a) || closestOf(a, AG_SEL)) return null;
+    var r = role(a);
+    var isRow = a.localName === 'tr' || r === 'row' || r === 'listitem' || a.localName === 'li';
+    if (!isRow) return null;
+    var sibs = Array.prototype.filter.call(p.children, function (x) { return x.localName === a.localName && role(x) === r; });
+    return sibs.length >= 2 ? sibs : null;
+  }
+
+  /** Cells (or, for list items, short leaf texts) of row a that do not contain el: [{el, step, text}]. */
+  function rowCells(a, el) {
+    var out = [];
+    if (a.localName === 'tr' || role(a) === 'row') {
+      for (var c = a.firstElementChild; c; c = c.nextElementSibling) {
+        if (!isHtml(c) || c.contains(el)) continue;
+        if (/^(td|th)$/.test(c.localName) || /^(gridcell|cell|rowheader)$/.test(role(c))) {
+          out.push({ el: c, step: tagOf(c), text: text(c) });
+        }
+      }
+    } else {
+      var leaves = a.querySelectorAll('*');
+      for (var i = 0; i < leaves.length && out.length < 12; i++) {
+        var e = leaves[i];
+        if (!isHtml(e) || e.firstElementChild || e.contains(el) || el.contains(e) || isClickable(e)) continue;
+        out.push({ el: e, step: './/' + tagOf(e), text: text(e) });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Row-key anchors for row a: //tr[td[normalize-space()='B-2']] on a cell text that no sibling row has
+   * (key-like columns first: an Id/Code header or an id-shaped value). The key is data: callers label the
+   * resulting candidates "row-key" (data-dependent), which still beats a positional index.
+   */
+  function rowKeyXPaths(a, el) {
+    var sibs = rowSiblings(a);
+    if (!sibs) return [];
+    var t = tagOf(a), table = closestOf(a, 'table'), heads = null;
+    if (table && a.localName === 'tr') {
+      var hr = table.querySelector('thead tr') || table.querySelector('tr');
+      if (hr && hr !== a) heads = Array.prototype.map.call(hr.children, function (h) { return text(h); });
+    }
+    var keys = [], others = new Set();
+    sibs.forEach(function (r) { if (r !== a) rowCells(r, el).forEach(function (o) { others.add(o.text); }); });
+    rowCells(a, el).forEach(function (c, idx) {
+      var tx = c.text;
+      if (!tx || tx.length > 40 || others.has(tx)) return;
+      var col = c.el.parentElement === a ? Array.prototype.indexOf.call(a.children, c.el) : -1;
+      var k = 0;
+      if (heads && col >= 0 && KEY_HEADER.test(heads[col] || '')) k += 3;
+      if (KEY_VALUE.test(tx)) k += 2;
+      if (idx === 0) k += 1;
+      if (stableText(tx)) k += 1;
+      keys.push({ c: c, k: k });
+    });
+    keys.sort(function (x, y) { return y.k - x.k || x.c.text.length - y.c.text.length; });
+    return keys.slice(0, 2).map(function (x, i) {
+      return { xp: '//' + t + '[' + x.c.step + '[' + keyEq(x.c.text) + ']]', w: 62 - i, kind: 'row-key' };
+    });
+  }
+
+  /**
+   * Row-key cell predicate. An id-shaped key (B-2, T-1001) must be the cell's first word, so a badge or
+   * note added after it ("B-2 (new)") keeps the row while B-20 never matches; other keys match exactly.
+   */
+  function keyEq(k) {
+    if (KEY_VALUE.test(k)) return "starts-with(concat(normalize-space(),' ')," + lit(k + ' ') + ')';
+    return textEq(k);
+  }
+
+  /** First title element in a's subtree, or null. */
+  function firstTitle(a) {
+    var ts = a.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading],' + TITLE_SEL);
+    for (var i = 0; i < ts.length && i < 40; i++) if (text(ts[i])) return ts[i];
+    return null;
+  }
+
+  /** Anchor xpaths for ancestor a of el, best first: [{xp, w, kind}]. Unverified. */
+  function anchorXPaths(a, el) {
     var out = [], t = tagOf(a);
     function add(xp, w, kind) { out.push({ xp: xp, w: w, kind: kind }); }
     (CFG.testIdAttrs || []).forEach(function (at) {
@@ -817,7 +949,7 @@
     if (lb.length === 1) {
       var lt = text(lb[0]);
       if (lt && lt.length <= 60 && stableText(lt)) {
-        var linner = '//' + tagOf(lb[0]) + '[normalize-space()=' + lit(lt) + ']';
+        var linner = '//' + tagOf(lb[0]) + '[' + textEq(lt) + ']';
         add('//' + t + '[@aria-labelledby=' + linner + '/@id]', 76, 'aria-labelledby');
         out[out.length - 1].check = function (el) { return refUnique(t, 'aria-labelledby', linner, 'id', el); };
       }
@@ -826,7 +958,7 @@
       var ht = text(h);
       if (!ht || ht.length > 60 || !stableText(ht)) return '';
       var ht0 = role(h) === 'heading' && !HEADING_TAGS[h.localName] ? "*[@role='heading' and " : tagOf(h) + '[';
-      return ht0 + 'normalize-space()=' + lit(ht) + ']';
+      return ht0 + textEq(ht) + ']';
     }
     for (var c = a.firstElementChild; c; c = c.nextElementSibling) {
       if (isTitle(c)) { var hp = headPred(c); if (hp) { add('//' + t + '[' + hp + ']', 78, 'heading'); break; } }
@@ -840,6 +972,23 @@
         if (gp) add('//' + t + '[' + tagOf(c) + '/' + gp + ']', 74, 'heading');
       }
     }
+    // Heading 2-3 levels down (card > header > h3 + meta): anchor on the tightest container whose subtree's
+    // FIRST title it is, with the exact child path (//div[div/h3[...]]), never the loose //div[.//h3[...]].
+    var fh = firstTitle(a);
+    if (fh && el && !fh.contains(el)) {
+      var steps = [], n = fh.parentElement;
+      while (n && n !== a && steps.length < 3) { steps.unshift(tagOf(n)); n = n.parentElement; }
+      var top = steps.length ? fh.parentElement : null;
+      while (top && top.parentElement !== a) top = top.parentElement;
+      // the wrapper holding the title must be a header, not a nested card/section with its own content
+      var wrapperOk = n === a && steps.length >= 1 && steps.length <= 2 && top && !isA(top, CONTAINER_SEL) &&
+        !top.querySelector(CONTAINER_SEL) && titlesIn(top).length === 1 && !top.contains(el);
+      if (wrapperOk) {
+        var fp = headPred(fh);
+        // one header wrapper: right after a heading child; deeper: below the shorter //card[.//title] form
+        if (fp) add('//' + t + '[' + steps.join('/') + '/' + fp + ']', steps.length === 1 ? 77 : 70, 'heading');
+      }
+    }
     // A card/panel/dialog whose title sits deeper (mat-card > mat-card-header > div > mat-card-title).
     if (isA(a, CONTAINER_SEL)) {
       var ot = ownTitle(a);
@@ -848,6 +997,7 @@
         if (op) add('//' + t + '[.//' + op + ']', 72, 'heading');
       }
     }
+    if (el) rowKeyXPaths(a, el).forEach(function (r) { add(r.xp, r.w, r.kind); });
     return out;
   }
 
@@ -856,7 +1006,7 @@
     var res = [], a = el.parentElement;
     for (var depth = 0; a && depth < 8 && res.length < max; depth++, a = a.parentElement) {
       if (a === document.body || a === document.documentElement || !isHtml(a)) break;
-      var xs = anchorXPaths(a).sort(function (x, y) { return y.w - x.w; });
+      var xs = anchorXPaths(a, el).sort(function (x, y) { return y.w - x.w; });
       for (var i = 0; i < xs.length; i++) {
         if (xs[i].check ? xs[i].check(a) : uniqueIs(xs[i].xp, a)) {
           res.push({ el: a, xp: xs[i].xp, w: xs[i].w, kind: xs[i].kind });
@@ -977,12 +1127,13 @@
     // Icon clickables are anchored on their icon identity (or a better own predicate), not on @type/bare tag.
     var iconEl = preds.some(function (p) { return p.s === 'icon'; });
     anchors.forEach(function (A) {
+      var st = A.kind === 'row-key' ? 'row-key' : 'anchored';
       preds.slice(0, 5).forEach(function (pr) {
         if (iconEl && pr.w < 60) return;
         var path = '//' + t + '[' + pr.p + ']';
-        add(A.xp + path, 'anchored', anchoredWeight(A.w, pr.w), rel(A, path));
+        add(A.xp + path, st, anchoredWeight(A.w, pr.w), rel(A, path));
       });
-      if (!iconEl) add(A.xp + '//' + t, 'anchored', anchoredWeight(A.w, 25), rel(A, '//' + t));
+      if (!iconEl) add(A.xp + '//' + t, st, anchoredWeight(A.w, 25), rel(A, '//' + t));
       var list = all('.//' + t, A.el), k = list.indexOf(el);
       if (k >= 0 && list.length > 1) {
         add('(' + A.xp + '//' + t + ')[' + (k + 1) + ']', 'anchored', 30, function () { return list[k] === el; });
@@ -1007,7 +1158,8 @@
     var strongCount = 0;
     out.forEach(function (c) { if (c.score >= 45) strongCount++; });
     if (strongCount < 2) {
-      preds.filter(function (p) { return p.w >= 60; }).slice(0, 2).forEach(function (pr) {
+      // (the exact FA class form only: a positional fallback should not also be class-dependent)
+      preds.filter(function (p) { return p.w >= 60 && !p.short; }).slice(0, 2).forEach(function (pr) {
         var xs = '//' + t + '[' + pr.p + ']', lst = all(xs), k = lst.indexOf(el);
         if (k >= 0 && lst.length > 1 && lst.length <= 20) add('(' + xs + ')[' + (k + 1) + ']', 'indexed', 35);
       });
@@ -1322,6 +1474,7 @@
   function resolveInner(spec) {
     var action = spec.action || 'locate';
     if (action === 'uncheck') action = 'check';
+    if (/^(right_click|double_click|dblclick|context_click)$/.test(action)) action = 'click';
     if (!document.body) return { status: 'none', near: [], reason: 'document has no body yet' };
     var containers = null;
     if (spec.within) {
@@ -1339,6 +1492,32 @@
       r.reason = r.reason || 'no ' + spec.kind + ' matches';
     }
     return r;
+  }
+
+  /** Clickable by markup, by an onclick property, inside a clickable, or styled as clickable (pointer cursor). */
+  function interactive(e) {
+    for (var a = e; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+      if (isHtml(a) && (isClickable(a) || typeof a.onclick === 'function')) return true;
+    }
+    return pointer(e);
+  }
+
+  /** The topmost open modal dialog (its backdrop blocks everything behind it), or null. */
+  function topModal() {
+    var list = document.querySelectorAll('[aria-modal=true],mat-dialog-container,.mat-mdc-dialog-container,dialog[open]');
+    var top = null;
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i];
+      if (d.localName === 'dialog' && !isA(d, ':modal')) continue;
+      if (visible(d)) top = d;   // document order: a later overlay is stacked above an earlier one
+    }
+    return top;
+  }
+
+  /** A located toast/alert text: the live region (role=status|alert|log, aria-live) whose whole text it is. */
+  function promoteLive(el) {
+    var c = el.parentElement && closestOf(el.parentElement, '[role=status],[role=alert],[role=log],[aria-live]');
+    return c && c !== document.body && text(c) === text(el) ? c : el;
   }
 
   function resolveQuery(spec, action, containers) {
@@ -1361,8 +1540,10 @@
     }
     matches = vis;
 
-    // Click fallback: innermost visible element whose own text equals the query.
+    // Click fallback: innermost visible element whose own text equals the query, if something can be clicked
+    // there (a heading or paragraph that merely shows the words is not a click target).
     var bestScore = matches.reduce(function (m, x) { return Math.max(m, x.score); }, 0);
+    var inert = [];
     if ((action === 'click' || action === 'hover') && bestScore < 0.85 && (!spec.source || spec.source === 'text')) {
       var fb = [];
       containers.forEach(function (c) {
@@ -1376,6 +1557,7 @@
           for (var ch = e.firstElementChild; ch; ch = ch.nextElementSibling) if (canon(ch.textContent) === q) { inner = true; break; }
           if (inner || !visible(e) || !kindOk(e, spec.kind)) continue;
           if (matches.some(function (m) { return m.el.contains(e) || e.contains(m.el); })) continue;
+          if (!interactive(e)) { inert.push(e); continue; }
           fb.push({ el: e, score: 0.9, source: 'text', name: text(e), tier: spec.kindFallback ? 'fuzzy' : 'exact',
                     kindFallback: spec.kindFallback });
         }
@@ -1387,12 +1569,14 @@
     if (!ties.length) {
       var diag = near.concat(hidden.map(function (h) { h.hidden = true; return h; }));
       diag.sort(function (a, b) { return b.score - a.score; });
-      return {
-        status: 'none',
-        near: diag.slice(0, 6).map(function (m) {
-          return summary(m.el, m.name) + ' (score ' + m.score.toFixed(2) + (m.hidden ? ', hidden' : '') + ')';
-        })
-      };
+      var nearList = inert.slice(0, 3).map(function (e) {
+        return summary(e) + ' (has this text but is not clickable: no role, click handler, tabindex or pointer cursor)';
+      }).concat(diag.slice(0, 6).map(function (m) {
+        return summary(m.el, m.name) + ' (score ' + m.score.toFixed(2) + (m.hidden ? ', hidden' : '') + ')';
+      }));
+      var none = { status: 'none', near: nearList.slice(0, 6) };
+      if (inert.length) none.reason = 'only non-clickable text matches; name the button/link, or use `within:`';
+      return none;
     }
     var inexact = !ties.some(function (m) { return m.tier === 'exact'; });
     var reason = '';
@@ -1400,6 +1584,15 @@
       // A fuzzy or synonym match is accepted only if it is the single reasonable candidate in scope.
       ties = dedupe(matches.slice());
       reason = 'inexact';
+    }
+    // An open modal's backdrop blocks everything behind it: matches inside the topmost modal win.
+    if (ties.length > 1 && action !== 'locate') {
+      var md = topModal();
+      var inModal = md ? ties.filter(function (m) { return md.contains(m.el); }) : [];
+      if (inModal.length && inModal.length < ties.length) ties = inModal;
+    }
+    if (action === 'locate') {
+      ties = ties.map(function (m) { var p = promoteLive(m.el); return p === m.el ? m : Object.assign({}, m, { el: p }); });
     }
     if (spec.nth) {
       if (spec.nth > ties.length) {

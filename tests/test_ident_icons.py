@@ -207,8 +207,8 @@ def test_icon_locators_anchor_on_icon_identity(page):
     page.set_content(GENERATIONS.replace(' id="v4"', "").replace(' id="v5"', "").replace(' id="v6"', "").replace(' id="svg"', ""))
     expect = {
         "V4": "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-refresh ')]]",
-        "V5": "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-sync-alt ')]]",
-        "V6": "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]",
+        "V5": "//button[.//i[contains(@class,'fa-sync-alt')]]",
+        "V6": "//button[.//i[contains(@class,'fa-arrows-rotate')]]",
         "SVG": "//button[.//*[local-name()='svg'][@data-icon='arrows-rotate']]",
     }
     for section, xp in expect.items():
@@ -217,6 +217,30 @@ def test_icon_locators_anchor_on_icon_identity(page):
         assert cs[0].xpath == xp and cs[0].strategy == "icon", (section, cs[:2])
         assert all(verify(page, c.xpath, h) for c in cs)
         assert not any("/i[" in c.xpath.split("]]")[-1] for c in cs)  # never ends on the icon itself
+
+
+def test_short_fa_class_form_only_when_no_longer_name_can_match(page):
+    long_ = "contains(concat(' ',normalize-space(@class),' '),' {} ')"
+    page.set_content("""
+      <button data-k="a"><i class="fa-solid fa-arrows-rotate"></i></button>
+      <button data-k="b"><i class="fa-solid fa-eye"></i></button><span class="fa-solid fa-eye-slash"></span>
+      <button data-k="c"><i class="fa-regular fa-trash-can"></i></button><i class="fa-solid fa-trash-can-arrow-up"></i>
+      <button data-k="d"><i class="fa-solid fa-gear"></i></button>""")
+    def first(sel):
+        h = page.query_selector(sel)
+        cs = generate(page, h, CFG)
+        assert all(verify(page, c.xpath, h) for c in cs)
+        return cs[0].xpath, [c.xpath for c in cs]
+    x, xs = first("[data-k=a]")                                    # compound name, nothing longer on the page: short form
+    assert x == "//button[.//i[contains(@class,'fa-arrows-rotate')]]"
+    assert "//button[.//i[" + long_.format("fa-arrows-rotate") + "]]" in xs   # the exact form is still offered
+    x, xs = first("[data-k=b]")                                    # fa-eye is a substring of fa-eye-slash
+    assert x == "//button[.//i[" + long_.format("fa-eye") + "]]"
+    assert not any("contains(@class," in c for c in xs)
+    x, xs = first("[data-k=c]")                                    # fa-trash-can-arrow-up on the page
+    assert not any("contains(@class," in c for c in xs)
+    x, xs = first("[data-k=d]")                                    # single-word names are prefixes too often (fa-gear-*)
+    assert not any("contains(@class," in c for c in xs)
 
 
 def test_identical_icons_are_scoped_by_context(page):
@@ -238,7 +262,7 @@ def test_identical_icons_are_scoped_by_context(page):
     assert r1.location == 'toolbar of "Open Trades", 1st icon'
     c1, c2 = generate(page, b1, CFG)[0], generate(page, b2, CFG)[0]
     assert c1.xpath == ("//mat-card[.//mat-card-title[normalize-space()='Open Trades']]"
-                        "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]")
+                        "//button[.//i[contains(@class,'fa-arrows-rotate')]]")
     assert "Closed Trades" in c2.xpath and "fa-arrows-rotate" in c2.xpath
     assert c1.strategy == c2.strategy == "anchored"
     assert res(page, query="refresh", nth=2).handle.evaluate("e => e.closest('section') !== null")
@@ -252,7 +276,7 @@ def test_fa_classes_pass_default_class_patterns_and_are_used_even_if_rejected(pa
     page.set_content('<button><i class="fa-solid fa-arrows-rotate"></i></button><button>Other</button>')
     strict = SiteConfig(unstable_class_patterns=[r"^fa-"])
     h = page.query_selector("button")
-    assert generate(page, h, strict)[0].xpath == "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]"
+    assert generate(page, h, strict)[0].xpath == "//button[.//i[contains(@class,'fa-arrows-rotate')]]"
 
 
 def test_locate_returns_clickable_not_icon(page):
@@ -271,7 +295,7 @@ def test_icon_with_click_binding_only_is_found_by_cursor(page):
     assert r.handle.evaluate("e => e.className") == "fas fa-ellipsis-h"
     with pytest.raises(ResolveError):   # decorative icon (no pointer, no clickable): not a click target
         res(page, query="info", timeout=300)
-    assert generate(page, r.handle, CFG)[0].xpath == "//i[contains(concat(' ',normalize-space(@class),' '),' fa-ellipsis-h ')]"
+    assert generate(page, r.handle, CFG)[0].xpath == "//i[contains(@class,'fa-ellipsis-h')]"
 
 
 # ---------------------------------------------------------------- kind
@@ -351,8 +375,8 @@ def test_within_dialog_title_and_role_words(page):
         <mat-dialog-content><label for="mat-input-1">Quantity</label><input id="mat-input-1"></mat-dialog-content>
         <mat-dialog-actions><button mat-button>Cancel</button><button mat-flat-button>Submit Trade</button></mat-dialog-actions>
       </mat-dialog-container></div>""")
-    with pytest.raises(ResolveError):
-        res(page, query="x")
+    # the notice's x is behind the open modal: the dialog's x, without asking
+    assert res(page, query="x").handle.evaluate("e => e.hasAttribute('mat-dialog-close')")
     for within in ("Trade Entry", "Trade Entry dialog", "the Trade Entry dialog"):
         r = res(page, query="x", within=within)
         assert r.handle.evaluate("e => e.hasAttribute('mat-dialog-close')"), within
