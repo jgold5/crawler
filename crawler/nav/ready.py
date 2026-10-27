@@ -155,7 +155,8 @@ class ReadyTracker:
         page.on("requestfinished", self._on_done)
         page.on("requestfailed", self._on_done)
         try:
-            page.context.add_init_script(MUTATION_JS)
+            # page-level: in drive mode the context is the user's own Chrome profile (nav/session.py)
+            page.add_init_script(MUTATION_JS)
         except PlaywrightError:
             pass
 
