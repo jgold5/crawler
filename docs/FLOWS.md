@@ -90,6 +90,24 @@ fuzzy or synonym match is accepted only if it is the **single** reasonable candi
 **Grid cells** are never matched by label: grid + row (`row N` / `row where Col is V`) + column
 header.
 
+## Grids (matches the framework's `GridActions`)
+Cells are not XML entries: the framework finds the grid by its key, the column by its header
+name, and the row by index. So for every grid line the tool:
+- verifies the **grid's own entry** (the root locator `setGrid("<name>")` uses) and gives it a
+  reuse / fix / new verdict. A new grid entry is anchored on aria-label, then test-id, then
+  heading, never on a row or cell. No grid named and one grid on the page → that grid; several →
+  it asks.
+- checks the **column** against the live headers, including columns scrolled out of view. A
+  mismatch fails the line with the real column list.
+- checks the **row**: `row N` is **0-based**, matching AG Grid `row-index` (row 0 = first
+  displayed row), configured by `grid_row_base: 0` in site.yaml.
+- for `row where Col is V`, finds the row and reports its index. Fill/click by key stays flagged
+  (no step takes a key), and the report shows the `row "N"` step that would work.
+- performs the action, and reports the cell text before and after.
+
+Per-page grid config (column list, default column, column types) is compared too, once its
+location in the repo is known. Until then the report notes that grid config wasn't found.
+
 **When it's not clear, the tool asks; it never guesses.** The report shows each candidate with
 a cropped screenshot, its location ("toolbar of Open Trades, 3rd icon") and its evidence
 ("fa-arrows-rotate, no tooltip"). You answer with a number or reword the line, and the answer is
@@ -111,8 +129,8 @@ scoped by context when that's not unique.
 4. Look up the XML entry for (page, element name):
    - it exists, matches exactly one element, it's the intended one, and it's not fragile → **reuse**
    - it exists but is broken, ambiguous or fragile → **propose a fix** (verified replacement)
-   - it doesn't exist → **propose a new entry**: static, or a row template
-     (`in row N` → index template in your style; `row where X is Y` → key-based template)
+   - it doesn't exist → **propose a new entry** (static locator)
+   - **grid lines are different** (see "Grids" below): no per-cell entries are ever created
 5. Map to an existing step by action and modifiers, with the element name as its `{string}`.
    If nothing fits → **flag** the line.
 6. Perform the action so the next line sees the right state.
