@@ -5,10 +5,17 @@ use of a slot (line x run) records whether the entry's current locator selects t
 which of the proposed replacement locators do. After all runs the slot gets its verdict:
 
 * ``reuse``  the entry selected exactly the intended element in every use and is not fragile;
-* ``fix``    it is broken / ambiguous / points at another element / fragile, and a replacement verified in
-             every use of every run;
+* ``fix``    it is broken (0 matches) / ambiguous (2+) / selects a part of the intended element that the action
+             cannot use (the label of a field to fill) / fragile, and a replacement verified in every use of
+             every run;
 * ``new``    no entry fits; a new one verified in every use of every run;
+* ``conflict`` the entry selects exactly one OTHER element: it is that element's entry and is never changed
+             (a line naming a section/row/nth gets a new, context-named entry instead: see run.py ``_bind``);
+* ``manual`` a fix is needed but no safe automatic edit exists (e.g. a row-template entry and only static
+             replacements): reported, nothing proposed;
 * ``unstable`` nothing verified in every run: nothing is proposed.
+
+An edit (``fix``/``new``) is only ever proposed when the slot was used in every run.
 """
 from __future__ import annotations
 
@@ -22,13 +29,26 @@ from playwright.sync_api import Error as PlaywrightError
 
 from ..config import SiteConfig
 from ..repo import Edit, LocatorRepo, RepoEntry, Span, apply as repo_apply
+from ..repo._schema import targets_frame
 from .quality import fragility
 
-# count matches of each locator and whether they are the intended element (or its clickable / label / cell)
-CHECK_JS = """([items, el]) => {
+# count matches of each locator and whether they are the intended element. ``mode``: "click" (the element, its
+# label or its clickable wrapper all do), "control" (fill/select/check/clear and reading a field's value: it must
+# be the form control itself), "label" (exactly the element: a hidden checkbox's label). ``near``: exactly one match, loosely related to the element (label/wrapper/part).
+CHECK_JS = """([items, el, mode]) => {
   const INTER = 'a,button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],' +
                 '[role=menuitem],[role=option],[role=checkbox],[role=radio],[role=switch],[role=combobox]';
-  const rel = (a, b) => {
+  const CONTROL = 'input,textarea,select,[contenteditable=""],[contenteditable=true],[role=combobox],' +
+                  '[role=textbox],[role=searchbox],[role=spinbutton],[role=checkbox],[role=radio],[role=switch],' +
+                  '[role=listbox],[role=slider]';
+  const want = (el && el.localName === 'label' && el.control) ? el.control : el;
+  const ctl = a => {
+    if (!a || !want) return false;
+    if (a === want) return true;
+    // a control wrapping the element (mat-select's combobox host) or inside it: the same control
+    return !!(a.matches && a.matches(CONTROL) && (a.contains(want) || want.contains(a)));
+  };
+  const loose = (a, b) => {
     if (!a || !b) return false;
     if (a === b) return true;
     if (a.localName === 'label' && a.control === b) return true;
@@ -50,19 +70,23 @@ CHECK_JS = """([items, el]) => {
         for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
       }
     } catch (e) { return { n: -1, same: false, any: false }; }
-    return { n: nodes.length, same: nodes.length === 1 && rel(nodes[0], el), any: nodes.some(x => rel(x, el)) };
+    // "label": the element clicked instead of a hidden control; only that element itself will do
+    const rel = mode === 'control' ? ctl : mode === 'label' ? ((x, y) => x === y) : loose;
+    return { n: nodes.length, same: nodes.length === 1 && rel(nodes[0], el), any: nodes.some(x => rel(x, el)),
+             near: nodes.length === 1 && loose(nodes[0], el) };
   });
 }"""
 
 
-def check(frame, items: list[tuple[str, str]], handle) -> list[dict]:
-    """[(kind, locator)] -> [{n, same, any}] evaluated in ``frame`` against ``handle`` (one round trip)."""
+def check(frame, items: list[tuple[str, str]], handle, mode: str = "click") -> list[dict]:
+    """[(kind, locator)] -> [{n, same, any, near}] evaluated in ``frame`` against ``handle`` (one round trip).
+    ``mode="control"``: the locator must select the form control itself (a label is not enough)."""
     if not items:
         return []
     try:
-        return frame.evaluate(CHECK_JS, [[list(i) for i in items], handle])
+        return frame.evaluate(CHECK_JS, [[list(i) for i in items], handle, mode])
     except PlaywrightError:
-        return [{"n": -1, "same": False, "any": False} for _ in items]
+        return [{"n": -1, "same": False, "any": False, "near": False} for _ in items]
 
 
 def norm(s: str) -> str:
@@ -89,6 +113,7 @@ class Use:
     entry: dict | None = None          # check result of the existing entry's locator (best rendering)
     entry_render: str | None = None    # the rendered locator that was checked
     cands: list[bool] = field(default_factory=list)
+    value: str | None = None           # the value a dynamic entry was rendered with
 
 
 @dataclass
@@ -108,6 +133,12 @@ class Slot:
     final: str | None = None           # locator / template the entry will have
     notes: list[str] = field(default_factory=list)
     edit: Edit | None = None
+    context: list[str] = field(default_factory=list)   # titles of the containers the element is in
+
+    @property
+    def proposes(self) -> bool:
+        """An edit for this slot is (or will be) in xml.diff."""
+        return self.verdict in ("fix", "new") and bool(self.final)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -134,6 +165,68 @@ def _ok(u: Use, i: int) -> bool:
     return i < len(u.cands) and u.cands[i]
 
 
+_LIT = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+
+
+def _scope_tail(loc: str, titles: list[str]) -> str | None:
+    """The part of ``loc`` after a container anchored on one of ``titles`` (None: not scoped that way)."""
+    want = {" ".join(t.split()).casefold() for t in titles if t and t.strip()}
+    if not want:
+        return None
+    for m in _LIT.finditer(loc):
+        if " ".join((m[1] if m[1] is not None else m[2]).split()).casefold() in want and "//" in loc[m.end():]:
+            return loc[m.end():]
+    return None
+
+
+def scoped(loc: str, titles: list[str]) -> bool:
+    """``loc`` is anchored on a container whose title is one of ``titles`` (a literal before the last step)."""
+    return _scope_tail(loc, titles) is not None
+
+
+def _lits(s: str) -> set[str]:
+    return {m[1] if m[1] is not None else m[2] for m in _LIT.finditer(s)}
+
+
+# candidates that find the element by its name (text, label, aria...): another element with the same name may
+# appear later in the flow (a second dialog with a "Delete"); ids and test ids are unique by construction
+_NAME_STRATEGIES = {"text", "aria-label", "aria-labelledby", "label", "title", "tooltip", "icon", "alt",
+                    "near-text", "near", "value", "placeholder", "role"}
+
+
+def _rank(slot: Slot, good: list[int]) -> list[int]:
+    """Verified candidates best first: sturdy first; among those, a candidate scoped by the element's own
+    container (its context: dialog/section title) above an unscoped name-based one of the same name."""
+    tails = {i: _scope_tail(slot.cands[i].loc, slot.context) for i in good}
+    scoped_lits = [_lits(t) for t in tails.values() if t is not None]
+
+    def demoted(i: int) -> bool:
+        c = slot.cands[i]
+        if tails[i] is not None or c.strategy not in _NAME_STRATEGIES:
+            return False
+        mine = _lits(c.loc)
+        return any(mine & lits for lits in scoped_lits)
+
+    return sorted(good, key=lambda i: (bool(slot.cands[i].flags), demoted(i), i))
+
+
+def _wrong_element(u: Use) -> bool:
+    r = u.entry or {}
+    return r.get("n") == 1 and not r.get("same") and not r.get("near")
+
+
+def _template_from(slot: Slot, cand: Cand) -> str | None:
+    """A dynamic entry fixed in its own style: the verified static locator with ``{value}`` where the value was
+    (every use rendered the entry with the same value, which occurs exactly once in the locator)."""
+    values = {u.value for u in slot.uses}
+    if len(values) != 1 or None in values:
+        return None
+    v = values.pop()
+    if not v or cand.loc.count(v) != 1 or "{" in cand.loc or "}" in cand.loc:
+        return None
+    return cand.loc.replace(v, "{value}")
+
+
 def _entry_problem(u: Use) -> str:
     r = u.entry or {}
     n = r.get("n", -1)
@@ -144,6 +237,8 @@ def _entry_problem(u: Use) -> str:
         return f"broken: matches nothing{run}"
     if n > 1:
         return f"ambiguous: matches {n}{run}" + ("" if r.get("any") else ", none of them the intended element")
+    if r.get("near"):
+        return f"selects a related element (a label, wrapper or hidden control), not the element the action uses{run}"
     return f"wrong-element: selects another element{run}"
 
 
@@ -151,38 +246,69 @@ def decide(slot: Slot, cfg: SiteConfig, runs: int) -> None:
     """Set verdict/reason/final from the recorded uses."""
     uses = slot.uses
     complete = {u.run for u in uses} >= set(range(1, runs + 1))
-    order = sorted(range(len(slot.cands)), key=lambda i: (bool(slot.cands[i].flags), i))
-    good = [i for i in order if uses and all(_ok(u, i) for u in uses)]
+    # sturdy first; then a candidate anchored on the element's own container (dialog/section title) above an
+    # unscoped one: "Delete" is unique now, but another dialog with a Delete may open later in the flow
+    good = _rank(slot, [i for i in range(len(slot.cands)) if uses and all(_ok(u, i) for u in uses)])
     best = slot.cands[good[0]] if good else None
     sturdy = next((slot.cands[i] for i in good if not slot.cands[i].flags), None)
     unverified = "" if complete else f" (seen in {len({u.run for u in uses})} of {runs} runs)"
+    slot.verdict, slot.final = "", None
     if slot.entry is not None:
         e = slot.entry
+        if slot.kind == "iframe" and not e.page_level and not targets_frame(e.value):
+            slot.verdict, slot.final = "conflict", None
+            slot.reason = f"{e.name!r} does not select an iframe ({e.template!r}): never changed into one"
+            return
         flags = fragility(e.template, e.kind, cfg, template=e.dynamic)
         bad = [u for u in uses if not (u.entry or {}).get("same")]
         if not bad and not flags:
             slot.verdict, slot.reason, slot.final = "reuse", "selects exactly the intended element", e.template
             return
         if not bad:
-            if sturdy is not None and sturdy.loc != e.template:
+            if sturdy is not None and sturdy.loc != e.template and complete:
                 slot.verdict, slot.reason, slot.final = "fix", "fragile: " + ", ".join(flags), sturdy.loc
+                _dynamic_fix(slot, sturdy)
             else:
                 slot.verdict, slot.final = "reuse", e.template
                 slot.reason = "selects exactly the intended element"
-                slot.notes.append("fragile (" + ", ".join(flags) + ") but no sturdier verified locator")
+                slot.notes.append("fragile (" + ", ".join(flags) + ") but no sturdier verified locator"
+                                  + ("" if complete else unverified))
+            return
+        wrong = next((u for u in bad if _wrong_element(u)), None)
+        if wrong is not None:
+            # exactly one OTHER element: that element's entry, working; it is never repointed
+            slot.verdict, slot.final = "conflict", None
+            slot.reason = (f"selects another element{f' in run {wrong.run}' if wrong.run > 1 else ''}: "
+                           f"{e.name!r} is that element's entry and is left as it is; name the line's section, "
+                           f"dialog, row or position (or `as \"<new name>\"`) to get an entry of its own")
             return
         slot.reason = _entry_problem(bad[0])
-        if best is None:
+        if best is None or not complete:
             slot.verdict, slot.final = "unstable", None
             slot.reason += "; no replacement verified in every run" + unverified
             return
         slot.verdict, slot.final = "fix", best.loc
+        _dynamic_fix(slot, best)
         return
-    if best is None:
+    if best is None or not complete:
         slot.verdict, slot.final = "unstable", None
         slot.reason = "no locator verified in every run" + unverified
         return
     slot.verdict, slot.final, slot.reason = "new", best.loc, "no entry for this element"
+
+
+def _dynamic_fix(slot: Slot, cand: Cand) -> None:
+    """A dynamic (row-template) entry is fixed with a template in its own style, or not at all."""
+    if not slot.dynamic or cand.param is not None:
+        return
+    tpl = _template_from(slot, cand)
+    if tpl is None:
+        slot.verdict, slot.final = "manual", None
+        slot.reason = (f"fix needed (no safe automatic edit): {slot.reason}; the verified replacement "
+                       f"{cand.loc!r} is static and the entry is a {{value}} template")
+        return
+    slot.final = tpl
+    slot.notes.append(f"template derived from the verified locator {cand.loc!r} ({{value}} where the value was)")
 
 
 # ---------------------------------------------------------------------------------------------- edits
@@ -228,7 +354,11 @@ def build_edits(repo: LocatorRepo, slots: list[Slot]) -> list[Edit]:
                 ed = repo.add_entry(s.page, s.name, s.final, dynamic=s.dynamic)
         except Exception as e:  # noqa: BLE001 - reported per slot, other edits still go out
             s.notes.append(f"edit not possible: {e}")
-            s.verdict = "unstable" if s.verdict == "new" else s.verdict
+            if s.verdict == "new":
+                s.verdict, s.final = "unstable", None
+            else:      # never report a fix that is not in xml.diff
+                s.verdict, s.final = "manual", None
+                s.reason = f"fix needed (no safe automatic edit): {s.reason}; {e}"
             continue
         s.edit = ed
         edits.append(ed)
@@ -239,11 +369,14 @@ def build_edits(repo: LocatorRepo, slots: list[Slot]) -> list[Edit]:
             for s in slots:
                 if s.page == page and s.new_page:
                     s.notes.append(f"new page not possible: {e}")
+                    if s.verdict in ("fix", "new"):
+                        s.verdict, s.final = "unstable", None
             continue
         edits.append(ed)
         for s in slots:
             if s.page == page and s.new_page and s.verdict in ("fix", "new"):
                 s.edit = ed
+                s.notes += [n for n in ed.notes if n not in s.notes]
     return edits
 
 
@@ -252,4 +385,4 @@ def human_name(name: str) -> str:
 
 
 __all__ = ["Cand", "Use", "Slot", "check", "entry_items", "static_cands", "decide", "build_edits",
-           "norm", "CHECK_JS"]
+           "norm", "scoped", "CHECK_JS"]

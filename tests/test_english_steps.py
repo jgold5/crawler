@@ -225,3 +225,22 @@ def test_custom_rules_file(tmp_path):
 ])
 def test_explain(text, expected):
     assert explain(parse(text)[0]) == expected
+
+
+# ---------------------------------------------------------------- Cucumber {string} round trip (audit)
+
+def test_values_round_trip_through_cucumber_string():
+    from crawler.english.steps import cucumber_strings
+    for value in ['He said "no"', "C:\\temp\\x", "it's", "a\\nb", 'mixed \'single\' and "double"', "plain"]:
+        ln = parse(f"set Notes to {_cq(value)}")[0]
+        assert ln.value == value
+        step = to_step(ln)
+        assert cucumber_strings(step) == ["Notes", value], step
+    assert to_step(parse('set Notes to "a \\"b\\" c"')[0]) == 'Given user fills "Notes" textfield as "a \\"b\\" c"'
+    # a backslash right before the closing quote cannot be read back by Cucumber: the line is flagged
+    r = render(parse('set Path to "C:\\temp\\"')[0])
+    assert r.text is None and "Cucumber" in r.reason
+
+
+def _cq(v: str) -> str:
+    return '"' + v.replace('"', '\\"') + '"'

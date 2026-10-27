@@ -430,3 +430,111 @@ def test_all_errors_reported_at_once():
     assert "line 2" in str(ei.value) and "line 5" in str(ei.value)
     lines, errors = parse_lines(text)
     assert [ln.n for ln in lines] == [1, 4] and len(errors) == 3
+
+
+# ---------------------------------------------------------------- audit regressions (separators, values, dates)
+
+@pytest.mark.parametrize("text,element,value", [
+    ("set Ship To to Boston", "Ship To", "Boston"), ("set Go To to Boston", "Go To", "Boston"),
+    ("set Comment to Ship to Boston", "Comment", "Ship to Boston"),
+    ("verify Message is Order is booked", "Message", "Order is booked"),
+    ("select Status: Booked as Final", "Status", "Booked as Final"),
+    ("pick Counterparty: Acme: Inc", "Counterparty", "Acme: Inc"),
+])
+def test_several_separators_ask_unless_names_settle_it(text, element, value):
+    with pytest.raises(EnglishError) as ei:
+        parse(text)
+    assert "ambiguous" in ei.value.message and "quote" in ei.value.message
+    ln = one_named(text, ["Ship To", "Go To", "Comment", "Message", "Status", "Counterparty", "Ship"])
+    assert (ln.target, ln.value) == (element, value)
+
+
+def one_named(text, names):
+    lines = parse(text, names=names)
+    assert len(lines) == 1
+    return lines[0]
+
+
+def test_names_by_page_pick_the_last_known_left_side():
+    flow = "go to Shipping\nset Ship To to Boston\n"
+    lines = parse(flow, names=lambda page: {"Shipping": ["Ship", "Ship To"]}.get(page, []))
+    assert (lines[1].target, lines[1].value) == ("Ship To", "Boston")
+    with pytest.raises(EnglishError):           # no names on that page: ask
+        parse("go to Other\nset Ship To to Boston\n", names=lambda page: {"Shipping": ["Ship To"]}.get(page, []))
+
+
+@pytest.mark.parametrize("text,value", [
+    ("set Comment to Delete row 4 later", "Delete row 4 later"),
+    ("set Description to Row 5 is broken", "Row 5 is broken"),
+    ("set Reference to row 7", "row 7"),
+    ("set Reason to Wait for 5 seconds", "Wait for 5 seconds"),
+    ("set Currency to USD for 10 seconds", "USD for 10 seconds"),
+    ("set Time to within 5 s", "within 5 s"),
+    ("set Reference to on hold", "on hold"),
+    ("verify Message is in progress", "in progress"),
+])
+def test_modifiers_are_never_taken_from_inside_a_value(text, value):
+    ln = one(text)
+    assert (ln.value, ln.row, ln.timeout, ln.section, ln.grid) == (value, None, None, None, None)
+
+
+@pytest.mark.parametrize("text", [
+    "set Notes to Filed in the Tax section", "set Comment to Moved in the Archive grid",
+    "verify Message is Saved in the Orders grid", "set Comment to Delete in row 4",
+])
+def test_trailing_clause_after_a_text_value_asks_to_quote(text):
+    with pytest.raises(EnglishError) as ei:
+        parse(text)
+    assert "part of the value" in ei.value.message and len(ei.value.suggestions) == 2
+
+
+@pytest.mark.parametrize("text,value,section,row", [
+    ('set Notes to "Filed" in the Tax section', "Filed", "Tax", None),
+    ("set Amount to 5 in the Payment section", "5", "Payment", None),
+    ("set Price to 10 in row 2", "10", None, RowRef(index=2)),
+    ('set Notes to "Filed in the Tax section"', "Filed in the Tax section", None, None),
+])
+def test_trailing_clause_after_an_unambiguous_value(text, value, section, row):
+    ln = one(text)
+    assert (ln.value, ln.section, ln.row) == (value, section, row)
+
+
+def test_negative_row_is_an_error():
+    with pytest.raises(EnglishError, match="never negative"):
+        parse("set Quantity in row -1 of the Open Trades grid to 5")
+
+
+def test_quoted_values_pass_through_exactly():
+    assert one('set Notes to "  padded  "').value == "  padded  "
+    assert one('set Notes to "a \\"b\\" c"').value == 'a "b" c'
+    assert one('verify Comment equals "He said \\"no\\""').value == 'He said "no"'
+    assert one('set Path to "C:\\temp\\"').value == "C:\\temp\\"
+    assert one('set Notes to say "hi" now').value == 'say "hi" now'
+
+
+@pytest.mark.parametrize("text,value,is_date,hint", [
+    ('set Symbol to "T"', "T", False, True),
+    ("set Symbol to T", "T", False, True),
+    ("set Search to now", "now", False, True),
+    ("set Search to t", "t", False, True),
+    ('set Trade Date to "T+2"', "T+2", True, False),
+    ('set Comment to "T+2"', "T+2", False, True),
+    ("set Trade Date to T", "T", True, False),
+    ("set Trade Date to now", "T", True, False),
+    ("set Comment to tomorrow", "T+1", True, False),
+    ('set Trade Date to "today"', "today", False, False),
+])
+def test_bare_t_and_quoted_dates(text, value, is_date, hint):
+    ln = one(text)
+    assert (ln.value, ln.is_date, ln.date_hint) == (value, is_date, hint)
+
+
+def test_leading_and_element_modifiers_still_work():
+    ln = one("in the Open Trades grid, set Quantity in the row where Trade Id is T-1 to 5")
+    assert (ln.target, ln.value, ln.grid, ln.row) == ("Quantity", "5", "Open Trades",
+                                                      RowRef(key_value="T-1", key_column="Trade Id"))
+    ln = one("set Qty in the row where Id = 5 to 7")
+    assert (ln.target, ln.value, ln.row) == ("Qty", "7", RowRef(key_value="5", key_column="Id"))
+    assert one("verify Save is displayed in the Payment dialog").section == "Payment"
+    assert one("sort Qty ascending in the Orders grid").grid == "Orders"
+    assert one("wait for the loader to disappear").action == "wait_loader"

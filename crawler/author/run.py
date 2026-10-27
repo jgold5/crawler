@@ -9,8 +9,10 @@ proposed. See docs/FLOWS.md.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import re
+import shlex
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -20,13 +22,14 @@ from playwright.sync_api import Error as PlaywrightError
 from .. import ask as askmod
 from ..aliases import AliasStore, describe_target
 from ..config import SiteConfig
-from ..english import EnglishError, Line, parse_lines, render
+from ..english import EnglishError, Line, normalize_date, parse_lines, render
 from ..frames import FrameError, describe_frame, frame_for, iframe_candidates
 from ..grid import GridError, act_on_cell, check_roots, grid_info, resolve_cell
 from ..locators import generate, suggest_name
 from ..model import GridTarget, RowRef, Target
 from ..nav.ready import ReadyTracker
 from ..repo import LocatorRepo, RepoKeyError
+from ..repo._schema import targets_frame
 from ..resolver import ResolveError, resolve
 from .pages import PageRef, content_frame, find_page, match_name
 from .quality import fragility
@@ -42,7 +45,32 @@ _READ_JS = """el => { const t = el.localName;
   if (t === 'select') return el.selectedOptions.length ? el.selectedOptions[0].textContent : '';
   const c = el.closest && el.closest('[col-id]');
   return ((c || el).innerText || (c || el).textContent || ''); }"""
-_IS_SECRET_JS = "el => el.localName === 'input' && (el.type === 'password' || /pass|secret|token/i.test(el.name || ''))"
+_IS_SECRET_JS = """el => { const t = (el.localName === 'label' && el.control) ? el.control : el;
+  if (t.localName === 'input' && t.type === 'password') return true;
+  if (!(t.localName === 'input' || t.localName === 'textarea')) return false;
+  const words = [t.name, t.id, t.getAttribute('aria-label'), t.getAttribute('placeholder'), t.getAttribute('autocomplete'),
+                 ...(t.labels ? [...t.labels].map(l => l.textContent) : [])].join(' ');
+  return /password|passcode|passphrase|\\bpin\\b|secret|token/i.test(words); }"""
+_SECRET_NAME = re.compile(r"(?i)password|passcode|passphrase|\bpin\b|secret|token")
+SECRET_PLACEHOLDER = "<PASSWORD>"
+# a checkbox/radio the user cannot click itself (clipped to 1x1, transparent, covered by its custom box): the
+# user clicks its label, so that is the element the entry must select
+_CHECKABLE_JS = """el => { const c = (el.localName === 'label' && el.control) ? el.control : el;
+  if (!(c.localName === 'input' && (c.type === 'checkbox' || c.type === 'radio'))) return null;
+  const lab = (c.labels && c.labels[0]) || c.closest('label');
+  const r = c.getBoundingClientRect(), s = getComputedStyle(c);
+  let hidden = r.width < 2 || r.height < 2 || +s.opacity === 0 || s.visibility === 'hidden' ||
+               (s.clip && s.clip !== 'auto') || (s.clipPath && s.clipPath !== 'none');
+  if (!hidden) { const x = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                 hidden = !!x && x !== c && !c.contains(x) && !(lab && lab.contains(x)) ? true : hidden; }
+  return { hidden: !!(hidden && lab), label: !!lab, isLabel: el !== c }; }"""
+_IS_CONTROL_JS = "el => ['input', 'textarea', 'select'].includes(el.localName) || el.isContentEditable"
+_IS_DATE_JS = """el => { if (el.localName !== 'input') return false;
+  if (['date', 'datetime-local', 'month', 'week'].includes(el.type)) return true;
+  const words = [el.name, el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label'),
+                 ...(el.labels ? [...el.labels].map(l => l.textContent) : [])].join(' ');
+  return /\\bdate\\b|mm\\/dd|dd\\/mm|yyyy/i.test(words) || el.hasAttribute('matdatepicker') ||
+         !!(el.closest('mat-form-field') && el.closest('mat-form-field').querySelector('mat-datepicker-toggle')); }"""
 _PROMOTE_JS = """el => {
   const SEL = 'button,a[href],[role=button],[role=link],[role=tab],[role=menuitem],[role=option]';
   if (el.matches(SEL + ',input,select,textarea,label')) return el;
@@ -201,20 +229,40 @@ def actual_date(value: str, business: bool, fmt: str) -> str:
 
 
 def _norm_text(s: str | None) -> str:
-    return re.sub(r"[ \t\r\n]+", " ", s or "").strip()
+    """Whitespace normalized: NBSP (and narrow/figure spaces) -> space, runs collapsed, trimmed."""
+    return re.sub(r"[ \t\r\n\u00a0\u2007\u202f]+", " ", s or "").strip()
 
 
-def _equal(actual: str, expected: str) -> bool:
+_NUMBER = re.compile(r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+
+
+def _number(s: str) -> float | None:
+    """A whole string that is a number (thousands separators and one currency symbol allowed), else None."""
+    t = re.sub(r"^([-+]?)\s*[$€£¥]\s*", r"\1", s.strip())
+    t = re.sub(r"\s*[$€£¥]$", "", t)
+    return float(t.replace(",", "")) if _NUMBER.fullmatch(t) else None
+
+
+def _equal(actual: str, expected: str) -> tuple[bool, str]:
+    """(equal?, note). Exact (case-sensitive) after whitespace normalization; numerically equal only when BOTH
+    sides are whole numbers ("1,000.00" = "1000", "$5" = "5"; never "5 items" = "5")."""
     a, b = _norm_text(actual), _norm_text(expected)
-    if a == b or a.casefold() == b.casefold():
-        return True
-    na, nb = re.sub(r"[^\d.\-]", "", a), re.sub(r"[^\d.\-]", "", b)
-    if na and nb and re.fullmatch(r"-?\d+(\.\d+)?", b):
-        try:
-            return float(na) == float(nb)
-        except ValueError:
-            return False
-    return False
+    if a == b:
+        return True, ""
+    na, nb = _number(a), _number(b)
+    if na is not None and nb is not None and na == nb:
+        return True, f"numeric match: {a!r} = {b!r}"
+    return False, ""
+
+
+def author_command(argv) -> str:
+    """The command line as run (``argv`` without the program: ["author", "flow.txt", "--repo", ...]), quoted for
+    a POSIX shell, for the "answer and run again" hint (every option kept: --aliases, --apply, earlier --answer)."""
+    return "crawler " + " ".join(shlex.quote(str(a)) for a in argv)
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def parse_answers(values) -> dict[int, int]:
@@ -256,12 +304,15 @@ class Author:
         self.ask_path: Path | None = None
         self.row_base = int(getattr(cfg, "grid_row_base", 0) or 0)
         self.grid_config_missing = False   # the repository has no grid config (columns checked live only)
+        self.flow_sha = ""
+        self.runs_done = 0                 # runs that went through the whole flow
 
     # ------------------------------------------------------------------ prepare (no browser)
     def prepare(self) -> list[str]:
         """Parse the flow and resolve its pages. Every problem is returned (all at once)."""
         text = self.flow_path.read_text(encoding="utf-8")
-        lines, errors = parse_lines(text)
+        self.flow_sha = _sha(text)
+        lines, errors = parse_lines(text, names=self._known_names)
         problems: list[EnglishError] = list(errors)
         lines = refine(lines)
         first_goto = True
@@ -269,14 +320,14 @@ class Author:
             if ln.action == "goto":
                 ref, sugg = find_page(ln.page or ln.target or "", self.repo, self.cfg)
                 if ref is None:
-                    if first_goto:
-                        problems.append(EnglishError(
-                            ln.n, f"unknown page {ln.page or ln.target!r}: not in the repository "
-                                  f"({', '.join(self.repo.pages()) or 'no pages'}) nor in site.yaml pages",
-                            [f"go to {s}" for s in sugg]))
-                    else:
-                        self.records.append(LineRec(ln, "goto-click", notes=[
-                            f"{ln.page!r} is not a page: opened from the current page (a click)"]))
+                    # never guessed (and never turned into a click on the previous page): stop and list
+                    known = sorted(set(self.repo.pages()) | set(self.cfg.pages or {}))
+                    problems.append(EnglishError(
+                        ln.n, f"unknown page {ln.page or ln.target!r}: not in the repository "
+                              f"({', '.join(self.repo.pages()) or 'no pages'}) nor in site.yaml pages"
+                              + ("" if sugg else f"; pages: {', '.join(known) or 'none'}"),
+                        [f"go to {s}" for s in sugg]))
+                    first_goto = False
                     continue
                 if not ref.url:
                     problems.append(EnglishError(
@@ -296,6 +347,77 @@ class Author:
                 self.records.append(LineRec(ln, "grid" if is_grid else "element"))
         problems.sort(key=lambda e: e.line_no)
         return [str(e) for e in problems]
+
+    def _known_names(self, written: str | None) -> list[str]:
+        """Element names of the page a `go to` line names (to read `set Ship To to Boston` right)."""
+        if not written:
+            return []
+        ref, _ = find_page(written, self.repo, self.cfg)
+        if ref is None or not ref.in_repo:
+            return []
+        try:
+            return [e.name for e in self.repo.entries(ref.key)]
+        except RepoKeyError:
+            return []
+
+    # ------------------------------------------------------------------ ask.json (pending questions)
+    def _load_ask(self) -> dict | None:
+        p = self._ask_json_path()
+        try:
+            data = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get("lines"), dict) else None
+
+    def check_answers(self) -> list[str]:
+        """Before a run: ``--answer`` must answer a question asked for THIS flow (same file content, same line
+        text); a stale ask.json (another flow, or the flow changed) is deleted."""
+        p = self._ask_json_path()
+        data = self._load_ask()
+        stale = data is None or data.get("flow_sha256") != self.flow_sha
+        if stale and p.exists():
+            p.unlink(missing_ok=True)
+            (self.out / "ASK.md").unlink(missing_ok=True)
+        if not self.answers:
+            return []
+        if stale:
+            return [f"--answer: no pending question for this flow in {p} (nothing was asked, or the flow changed "
+                    f"since); run again without --answer to get the questions"]
+        recs = {r.line.n: r for r in self.records}
+        errs = []
+        for n in sorted(self.answers):
+            q = data["lines"].get(str(n))
+            rec = recs.get(n)
+            if q is None or rec is None:
+                errs.append(f"--answer {n}={self.answers[n]}: line {n} has no pending question "
+                            f"(questions: {', '.join(sorted(data['lines'], key=int)) or 'none'})")
+            elif q.get("line_sha256") != _sha(self._masked(rec, rec.line.text)):
+                errs.append(f"--answer {n}={self.answers[n]}: line {n} changed since the question was asked; "
+                            f"run again without --answer")
+        return errs
+
+    def _ask_entry(self, n: int, page: str | None) -> dict:
+        """The pending question for line ``n`` (checked against the page the line runs on now)."""
+        q = ((self._load_ask() or {}).get("lines") or {}).get(str(n)) or {}
+        if q.get("page") not in (None, page):
+            raise _Stop(f"--answer {n}={self.answers.get(n)}: the question was asked on page {q.get('page')!r}, "
+                        f"the line now runs on {page!r}; run again without --answer")
+        return q
+
+    def _save_ask(self, n: int, entry: dict) -> None:
+        data = self._load_ask() or {}
+        if data.get("flow_sha256") != self.flow_sha:
+            data = {}
+        data["flow_sha256"] = self.flow_sha
+        data.setdefault("lines", {})[str(n)] = entry
+        self._ask_json_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _masked(self, rec: "LineRec", text: str) -> str:
+        """``text`` without the line's value when the line types a secret (password, token, pin...)."""
+        if rec.secret or _SECRET_NAME.search(rec.line.target or ""):
+            for v in {rec.line.value, rec.line.raw_value} - {None, ""}:
+                text = text.replace(v, "••••")
+        return text
 
     # ------------------------------------------------------------------ browser session
     def _new_context(self, browser, storage_state):
@@ -330,6 +452,8 @@ class Author:
             self.echo(f"run {run}/{self.runs}: {run_ms[-1] / 1000:.1f} s")
             if code == EXIT_ASK:
                 return EXIT_ASK, run_ms
+            if not any(r.status == "error" for r in self.records):
+                self.runs_done = run
             worst = max(worst, code)
             if any(r.status == "error" for r in self.records):
                 break
@@ -345,7 +469,7 @@ class Author:
                 elif rec.kind == "loader":
                     rep = c.tracker.wait([c.page.main_frame, c.frame], (rec.line.timeout or 30) * 1000)
                     if not rep.ok:
-                        rec.ready[c.run] = str(rep)
+                        self._not_ready(rec, c, rep)
                     if c.run == 1:
                         self._render(rec, None)
                 else:
@@ -366,6 +490,7 @@ class Author:
             except (_Stop, GridError, FrameError, PlaywrightError, ResolveError) as e:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 msg = str(e).split("\nCall log:")[0].strip()
+                msg = self._masked(rec, msg)
                 rec.status, rec.error = "error", f"run {c.run}: {msg}"
                 self.echo(f"line {rec.line.n}: stopped: {msg}")
                 return EXIT_FAILED
@@ -377,15 +502,30 @@ class Author:
         ref = rec.pageref
         c.page.goto(ref.url, wait_until="domcontentloaded")
         rep = c.tracker.wait([c.page.main_frame])
+        if not rep.ok:
+            self._not_ready(rec, c, rep)
         entry = self.repo.iframe_entry(ref.key) if ref.in_repo else None
+        if entry is not None and not entry.page_level and not targets_frame(entry.value):
+            entry = None          # only an entry whose locator selects a frame is the page's iframe entry
         frame = None
         if entry is not None and entry.value and entry.kind == "xpath":
+            # the page has settled: an entry that matches nothing now is broken, not early (no 10 s wait on it)
+            try:
+                present = c.page.main_frame.locator(f"xpath={entry.value}").count() > 0
+            except PlaywrightError:
+                present = False
+            if present:
+                try:
+                    frame = frame_for(c.page, entry.value, self.timeout)
+                except FrameError as e:
+                    rec.notes.append(f"run {c.run}: iframe entry {entry.name!r}: {e}") if c.run == 1 else None
+        if frame is None:
+            frame = content_frame(c.page, self.timeout)
+        if frame is None and entry is not None and entry.value and entry.kind == "xpath":
             try:
                 frame = frame_for(c.page, entry.value, self.timeout)
             except FrameError as e:
                 rec.notes.append(f"run {c.run}: iframe entry {entry.name!r}: {e}") if c.run == 1 else None
-        if frame is None:
-            frame = content_frame(c.page, self.timeout)
         framed = frame is not None and frame != c.page.main_frame
         if not framed:
             frame = c.page.main_frame
@@ -399,7 +539,7 @@ class Author:
                 rec.notes.append(f"ready selector {d.ready!r} not visible") if c.run == 1 else None
         rep = c.tracker.wait([c.page.main_frame, frame])
         if not rep.ok:
-            rec.ready[c.run] = str(rep)
+            self._not_ready(rec, c, rep)
         # the iframe slot
         if framed or entry is not None:
             if c.run == 1:
@@ -463,6 +603,17 @@ class Author:
             i += 1
         return f"{name} {i}"
 
+    @staticmethod
+    def _context_of(line: Line) -> str:
+        """The words a line uses to tell its element from others with the same name (section, grid, position)."""
+        if line.section:
+            return line.section
+        if line.grid and line.row is None:
+            return line.grid
+        if line.nth:
+            return f"{line.nth}"
+        return ""
+
     def _names(self, line: Line) -> list[str]:
         t = line.target or ""
         names = []
@@ -486,20 +637,48 @@ class Author:
             return []
 
     def _bind(self, rec: LineRec, c: _Ctx, handle, cands: list[Cand], *, values: list[str],
-              new_name, context: str | None = None) -> Slot:
+              new_name, context: str | None = None, mode: str = "click") -> Slot:
         """Run 1: the slot (XML entry) this line uses. Name -> case-insensitive name -> locator hit -> new.
-        (Grid lines bind the grid's root entry instead: see ``_bind_grid``.)"""
+        (Grid lines bind the grid's root entry instead: see ``_bind_grid``.)
+
+        An entry found by the element's plain name that selects exactly one OTHER element, on a line that names
+        a section/grid/position, is that other element's entry: this line gets a new entry with a context-
+        qualified name ("Save Profile"); the existing one is never repointed."""
         page, line = c.key, rec.line
         entries = self._entries(page)
         pend = [s for s in self.slot_list if s.page == page and s.kind == "element"]
         names = self._names(line)
+        ctx_words = self._context_of(line)
+        plain = {norm(line.target or "")} | ({norm(f"{line.target} {line.kind}")} if line.kind else set())
+
+        def other_element(e) -> bool:
+            if not ctx_words or norm(e.name) not in plain or (e.dynamic and not values):
+                return False
+            res = check(c.frame, entry_items(e, values)[:1], handle, mode)
+            return bool(res) and res[0].get("n") == 1 and not res[0].get("same") and not res[0].get("near")
+
+        def contextual(e) -> Slot:
+            want = f"{line.target} {ctx_words}"
+            s = next((s for s in pend if norm(s.name) == norm(want)), None)
+            if s is not None:
+                return s
+            s = self._slot(page, self._free_name(page, line.alias or want), entry=None, new_page=not c.in_repo,
+                           cands=cands, found_by=f"new: {e.name!r} selects another element")
+            s.notes.append(f"{e.name!r} selects exactly one other element, so it is that element's entry (left "
+                           f"as it is); this line's element gets its own entry")
+            return s
+
         for how, eq in (("name", lambda a, b: a == b), ("name (case-insensitive)", lambda a, b: norm(a) == norm(b))):
             for nm in names:
                 s = next((s for s in pend if eq(s.name, nm)), None)
                 if s is not None:
+                    if s.entry is not None and other_element(s.entry):
+                        return contextual(s.entry)
                     return s
                 e = next((e for e in entries if eq(e.name, nm)), None)
                 if e is not None:
+                    if other_element(e):
+                        return contextual(e)
                     return self._slot(page, e.name, entry=e, dynamic=e.dynamic, cands=cands, found_by=how)
         # locator hit: every entry of the page (dynamic ones rendered with this line's row/value)
         items, owners = [], []
@@ -513,7 +692,7 @@ class Author:
             if s.entry is None and s.cands:
                 items.append(("xpath", s.cands[0].render(values[0] if values else None)))
                 owners.append(("slot", s))
-        res = check(c.frame, items, handle)
+        res = check(c.frame, items, handle, mode)
         hits = [(o, it) for o, it, r in zip(owners, items, res) if r.get("same")]
         if hits:
             hits.sort(key=lambda h: (bool(fragility(h[1][1], h[1][0], self.cfg)), len(h[1][1])))
@@ -524,23 +703,26 @@ class Author:
         name = self._free_name(page, line.alias or new_name(), context if context is not None else (line.section or ""))
         return self._slot(page, name, entry=None, new_page=not c.in_repo, cands=cands, found_by="new")
 
-    def _record_use(self, rec: LineRec, c: _Ctx, handle, values: list[str], row_value: str | None) -> None:
+    def _record_use(self, rec: LineRec, c: _Ctx, handle, values: list[str], row_value: str | None,
+                    mode: str = "click") -> None:
         s = rec.slot
         if rec.line.n not in s.lines:
             s.lines.append(rec.line.n)
         u = Use(rec.line.n, c.run)
         items: list[tuple[str, str]] = []
         n_entry = 0
+        vals = values or [rec.line.value or rec.line.target or ""]
         if s.entry is not None:
-            ei = entry_items(s.entry, values or [rec.line.value or rec.line.target or ""])
+            ei = entry_items(s.entry, vals)
             items += ei
             n_entry = len(ei)
         items += [("xpath", x.render(row_value)) for x in s.cands]
-        res = check(c.frame, items, handle)
+        res = check(c.frame, items, handle, mode)
         if n_entry:
             er = res[:n_entry]
             best = next((i for i, r in enumerate(er) if r.get("same")), 0)
             u.entry, u.entry_render = er[best], items[best][1]
+            u.value = vals[best] if s.entry.dynamic and best < len(vals) else None
         u.cands = [bool(r.get("same")) for r in res[n_entry:]]
         s.uses.append(u)
 
@@ -599,19 +781,81 @@ class Author:
         handle = self._promote(r.handle)
         how = r.tier if r.tier != "exact" else r.matched_by or "exact"
         rec.resolved[c.run] = f"{r.description} [{how}]" + (f" (stale alias: {r.stale_alias})" if r.stale_alias else "")
+        handle, hidden = self._checkable(rec, c, handle)
+        mode = self._mode(ln, handle, hidden)
+        if c.run == 1:
+            rec.secret = bool(handle.evaluate(_IS_SECRET_JS)) or bool(_SECRET_NAME.search(ln.target or ""))
+            if ln.date_hint:
+                ln = rec.line = self._date_hint(ln, handle)
         values = [ln.value] if ln.value else []
         if c.run == 1:
-            rec.secret = bool(handle.evaluate(_IS_SECRET_JS))
             cands = static_cands(generate(c.frame, handle, self.cfg), self.cfg)
             rec.slot = self._bind(rec, c, handle, cands, values=values,
-                                  new_name=lambda: suggest_name(c.frame, handle, self.cfg))
+                                  new_name=lambda: suggest_name(c.frame, handle, self.cfg), mode=mode)
             rec.values = values
+            for t in (r.context, ln.section):
+                if t and t not in rec.slot.context:
+                    rec.slot.context.append(t)
             if r.evidence:
                 rec.notes.append("evidence: " + ", ".join(r.evidence))
-        self._record_use(rec, c, handle, rec.values, None)
+            if hidden:
+                rec.notes.append(f"{ln.target!r} is a visually hidden checkbox/radio: the user (and the step) "
+                                 f"clicks its label, so the entry selects the label")
+        self._record_use(rec, c, handle, rec.values, None, mode)
         if c.run == 1:
             self._render(rec, rec.slot.name)
         self._act_static(rec, c, handle)
+
+    def _checkable(self, rec: LineRec, c: _Ctx, handle):
+        """check/uncheck: (the element the user acts on, hidden?). A visible checkbox: the input itself (not its
+        label); a visually hidden one: its label (what is clicked, see ``_act_static``)."""
+        if rec.line.action not in ("check", "uncheck"):
+            return handle, False
+        try:
+            info = handle.evaluate(_CHECKABLE_JS)
+            if not info:
+                return handle, False
+            if info["hidden"]:
+                lab = handle.evaluate_handle(
+                    "el => { const c = (el.localName === 'label' && el.control) ? el.control : el;"
+                    " return (c.labels && c.labels[0]) || c.closest('label'); }").as_element()
+                return (lab or handle), lab is not None
+            if info["isLabel"]:
+                ctl = handle.evaluate_handle("el => el.control").as_element()
+                return (ctl or handle), False
+        except PlaywrightError:
+            pass
+        return handle, False
+
+    @staticmethod
+    def _mode(ln: Line, handle, hidden: bool) -> str:
+        """How an entry must select the element: "control" when the action types into / reads / ticks the form
+        control itself (a label of it is not enough); "click" otherwise."""
+        if hidden:
+            return "label"
+        if ln.action in ("fill", "select", "clear", "check", "uncheck"):
+            return "control"
+        if ln.action == "remember" or (ln.action == "verify" and ln.verify_op in ("equals", "contains")):
+            try:
+                return "control" if handle.evaluate(_IS_CONTROL_JS) else "click"
+            except PlaywrightError:
+                return "click"
+        return "click"
+
+    def _date_hint(self, ln: Line, handle) -> Line:
+        """A value that only looks like a date (`T`, `"T+2"`, `now`): a date if the element is a date field."""
+        try:
+            is_date = bool(handle.evaluate(_IS_DATE_JS))
+        except PlaywrightError:
+            is_date = False
+        if not is_date:
+            return replace(ln, date_hint=False, notes=ln.notes + [
+                f"{ln.value!r} kept as text (the element is not a date field)"])
+        v = ln.value or ""
+        d = normalize_date(v)
+        value = d.value if d is not None and v.strip().lower() in ("t", "now") else v
+        return replace(ln, is_date=True, value=value, date_hint=False, notes=ln.notes + [
+            f"{ln.raw_value!r} read as a date: the element is a date field"])
 
     @staticmethod
     def _promote(handle):
@@ -708,6 +952,11 @@ class Author:
                 raise
             listing = list(e.alternatives)
             k = self.answers.get(ln.n)
+            if k is not None:
+                q = self._ask_entry(ln.n, c.key)
+                if q.get("kind") != "grid":
+                    raise _Stop(f"--answer {ln.n}={k}: line {ln.n} was not asked which grid; run again without "
+                                f"--answer") from None
             if k is not None and 1 <= k <= len(listing) and (m := re.match(r"^'(.+?)' \(", listing[k - 1])):
                 rec.grid_query = m[1]
                 del self.answers[ln.n]
@@ -812,8 +1061,15 @@ class Author:
             ln = replace(ln, action="click", page=None)
         if ln.action == "close":
             page_name = ln.target
+        secret = rec.secret and ln.value and ln.action in ("fill", "verify")
+        if secret:
+            ln = replace(ln, value=SECRET_PLACEHOLDER)
         sr = render(ln, element_name=element_name, grid_name=grid_name, page_name=page_name, row_base=self.row_base)
         rec.step, rec.step_notes = sr.text, list(sr.notes)
+        if secret and sr.text:
+            rec.step_notes.append(f"secret value written as \"{SECRET_PLACEHOLDER}\": replace it with your framework's "
+                                  f"secret mechanism (an environment variable, a vault lookup); it is never written "
+                                  f"to any file")
         if sr.text is None:
             rec.flagged = sr.reason or "no existing step fits"
 
@@ -825,7 +1081,13 @@ class Author:
     def _settle(self, rec: LineRec, c: _Ctx) -> None:
         rep = c.tracker.wait([c.page.main_frame, c.frame])
         if not rep.ok:
-            rec.ready[c.run] = str(rep)
+            self._not_ready(rec, c, rep)
+
+    def _not_ready(self, rec: LineRec, c: _Ctx, rep) -> None:
+        """A wait hit its deadline: the flow goes on, and the report (and console) say so."""
+        prev = rec.ready.get(c.run)
+        rec.ready[c.run] = f"{prev}; {rep}" if prev else str(rep)
+        self.echo(f"line {rec.line.n}: app not settled (run {c.run}): {rep}; going on")
 
     def _verify(self, rec: LineRec, c: _Ctx, actual_text: str | None, visible, enabled) -> None:
         ln = rec.line
@@ -833,7 +1095,12 @@ class Author:
         expected = self._value(ln) if ln.value is not None else ""
         if op in ("equals", "contains", "error"):
             a = _norm_text(actual_text)
-            ok = _equal(a, expected) if op == "equals" else _norm_text(expected).casefold() in a.casefold()
+            if op == "equals":
+                ok, note = _equal(a, expected)
+                if note and c.run == 1 and not rec.secret:
+                    rec.notes.append(note)
+            else:
+                ok = _norm_text(expected) in a     # substring, case-sensitive
             rec.verify[c.run] = (ok, a, expected)
         elif op in ("displayed", "not_displayed"):
             v = bool(visible())
@@ -923,10 +1190,9 @@ class Author:
 
     def _answer(self, rec: LineRec, c: _Ctx, target, action: str, k: int):
         """Apply `--answer <line>=<k>`: remember candidate k as an alias, then resolve through it."""
-        info = {}
-        p = self._ask_json_path()
-        if p.is_file():
-            info = (json.loads(p.read_text(encoding="utf-8")) or {}).get(str(rec.line.n)) or {}
+        info = self._ask_entry(rec.line.n, c.key)
+        if info.get("kind", "element") != "element":
+            raise _Stop(f"--answer {rec.line.n}={k}: line {rec.line.n} was asked which grid, not which element")
         handle = None
         xps = info.get("candidates") or []
         if 1 <= k <= len(xps) and xps[k - 1]:
@@ -955,21 +1221,20 @@ class Author:
         self.out.mkdir(parents=True, exist_ok=True)
         n = rec.line.n
         cmd = self.command or "crawler author FLOW.txt ..."
-        question = (f"`{rec.line.text}` on page `{a.page_key}`: {a.message}\n\n"
+        text = self._masked(rec, rec.line.text)
+        question = (f"`{text}` on page `{a.page_key}`: {a.message}\n\n"
                     f"Answer with a candidate number and run again:\n\n"
                     f"    {cmd} --answer \"{n}={'<candidate no>' if cands else '?'}\"\n\n"
                     f"or reword the line (add the dialog, section or grid it is in).")
-        md = askmod.render(a.frame, cands, self.out, f"Line {n}: {rec.line.text}", question)
-        text = md.read_text(encoding="utf-8")
+        md = askmod.render(a.frame, cands, self.out, f"Line {n}: {text}", question)
+        body = md.read_text(encoding="utf-8")
         md.unlink()
         ask_md = self.out / "ASK.md"
-        ask_md.write_text("# Which element did you mean?\n\n" + text, encoding="utf-8")
-        p = self._ask_json_path()
-        data = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
-        data[str(n)] = {"page": a.page_key, "description": describe_target(a.target) if isinstance(a.target, Target) else "",
-                        "line": rec.line.text, "candidates": [x.xpath for x in cands],
-                        "frame": None}
-        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        ask_md.write_text("# Which element did you mean?\n\n" + body, encoding="utf-8")
+        self._save_ask(n, {"kind": "element", "page": a.page_key,
+                           "description": describe_target(a.target) if isinstance(a.target, Target) else "",
+                           "line": text, "line_sha256": _sha(text),
+                           "candidates": [x.xpath for x in cands], "frame": None})
         self.ask_path = ask_md
         self.echo(f"line {n}: {a.message.splitlines()[0]}")
         self.echo(f"  {len(cands)} candidate(s) with screenshots in {ask_md}")
@@ -984,24 +1249,28 @@ class Author:
         self.out.mkdir(parents=True, exist_ok=True)
         named = [g for g in a.grids if re.match(r"^'(.+?)' \(", g)]
         example = re.match(r"^'(.+?)' \(", named[0])[1] if named else "<name>"
-        md = [f"# Which grid did you mean?", "", f"## Line {n}: {rec.line.text}", "",
-              f"`{rec.line.text}` on page `{a.page_key}`: {a.message}.", ""]
+        text = self._masked(rec, rec.line.text)
+        md = [f"# Which grid did you mean?", "", f"## Line {n}: {text}", "",
+              f"`{text}` on page `{a.page_key}`: {a.message}.", ""]
         md += [f"{i}. {g}" for i, g in enumerate(a.grids, 1)]
         md += ["", "Answer with a grid number and run again:", "",
                f"    {cmd} --answer \"{n}=<grid no>\"", "",
                f"or name the grid in the line (`... of the {example} grid`).", ""]
         ask_md = self.out / "ASK.md"
         ask_md.write_text("\n".join(md), encoding="utf-8")
+        self._save_ask(n, {"kind": "grid", "page": a.page_key, "line": text, "line_sha256": _sha(text),
+                           "grids": list(a.grids)})
         self.ask_path = ask_md
         self.echo(f"line {n}: {a.message}: {', '.join(a.grids)}")
         self.echo(f"  answer:  {cmd} --answer \"{n}=<grid no>\"")
 
     # ------------------------------------------------------------------ verdicts
     def decide(self) -> None:
-        runs_done = max((u.run for s in self.slot_list for u in s.uses), default=0)
+        # every run the flow was meant to go through: a slot not used in each of them proposes nothing
         for s in self.slot_list:
-            decide(s, self.cfg, max(1, runs_done))
+            decide(s, self.cfg, self.runs)
 
 
-__all__ = ["Author", "AuthorResult", "LineRec", "refine", "actual_date", "parse_answers",
+__all__ = ["Author", "AuthorResult", "LineRec", "refine", "actual_date", "parse_answers", "author_command",
+           "SECRET_PLACEHOLDER",
            "EXIT_OK", "EXIT_FAILED", "EXIT_USAGE", "EXIT_ASK"]

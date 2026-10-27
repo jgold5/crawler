@@ -43,8 +43,29 @@ def load_rules(cfg: Any = None) -> dict:
     return _load(str(cfg))
 
 
-def _quote(s: str) -> str:
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+# Cucumber's {string} parameter: a double- or single-quoted string; the only escapes it undoes are \" and \'
+CUCUMBER_STRING = re.compile(r'"([^"\\]*(\\.[^"\\]*)*)"|\'([^\'\\]*(\\.[^\'\\]*)*)\'')
+
+
+def cucumber_unescape(s: str) -> str:
+    return s.replace('\\"', '"').replace("\\'", "'")
+
+
+def cucumber_strings(text: str) -> list[str]:
+    """The {string} arguments Cucumber would pass for ``text`` (each unescaped as Cucumber does)."""
+    return [cucumber_unescape(m[1] if m[1] is not None else m[3]) for m in CUCUMBER_STRING.finditer(text)]
+
+
+def _quote(s: str) -> str | None:
+    """``s`` as a Cucumber {string}: double quotes, a `"` inside written `\"` (Cucumber's escape; backslashes
+    are left alone, Cucumber does not unescape them). None when Cucumber cannot read it back exactly (a
+    backslash right before a quote or at the end)."""
+    s = str(s)
+    q = '"' + s.replace('"', '\\"') + '"'
+    m = CUCUMBER_STRING.fullmatch(q)
+    if m and cucumber_unescape(m[1] if m[1] is not None else m[3]) == s:
+        return q
+    return None
 
 
 def _row_mode(line: Line) -> str:
@@ -143,6 +164,10 @@ def render(line: Line, element_name: str | None = None, cfg: Any = None, *,
         missing = [k for k in re.findall(r"\{(\w+)\}", tpl) if values.get(k) in (None, "")]
         if missing:
             return StepRender(None, reason=f"no value for {', '.join(missing)}", rule=rule)
+        bad = [values[k] for k in re.findall(r"\{(\w+)\}", tpl) if k != "seconds" and _quote(values[k]) is None]
+        if bad:
+            return StepRender(None, rule=rule, reason=f"{bad[0]!r} cannot be written as a Cucumber {{string}} "
+                                                       f"(a backslash before a quote or at the end); reword it")
         body = re.sub(r"\{(\w+)\}",
                       lambda m: str(values[m[1]]) if m[1] == "seconds" else _quote(values[m[1]]), tpl)
         notes = []

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from ..english import explain
+from .run import _SECRET_NAME
 from .slots import Slot
 
 
@@ -14,14 +15,32 @@ def title_of(flow_path: Path) -> str:
     return s[:1].upper() + s[1:]
 
 
+def _entry_problem(r) -> str | None:
+    """Why a step must not name its entry: the entry would not exist, or it is another element's."""
+    s = r.slot
+    if s is None:
+        return None
+    if s.verdict == "conflict":
+        return f"entry {s.name!r} {s.reason}"
+    if s.entry is None and not s.proposes:
+        return f"no verified locator for a new entry {s.name!r} ({s.reason}): the step would name an entry that " \
+               f"does not exist"
+    return None
+
+
 def feature_text(title: str, records) -> str:
     out = [f"Feature: {title}", "", f"  Scenario: {title}"]
     for r in records:
-        if r.step:
+        bad = _entry_problem(r) if r.step else None
+        text = _hide(r, r.line.text)
+        if r.step and not bad:
+            s = r.slot
+            if s is not None and s.verdict in ("manual", "unstable") and s.entry is not None:
+                out.append(f"    # CHECK: line {r.line.n}: entry {s.name!r} is not reliable: {s.reason}")
             out.append(f"    {r.step}")
         else:
-            reason = r.flagged or (r.error or "not reached")
-            out.append(f"    # FLAGGED: line {r.line.n} \"{r.line.text}\": {reason}")
+            reason = bad or r.flagged or (r.error or "not reached")
+            out.append(f"    # FLAGGED: line {r.line.n} \"{text}\": {_hide(r, reason)}")
     return "\n".join(out) + "\n"
 
 
@@ -35,13 +54,13 @@ def _code(s) -> str:
 
 
 def _mask(r, v):
-    return "••••" if r.secret and v else v
+    return "••••" if (r.secret or _SECRET_NAME.search(r.line.target or "")) and v else v
 
 
 def _hide(r, text):
     """A secret field's value never appears in the report (the English line included)."""
     text = str(text or "")
-    if r.secret:
+    if r.secret or _SECRET_NAME.search(r.line.target or ""):
         for v in {r.line.value, r.line.raw_value} - {None, ""}:
             text = text.replace(v, "••••")
     return text
@@ -58,6 +77,10 @@ def _slot_cell(s: Slot | None) -> str:
         return f"fixed **{_md(s.name)}** ({_md(s.reason)})"
     if s.verdict == "new":
         return f"new **{_md(s.name)}**"
+    if s.verdict == "conflict":
+        return f"**not changed** {_md(s.name)}: {_md(s.reason)}"
+    if s.verdict == "manual":
+        return f"**{_md(s.reason.split(':')[0])}** {_md(s.name)}: {_md(s.reason)}"
     return f"**unstable** {_md(s.name)}: {_md(s.reason)}"
 
 
@@ -125,7 +148,7 @@ def report_text(title: str, author, result) -> str:
     for s in slots:
         counts[s.verdict or "pending"] = counts.get(s.verdict or "pending", 0) + 1
     L.append("- Entries: " + (", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "none"))
-    flagged = [r for r in recs if r.step is None and r.status != "pending"]
+    flagged = [r for r in recs if (r.step is None or _entry_problem(r)) and r.status != "pending"]
     vf = [r for r in recs if any(not v[0] for v in r.verify.values())]
     fl = [r for r in recs if r.failures]
     L.append(f"- Flagged lines: {len(flagged)}; failed checks: {len(vf)}; failed lines: {len(fl)}")
@@ -134,7 +157,8 @@ def report_text(title: str, author, result) -> str:
     L.append("")
     L += ["## Lines", "", "| # | English | Step | Element | Locator | ms per run |", "|---|---|---|---|---|---|"]
     for r in recs:
-        step = _code(r.step) if r.step else f"**FLAGGED**: {_md(r.flagged or r.error or 'not reached')}"
+        bad = _entry_problem(r) if r.step else None
+        step = _code(r.step) if r.step and not bad else f"**FLAGGED**: {_md(bad or r.flagged or r.error or 'not reached')}"
         s = r.slot or r.frame_slot
         loc = ""
         if s is not None:
@@ -147,8 +171,11 @@ def report_text(title: str, author, result) -> str:
         L.append(f"### Line {r.line.n}: {_md(_hide(r, r.line.text))}")
         L.append("")
         L.append(f"- Understood: {_md(_hide(r, explain(r.line)))}")
-        if r.step:
+        bad = _entry_problem(r) if r.step else None
+        if r.step and not bad:
             L.append(f"- Step: {_hide(r, _code(r.step))}")
+        elif bad:
+            L.append(f"- **Flagged**: {_md(bad)} (the step would be {_hide(r, _code(r.step))})")
         elif not r.failures:      # a failed line says why below
             L.append(f"- **Flagged**: {_md(r.flagged or 'not reached')}")
         for n in r.step_notes:
@@ -192,6 +219,9 @@ def report_text(title: str, author, result) -> str:
         L += ["## XML edits", ""]
         for e in result.edits:
             L.append(f"- {_md(str(e))}")
+            for n in getattr(e, "notes", ()) or ():
+                if n not in str(e):
+                    L.append(f"  - {_md(n)}")
         L.append("")
         L.append("Applied." if result.applied else "Not applied (run with `--apply`). See `xml.diff`.")
         L.append("")

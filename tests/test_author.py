@@ -378,11 +378,12 @@ def test_english_errors_are_reported_together(tmp_path):
              "--config", FIX / "site.yaml", "--out", tmp_path / "out")
     assert p.returncode == 2
     err = p.stderr
-    assert "3 problem(s); nothing was run" in err
+    assert "4 problem(s); nothing was run" in err
     assert "line 2: unknown action 'frobnicate'" in err
     assert "line 3: set needs a value" in err
     assert "line 4: verify needs a check" in err
-    assert "line 5: unknown page 'Nowhere Land'" not in err      # not the first page: opened as a click, live
+    # a later unknown page is never turned into a click on the previous page: it stops, listing the pages
+    assert "line 5: unknown page 'Nowhere Land'" in err and "pages: " in err and "Settings" in err
     assert not (tmp_path / "out").exists()
 
 
@@ -396,3 +397,130 @@ def test_unknown_first_page_and_missing_url(tmp_path):
              "--config", FIX / "site.yaml", "--out", tmp_path / "out")
     assert p.returncode == 2 and "page 'login' has no url in site.yaml pages" in p.stderr
     assert re.search(r"menu is not supported", p.stderr)
+
+
+# ---------------------------------------------------------------------------------------------- audit regressions
+
+AUDIT_FLOW = """\
+go to Settings
+set Display name to "Jane Q"
+click Save in the Profile section
+set Current password to hunter2
+verify Current password is hunter2
+"""
+
+
+def _edit_settings(repo: Path, *pairs: tuple[bytes, bytes]) -> bytes:
+    p = repo / "aggrid" / "settings.xml"
+    b = p.read_bytes()
+    for old, new in pairs:
+        assert old in b, old
+        b = b.replace(old, new, 1)
+    p.write_bytes(b)
+    return b
+
+
+def test_frame_named_entry_label_entry_other_element_and_password(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """"Time Frame" (a dropdown) is not the iframe entry; a label entry is not reused for a fill; an entry that
+    selects ANOTHER Save is left alone (the Profile one gets its own entry); a password never reaches a file."""
+    url, _ = author_sites
+    f, repo, cfg, out = workspace(tmp_path, url, flow=AUDIT_FLOW, name="audit.txt")
+    _edit_settings(repo,
+                   (b'  <element name="App Frame">', b'  <element name="Time Frame">\n    <locatorType>xpath</locatorType>\n'
+                    b'    <locatorValue>//select[@id=&apos;timeframe&apos;]</locatorValue>\n  </element>\n'
+                    b'  <element name="App Frame">'),
+                   (b"//label[normalize-space()=&apos;Display name&apos;]//input",
+                    b"//label[normalize-space()=&apos;Display name&apos;]"),
+                   (b"<locatorValue>//button[normalize-space()=&apos;Save&apos;]</locatorValue>",
+                    b"<locatorValue>//*[@data-testid=&apos;security-section&apos;]//button[normalize-space()=&apos;Save&apos;]"
+                    b"</locatorValue>"))
+    lines: list[str] = []
+    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, browser=browser, playwright=pw,
+                 echo=lines.append)
+    assert res.exit_code == 0, (out / "report.md").read_text()
+    s = _slots(res)
+    assert {k: v.verdict for k, v in s.items()} == {
+        ("settings", "App Frame"): "reuse", ("settings", "Display name"): "fix",
+        ("settings", "Save Profile"): "new", ("settings", "Current password"): "reuse"}
+    assert "related element" in s[("settings", "Display name")].reason
+    assert s[("settings", "Save Profile")].final == \
+        "//section[h2[normalize-space()='Profile']]//button[normalize-space()='Save']"
+    diff = res.diff
+    assert "timeframe" not in "\n".join(_removed(diff) + _added(diff))         # "Time Frame" untouched
+    assert "security-section" not in "\n".join(_removed(diff) + _added(diff))  # the other Save untouched
+    assert '<element name="Save Profile">' in diff
+    assert all(ms < 8000 for ms in res.run_ms), res.run_ms                   # no 10 s wait on a non-frame
+    feature = (out / "flow.feature").read_text()
+    assert 'When user clicks the "Save Profile" button' in feature
+    assert 'When user fills "Current password" textfield as "<PASSWORD>"' in feature
+    for name in ("flow.feature", "xml.diff", "report.md"):
+        assert "hunter2" not in (out / name).read_text(), name
+    assert not any("hunter2" in ln for ln in lines)
+    assert "secret mechanism" in (out / "report.md").read_text()
+
+
+def test_scoped_locator_preferred_for_a_name_that_recurs(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """"Delete" in the API keys section is unique now, but the Delete-account dialog brings a second Delete:
+    the new entry is scoped by its section, not `//button[normalize-space()='Delete']`."""
+    url, _ = author_sites
+    flow = "go to Settings\nclick Delete in the API keys section\nclick Delete account\n" \
+           "click Cancel in the Delete account? dialog\n"
+    f, repo, cfg, out = workspace(tmp_path, url, flow=flow, name="scoped.txt")
+    _edit_settings(repo, (b"  <element name=\"Delete API key\">", b"  <element name=\"Old key button\">"),
+                   (b"      //section[h2[normalize-space()=&apos;API keys&apos;]]//button[normalize-space()=&apos;Delete&apos;]",
+                    b"      //button[@id=&apos;gone&apos;]"))
+    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, browser=browser, playwright=pw,
+                 echo=lambda *a: None)
+    assert res.exit_code == 0, (out / "report.md").read_text()
+    line2 = next(r for r in res.records if r.line.n == 2)
+    assert line2.slot.verdict == "new", (out / "report.md").read_text()
+    assert line2.slot.final == "//section[h2[normalize-space()='API keys']]//button[normalize-space()='Delete']"
+
+
+def test_hidden_checkbox_entry_targets_its_label(author_sites, browser, pw, tmp_path):  # noqa: F811
+    """"Remember me" is a visually hidden checkbox: the user clicks its label, so the entry is the label."""
+    url, _ = author_sites
+    f, repo, cfg, out = workspace(tmp_path, url, flow="go to Login\ncheck Remember me\n", name="remember.txt")
+    _with_login(cfg)
+    p = repo / "aggrid" / "login.xml"
+    p.write_bytes(p.read_bytes().replace(b"<locatorValue>//label[normalize-space()='Remember me']</locatorValue>",
+                                         b"<locatorValue>//input[@type='checkbox']</locatorValue>"))
+    res = author(f, repo_root=repo, version="aggrid", config=cfg, out_dir=out, browser=browser, playwright=pw,
+                 echo=lambda *a: None)
+    assert res.exit_code == 0, (out / "report.md").read_text()
+    s = _slots(res)[("login", "Remember me")]
+    assert s.verdict == "fix" and s.final.endswith("//label[normalize-space()='Remember me']"), \
+        (out / "report.md").read_text()
+    assert "visually hidden" in (out / "report.md").read_text()
+
+
+def test_stale_answers_are_refused_and_ask_json_cleared(author_sites, browser, pw, tmp_path):  # noqa: F811
+    url, _ = author_sites
+    f, repo, cfg, out = workspace(tmp_path, url, flow="go to Trades\nclick the refresh icon\n", name="stale.txt")
+    common = dict(repo_root=repo, version="aggrid", config=cfg, out_dir=out, runs=1, browser=browser, playwright=pw,
+                  echo=lambda *a: None)
+    assert author(f, **common).exit_code == 3 and (out / "ask.json").exists()
+    # no question for line 1
+    res = author(f, answers={1: 1}, **common)
+    assert res.exit_code == 2 and "line 1 has no pending question" in res.errors[0]
+    # the flow changed since the question: refused, and the stale ask.json is gone
+    f.write_text("go to Trades\n# the toolbar refresh\nclick the refresh icon\n")
+    res = author(f, answers={2: 1}, **common)
+    assert res.exit_code == 2 and "flow changed" in res.errors[0]
+    assert not (out / "ask.json").exists()
+    # asked again, answered, completed: ask.json cleared
+    assert author(f, **common).exit_code == 3
+    assert author(f, answers={3: 1}, **common).exit_code == 0
+    assert not (out / "ask.json").exists()
+
+
+def test_answer_hint_keeps_options(author_sites, tmp_path):  # noqa: F811
+    url, _ = author_sites
+    f, repo, cfg, out = workspace(tmp_path, url, flow="go to Trades\nclick the refresh icon\n", name="hint.txt")
+    aliases = tmp_path / "my aliases.yaml"
+    p = _cli(f, "--repo", repo, "--version", "aggrid", "--config", cfg, "--out", out, "--aliases", aliases,
+             "--apply", "--runs", "1")
+    assert p.returncode == 3, p.stdout + p.stderr
+    hint = next(ln for ln in p.stdout.splitlines() if "answer:" in ln)
+    assert "--apply" in hint and f"--aliases '{aliases}'" in hint and '--answer "2=<candidate no>"' in hint
+    assert f"--aliases '{aliases}'" in (out / "ASK.md").read_text()

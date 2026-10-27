@@ -47,6 +47,9 @@ class Line:
     timeout: int | None = None          # `for at most N seconds`
     raw_value: str | None = None        # value before date normalization
     notes: list[str] = field(default_factory=list)
+    # the value looks like a date (`T`, `"T+2"`, `now`) but was kept as written: it is a date only if the
+    # element turns out to be a date field (decided live, see crawler.author)
+    date_hint: bool = False
     # `row.index` holds the number as written: `row N` -> N (the owner's numbering, see
     # SiteConfig.grid_row_base); `the second row` -> 2 with row_ordinal=True (a displayed position)
     row_ordinal: bool = False
@@ -177,12 +180,26 @@ class _Ctx:
         while i < len(s):
             ch = s[i]
             if ch in _QUOTES:
-                j = s.find(_QUOTES[ch], i + 1)
-                if j < 0:
-                    raise EnglishError(self.n, "unclosed quote", [s + _QUOTES[ch]])
-                self.quotes.append(s[i + 1:j])
+                close = _QUOTES[ch]
+                j, k, content = i + 1, -1, []
+                while j < len(s):          # `\"` inside quotes is a quote (Cucumber's escape)
+                    if s[j] == "\\" and j + 1 < len(s) and s[j + 1] == close:
+                        content.append(close)
+                        j += 2
+                        continue
+                    if s[j] == close:
+                        k = j
+                        break
+                    content.append(s[j])
+                    j += 1
+                if k < 0:                  # no closing quote once escapes are honoured: backslashes are literal
+                    k = s.find(close, i + 1)
+                    content = list(s[i + 1:k]) if k >= 0 else []
+                if k < 0:
+                    raise EnglishError(self.n, "unclosed quote", [s + close])
+                self.quotes.append("".join(content))
                 out.append(f"\x00{len(self.quotes) - 1}\x00")
-                i = j + 1
+                i = k + 1
             else:
                 out.append(ch)
                 i += 1
@@ -195,6 +212,10 @@ class _Ctx:
 
     def is_quoted(self, s: str) -> bool:
         return re.fullmatch(_PH, s.strip()) is not None
+
+    def exact(self, s: str) -> str:
+        """A fully quoted string's content exactly as written (no trimming)."""
+        return self.quotes[int(re.fullmatch(r"\x00(\d+)\x00", s.strip())[1])]
 
     def show(self, s: str) -> str:
         """Masked text back to the author's spelling (quotes kept)."""
@@ -240,8 +261,8 @@ def _ord(word: str) -> int:
     return _ORDINALS[w] if w in _ORDINALS else int(re.match(r"\d+", w)[0])
 
 
-def _modifiers(s: str, ctx: _Ctx, line: dict) -> str:
-    if m := _TIMEOUT_RE.search(s):
+def _modifiers(s: str, ctx: _Ctx, line: dict, *, timeout: bool = True) -> str:
+    if timeout and (m := _TIMEOUT_RE.search(s)):
         line["timeout"] = int(m[1]); s = _cut(s, m)
     if m := _COND_RE.search(s):
         line["condition"] = "if_displayed"; s = _cut(s, m)
@@ -260,6 +281,67 @@ def _modifiers(s: str, ctx: _Ctx, line: dict) -> str:
     if m := _SECTION_RE.search(s):
         line["section"] = ctx.restore(m["name"]); s = _cut(s, m)
     return s
+
+
+# Modifiers are read only where they cannot be part of a value: the element words, a leading phrase before the
+# verb ("in the Orders grid, set ..."), and a trailing clause after the value when that is unambiguous (the value
+# is quoted, a number or a date, or the clause itself is quoted). Never from inside a value.
+_SPAN_RES = (_KEYROW_WHERE, _KEYROW_WITH, _ROW_ORD, _ROW_IDX, _GRID_RE, _SECTION_RE)
+_CLAUSE_START = re.compile(r"(?:^|(?<=[\s,]))(?:in|on|of|at|from|for|within|inside|row|if|up)\b", re.I)
+_NUMBER = re.compile(r"[-+]?[$€£]?\d[\d,]*(?:\.\d+)?%?")
+_NEG_ROW = re.compile(r"\brow\s*(?:#\s*|no\.?\s*|number\s+)?-\s*\d", re.I)
+
+
+def _norm(s: str | None) -> str:
+    return " ".join((s or "").split()).casefold()
+
+
+def _mod_spans(s: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for rx in _SPAN_RES for m in rx.finditer(s)]
+
+
+def _only_mods(text: str, ctx: _Ctx, *, timeout: bool = True) -> dict | None:
+    """Modifier values when ``text`` is nothing but modifier phrases (and commas); else None."""
+    if not text.strip(" ,"):
+        return None
+    d: dict = {}
+    left = _clean(_modifiers(text, ctx, d, timeout=timeout))
+    return d if not left.strip(" ,") and d else None
+
+
+def _tail_mods(text: str, ctx: _Ctx, *, timeout: bool = True) -> tuple[str, dict, str]:
+    """(head, modifiers, clause): the longest trailing run of modifier phrases, with a non-empty head."""
+    for m in _CLAUSE_START.finditer(text):
+        head = text[:m.start()].rstrip(" ,")
+        if not head.strip():
+            continue
+        clause = text[m.start():]
+        d = _only_mods(clause, ctx, timeout=timeout)
+        if d is not None:
+            return head, d, clause.strip()
+    return text, {}, ""
+
+
+def _merge(line: dict, mods: dict, ctx: _Ctx) -> None:
+    for k, v in mods.items():
+        if k in line and line[k] != v and k != "row_ordinal":
+            raise EnglishError(ctx.n, f"two different {k.replace('_', ' ')}s on one line "
+                                      f"({line[k]!r} and {v!r})")
+        line[k] = v
+
+
+def _elem(text: str, ctx: _Ctx, line: dict, **kw) -> tuple[str | None, str | None, int | None]:
+    """Element words (modifiers allowed) -> (target, kind, nth); their modifiers go into ``line``."""
+    if _NEG_ROW.search(text):
+        raise EnglishError(ctx.n, "row numbers are never negative (row 0 is the first displayed row)")
+    d: dict = {}
+    rest = _clean(_modifiers(text, ctx, d))
+    _merge(line, d, ctx)
+    return _element(rest, ctx, **kw)
+
+
+def _target_of(text: str, ctx: _Ctx) -> str | None:
+    return _element(_clean(_modifiers(text, ctx, {})), ctx)[0]
 
 
 # --------------------------------------------------------------------------- element / value
@@ -314,22 +396,26 @@ def _element(masked: str, ctx: _Ctx, *, extra_roles: dict | None = None) -> tupl
     return target, kind, nth
 
 
-def _sep(m: re.Match) -> str:
-    g = m.groupdict()
-    return (g.get("w") or g.get("s") or "").lower()
 
 
-def _split(rest: str, seps: list[str], ctx: _Ctx, verb: str) -> tuple[str, str, str] | None:
-    """Split masked ``rest`` at one value separator -> (left, sep, right)."""
+def _split(rest: str, seps: list[str], ctx: _Ctx, verb: str, names=None) -> tuple[str, str, str] | None:
+    """Split masked ``rest`` at one value separator -> (left, sep, right).
+
+    Every place a separator could be is considered (overlapping ones too: `set Ship To to Boston`), except
+    inside a modifier phrase (`in the row where Id is 5`). Several places: a quoted element/value decides; else
+    the LAST place whose left side is a known element name (``names``); else an error asking to quote."""
     words = [s for s in seps if s[0].isalpha()]
-    syms = [s for s in seps if not s[0].isalpha()]
-    parts = []
+    syms = sorted((s for s in seps if not s[0].isalpha()), key=len, reverse=True)
+    found: list[tuple[int, int, str]] = []
     if words:
-        parts.append(r"\s+(?P<w>" + "|".join(words) + r")\s+")
+        for m in re.finditer(r"(?<=\s)(" + "|".join(words) + r")(?=\s)", rest, re.I):
+            found.append((m.start(), m.end(), m[1].lower()))
     if syms:
-        parts.append(r"\s*(?P<s>" + "|".join(map(re.escape, syms)) + r")\s*")
-    pat = re.compile("|".join(parts), re.I)
-    ms = [m for m in pat.finditer(rest) if m.start() > 0 and m.end() < len(rest)]
+        for m in re.finditer("|".join(map(re.escape, syms)), rest):
+            found.append((m.start(), m.end(), m[0]))
+    spans = _mod_spans(rest)
+    ms = [(a, b, sep) for a, b, sep in sorted(found)
+          if rest[:a].strip() and rest[b:].strip() and not any(x <= a and b <= y for x, y in spans)]
     if not ms:
         return None
     pick = None
@@ -338,37 +424,82 @@ def _split(rest: str, seps: list[str], ctx: _Ctx, verb: str) -> tuple[str, str, 
     else:
         lead = re.match(rf"^(?:(?:the|a|an)\s+)?{_PH}", rest, re.I)
         if lead:
-            after = [m for m in ms if m.start() >= lead.end()]
+            after = [m for m in ms if m[0] >= lead.end()]
             pick = after[0] if after else None
-        if pick is None and ctx.is_quoted(rest[ms[-1].end():]):
-            pick = ms[-1]
+        if pick is None:
+            tail = rest[ms[-1][1]:].strip()
+            q = re.match(rf"^{_PH}", tail)
+            if q and (not tail[q.end():].strip() or _only_mods(tail[q.end():], ctx, timeout=False) is not None):
+                pick = ms[-1]
+        if pick is None and names:
+            known = {_norm(x) for x in names}
+            hits = [m for m in ms if _norm(_target_of(rest[:m[0]], ctx)) in known]
+            if hits:
+                pick = hits[-1]
     if pick is None:
         sugg = []
-        for m in ms:
-            left, sep, right = rest[:m.start()], _sep(m), rest[m.end():]
-            sugg.append(f'{verb} {_q(ctx.restore(left))} {sep.lower()} {_q(ctx.restore(right))}')
+        for a, b, sep in ms:
+            sugg.append(f'{verb} {_q(ctx.restore(rest[:a]))} {sep.lower()} {_q(ctx.restore(rest[b:]))}')
         raise EnglishError(ctx.n, "ambiguous: more than one place the element could end "
-                                  f"({', '.join(repr(_sep(m)) for m in ms)}); "
-                                  "quote the element or the value", sugg)
-    sep = _sep(pick)
-    return rest[:pick.start()].strip(), sep, rest[pick.end():].strip()
+                                  f"({', '.join(repr(m[2]) for m in ms)})"
+                                  + ("; none of them leaves a known element name" if names else "")
+                                  + "; quote the element or the value", sugg)
+    a, b, sep = pick
+    return rest[:a].strip(), sep, rest[b:].strip()
 
 
-def _value(raw_masked: str, ctx: _Ctx, line: dict, *, dates: bool, exact_ok: bool = True) -> None:
+_DATEY = re.compile(r"(?i)\b(?:date|day)s?\b")
+
+
+def _value(raw_masked: str, ctx: _Ctx, line: dict, *, dates: bool, exact_ok: bool = True,
+           target: str | None = None) -> None:
+    """The value: a quoted value passes through exactly as written; unquoted date expressions are normalized
+    (bare `T`/`now` only for an element named like a date; otherwise ``date_hint``, decided live)."""
     v = raw_masked.strip()
     if exact_ok and (m := re.match(r"^exactly\s+", v, re.I)):
         line["exact"] = True
         v = v[m.end():]
     quoted = ctx.is_quoted(v)
-    text = ctx.restore(v)
+    text = ctx.exact(v) if quoted else ctx.show(v) if "\x00" in v else ctx.restore(v)
     line["raw_value"] = text
     line["value"] = text
-    if dates:
-        d = normalize_date(text, natural=not quoted)
-        if d:
-            line["is_date"] = True
-            line["value"] = d.value
-            line["business_days"] = d.business_days
+    if not dates:
+        return
+    datey = bool(target and _DATEY.search(target))
+    if quoted:
+        if normalize_date(text, natural=False):       # "T+2", "1/5/2026": a date only for a date element
+            line["is_date" if datey else "date_hint"] = True
+        return
+    d = normalize_date(text)
+    if d is None:
+        return
+    if text.strip().lower() in ("t", "now") and not datey:
+        line["date_hint"] = True                      # "set Symbol to T": kept as text unless a date field
+        return
+    line["is_date"] = True
+    line["value"] = d.value
+    line["business_days"] = d.business_days
+
+
+def _value_part(raw: str, ctx: _Ctx, line: dict, *, dates: bool, target: str | None, before: str,
+                exact_ok: bool = True, ident: bool = False) -> None:
+    """A value plus, possibly, a trailing modifier clause (`to 5 in row 2`): the clause is read as modifiers
+    only when that is unambiguous, else the line is an error asking to quote the value."""
+    head, mods, clause = _tail_mods(raw, ctx, timeout=False)
+    if mods:
+        h = head.strip()
+        bare = re.sub(r"^exactly\s+", "", h, flags=re.I)
+        plain = ctx.restore(bare) or ""
+        sure = (ctx.is_quoted(bare) or "\x00" in clause or _NUMBER.fullmatch(plain) is not None
+                or (not ctx.is_quoted(bare) and normalize_date(plain) is not None)
+                or (ident and len(h.split()) == 1))
+        if not sure:
+            raise EnglishError(ctx.n, f"ambiguous: is {ctx.show(clause)!r} part of the value or where the "
+                                      f"element is? quote the value",
+                               [f"{before} {_q(ctx.show(raw))}", f"{before} {_q(ctx.show(h))} {ctx.show(clause)}"])
+        _merge(line, mods, ctx)
+        raw = head
+    _value(raw, ctx, line, dates=dates, exact_ok=exact_ok, target=target)
 
 
 def _need(ctx: _Ctx, what: str, shape: str, example: str | None = None) -> EnglishError:
@@ -385,7 +516,30 @@ def _strip_comment_and_bullets(raw: str) -> str | None:
     return s
 
 
-def _parse_line(n: int, raw: str, index: int) -> Line | None:
+def _verb_at(s: str):
+    for rx, phrase, action in _VERB_RES:
+        vm = rx.match(s)
+        if vm:
+            return vm, phrase, action
+    return None
+
+
+def _leading(m: str, ctx: _Ctx, line: dict) -> str:
+    """A leading modifier phrase before the verb ("in the Orders grid, set ...", "In row 2 set ...")."""
+    if _verb_at(m):
+        return m
+    for w in re.finditer(r"(?<=[\s,])\S", m):
+        p = w.start()
+        if not _verb_at(m[p:]):
+            continue
+        d = _only_mods(m[:p], ctx)
+        if d is not None:
+            _merge(line, d, ctx)
+            return m[p:]
+    return m
+
+
+def _parse_line(n: int, raw: str, index: int, names=None) -> Line | None:
     s = _strip_comment_and_bullets(raw)
     if s is None:
         return None
@@ -394,13 +548,10 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
     m = re.sub(r"\s#\s.*$", "", m)                       # trailing "# comment"
     m = re.sub(r"[.;]+\s*$", "", m).strip()
     line: dict = {}
-    m = _clean(_modifiers(m, ctx, line))
+    m = _leading(m, ctx, line)
 
-    for rx, phrase, action in _VERB_RES:
-        vm = rx.match(m)
-        if vm:
-            break
-    else:
+    hit = _verb_at(m)
+    if hit is None:
         first = m.split()[0] if m.split() else m
         two = " ".join(m.split()[:2]).lower()
         two_words = [v for v in _VERB_WORDS if " " in v]
@@ -414,6 +565,7 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
         raise EnglishError(n, f"unknown action {first!r}",
                            [f"{v} {rest}".strip() for v in sugg] or
                            ["one of: " + ", ".join(sorted({p for p, a in _VERBS if len(p) < 12}))])
+    vm, phrase, action = hit
     verb = phrase
     rest = m[vm.end():].strip()
 
@@ -436,11 +588,14 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
         d = dict(line, **kw)
         return Line(n=n, text=raw.strip(), verb=verb, index=index, **d)
 
+    def el(text: str, **kw):
+        return _elem(text, ctx, line, **kw)
+
     if action in ("goto", "close"):
         rest = take_alias(rest, False, [])
         if not rest:
             raise _need(ctx, f"{verb} needs a page", f"{verb} <page>", f"{verb} Trade Entry")
-        target, kind, nth = _element(rest, ctx, extra_roles={"page": "page", "screen": "page"})
+        target, kind, nth = el(rest, extra_roles={"page": "page", "screen": "page"})
         if action == "goto" and kind in ("menu", "dialog", "button", "link", "icon"):
             return finish(action="click", target=target, kind=kind, nth=nth)
         page = target if kind in (None, "tab") else None
@@ -452,31 +607,38 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
         if not hm:
             raise _need(ctx, "hover needs a click", "hover <element> and click <element>",
                         f"hover {ctx.show(rest) or 'Menu'} and click <item>")
-        h, _, _ = _element(hm["h"], ctx)
-        target, kind, nth = _element(hm["c"], ctx)
+        h, _, _ = el(hm["h"])
+        target, kind, nth = el(hm["c"])
         return finish(action="click", target=target, kind=kind, nth=nth, hover=h)
 
     if action in ("click", "right_click", "double_click", "check", "uncheck", "clear"):
         rest = take_alias(rest, False, [])
         if not rest:
             raise _need(ctx, f"{verb} needs an element", f"{verb} <element>", f"{verb} Save")
-        target, kind, nth = _element(rest, ctx)
+        target, kind, nth = el(rest)
         return finish(action=action, target=target, kind=kind, nth=nth)
 
     if action == "fill":
         seps = ["to", "as", "with", "into", "="]
         rest = take_alias(rest, True, seps)
-        sp = _split(rest, seps, ctx, verb)
+        sp = _split(rest, seps, ctx, verb, names)
         if sp is None:
             raise _need(ctx, f"{verb} needs a value", f"{verb} <element> to <value>",
                         f"{verb} {ctx.show(rest) or '<element>'} to <value>")
         left, sep, right = sp
-        elem, val = (right, left) if sep == "into" else (left, right)
-        target, kind, nth = _element(elem, ctx)
-        if kind == "checkbox" and ctx.restore(val).lower() in _TRUE | _FALSE:
-            act = "check" if ctx.restore(val).lower() in _TRUE else "uncheck"
+        if sep == "into":
+            target, kind, nth = el(right)
+            val_text, before = left, None
+        else:
+            target, kind, nth = el(left)
+            val_text, before = right, f"{verb} {ctx.show(left)} {sep}"
+        if kind == "checkbox" and (ctx.restore(val_text) or "").lower() in _TRUE | _FALSE:
+            act = "check" if ctx.restore(val_text).lower() in _TRUE else "uncheck"
             return finish(action=act, target=target, kind=kind, nth=nth)
-        _value(val, ctx, line, dates=True)
+        if before is None:
+            _value(val_text, ctx, line, dates=True, target=target)
+        else:
+            _value_part(val_text, ctx, line, dates=True, target=target, before=before)
         return finish(action="fill", target=target, kind=kind, nth=nth)
 
     if action == "select":
@@ -485,33 +647,38 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
         if not rest:
             raise _need(ctx, f"{verb} needs an element and a value", f"{verb} <element>: <value>",
                         f"{verb} Counterparty: Acme")
-        sp = _split(rest, seps, ctx, verb)
+        sp = _split(rest, seps, ctx, verb, names)
         if sp is None:
             if verb == "select":           # "select Save" is a click
-                target, kind, nth = _element(rest, ctx)
+                target, kind, nth = el(rest)
                 return finish(action="click", target=target, kind=kind, nth=nth)
-            _value(rest, ctx, line, dates=False)   # "pick Acme": value only
+            _value_part(rest, ctx, line, dates=False, target=None, before=verb)   # "pick Acme": value only
             return finish(action="select", target=None)
         left, sep, right = sp
-        elem, val = (right, left) if sep == "from" else (left, right)
-        target, kind, nth = _element(elem, ctx)
-        _value(val, ctx, line, dates=False)
+        if sep == "from":
+            target, kind, nth = el(right)
+            _value(left, ctx, line, dates=False)
+        else:
+            target, kind, nth = el(left)
+            _value_part(right, ctx, line, dates=False, target=target, before=f"{verb} {ctx.show(left)} {sep}")
         return finish(action="select", target=target, kind=kind, nth=nth)
 
     if action == "sort":
         rest = take_alias(rest, False, [])
+        rest, mods, _ = _tail_mods(rest, ctx)
+        _merge(line, mods, ctx)
         sm = re.match(r"^(?:by\s+)?(?P<e>.+?)\s+(?:in\s+)?(?:an?\s+)?(?P<o>ascending|descending|asc|desc|"
                       r"a-z|z-a)(?:\s+order)?$", rest, re.I)
         if not sm:
             raise _need(ctx, "sort needs an order", "sort <column> ascending|descending",
                         f"sort {ctx.show(rest) or '<column>'} ascending")
-        target, kind, nth = _element(sm["e"], ctx)
+        target, kind, nth = el(sm["e"])
         o = sm["o"].lower()
         order = "ascending" if o in ("ascending", "asc", "a-z") else "descending"
         return finish(action="sort", target=target, kind=kind, nth=nth, order=order)
 
     if action == "remember":
-        sp = _split(rest, ["as"], ctx, verb)
+        sp = _split(rest, ["as"], ctx, verb, names)
         if sp is None:
             if verb == "save":
                 raise EnglishError(n, "save needs 'as <name>' (to click a Save button, write click)",
@@ -519,23 +686,33 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
             raise _need(ctx, f"{verb} needs a name", f"{verb} <element> as <name>",
                         f"{verb} {ctx.show(rest) or '<element>'} as <name>")
         left, _, right = sp
-        target, kind, nth = _element(left, ctx)
-        return finish(action="remember", target=target, kind=kind, nth=nth, value=ctx.restore(right))
+        target, kind, nth = el(left)
+        tmp: dict = {}
+        _value_part(right, ctx, tmp, dates=False, target=None, before=f"{verb} {ctx.show(left)} as", ident=True)
+        _merge(line, {k: v for k, v in tmp.items() if k not in ("value", "raw_value", "exact")}, ctx)
+        return finish(action="remember", target=target, kind=kind, nth=nth, value=tmp["value"])
 
     if action == "wait_loader":
+        d: dict = {}
+        rest = re.sub(r"\s*\bto\s+(?:disappear|finish|go\s+away|be\s+hidden|vanish)\b", " ", rest, flags=re.I).strip()
+        if rest and _clean(_modifiers(rest, ctx, d)):
+            raise _need(ctx, "unexpected words after the loader", f"{verb} [for at most <n> seconds]")
+        _merge(line, d, ctx)
         target = "masks" if "mask" in verb else "data loader"
         return finish(action="wait_loader", target=target)
 
     if action == "wait":
+        rest, mods, _ = _tail_mods(rest, ctx)
+        _merge(line, mods, ctx)
         rest = re.sub(r"\s+to\s+(?:appear|be\s+(?:displayed|visible|shown))$", "", rest, flags=re.I)
         if not rest:
             raise _need(ctx, "wait for needs an element", "wait for <element> to appear",
                         "wait for Save to appear")
-        target, kind, nth = _element(rest, ctx)
+        target, kind, nth = el(rest)
         return finish(action="wait", target=target, kind=kind, nth=nth)
 
     if action == "verify":
-        return _parse_verify(rest, ctx, line, finish, verb)
+        return _parse_verify(rest, ctx, line, finish, verb, names)
 
     raise EnglishError(n, f"unsupported action {verb!r}")  # pragma: no cover
 
@@ -543,14 +720,14 @@ def _parse_line(n: int, raw: str, index: int) -> Line | None:
 _CMP = r"(?P<op>>|greater\s+than|more\s+than|over|>=|==|=|is|equals|is\s+equal\s+to)"
 
 
-def _parse_verify(rest: str, ctx: _Ctx, line: dict, finish, verb: str) -> Line:
+def _parse_verify(rest: str, ctx: _Ctx, line: dict, finish, verb: str, names=None) -> Line:
     rest = take = re.sub(r"^that\s+", "", rest, flags=re.I)
     rest = re.sub(r"\s+is\s+equal\s+to\s+", " equals ", rest, flags=re.I)
     shape = (f"{verb} <element> is <value> | contains <value> | is displayed | is disabled | "
              f"shows error <message> | {verb} count of <element> > <n>")
 
     def el(e):
-        return _element(e, ctx)
+        return _elem(e, ctx, line)
 
     if m := re.match(r"^(?P<e>.+?)\s+(?:shows|displays|is\s+displaying|is\s+showing|has|gives)\s+"
                      r"(?:an?\s+|the\s+)?error(?:\s+message)?(?:\s+(?P<v>.+))?$", rest, re.I):
@@ -558,11 +735,15 @@ def _parse_verify(rest: str, ctx: _Ctx, line: dict, finish, verb: str) -> Line:
             raise _need(ctx, "the error message is missing", shape,
                         f'{verb} {ctx.show(m["e"])} shows error "<message>"')
         t, k, nth = el(m["e"])
-        _value(m["v"], ctx, line, dates=False, exact_ok=False)
+        _value_part(m["v"], ctx, line, dates=False, exact_ok=False, target=t,
+                    before=f"{verb} {ctx.show(m['e'])} shows error")
         return finish(action="verify", verify_op="error", target=t, kind=k, nth=nth)
+    # no value in the shapes below: a trailing modifier clause is unambiguous
+    bare, tail_mods, _ = _tail_mods(rest, ctx)
     if m := (re.match(rf"^(?:the\s+)?(?:count|number)\s+of\s+(?P<e>.+?)\s+(?:is\s+)?{_CMP}\s*(?P<v>\d+)$",
-                      rest, re.I) or
-             re.match(rf"^(?P<e>.+?)\s+count\s+(?:is\s+)?{_CMP}\s*(?P<v>\d+)$", rest, re.I)):
+                      bare, re.I) or
+             re.match(rf"^(?P<e>.+?)\s+count\s+(?:is\s+)?{_CMP}\s*(?P<v>\d+)$", bare, re.I)):
+        _merge(line, tail_mods, ctx)
         op = m["op"].lower()
         vop = ("count_gt" if op in (">", "over") or op.startswith(("greater", "more"))
                else "count_gte" if op == ">=" else "count_eq")
@@ -575,43 +756,59 @@ def _parse_verify(rest: str, ctx: _Ctx, line: dict, finish, verb: str) -> Line:
                     (r"(?:is|are)\s+(?:disabled|not\s+enabled|greyed\s+out|grayed\s+out|read[\s-]?only)",
                      "disabled"),
                     (r"(?:is|are)\s+enabled", "enabled")):
-        if m := re.match(rf"^(?P<e>.+?)\s+{pat}$", rest, re.I):
+        if m := re.match(rf"^(?P<e>.+?)\s+{pat}$", bare, re.I):
+            _merge(line, tail_mods, ctx)
             t, k, nth = el(m["e"])
             return finish(action="verify", verify_op=op, target=t, kind=k, nth=nth)
-    if re.search(r"\s(?:contains|includes)\s", rest, re.I):
-        seps, op = ["contains", "includes"], "contains"
-    else:
-        seps, op = ["equals", "is", "==", "="], "equals"
-    sp = _split(rest, seps, ctx, verb)
+    spans = _mod_spans(rest)
+    contains = any(not any(x <= c.start() and c.end() <= y for x, y in spans)
+                   for c in re.finditer(r"(?<=\s)(?:contains|includes)(?=\s)", rest, re.I))
+    seps, op = (["contains", "includes"], "contains") if contains else (["equals", "is", "==", "="], "equals")
+    sp = _split(rest, seps, ctx, verb, names)
     if sp is not None:
-        left, _, right = sp
+        left, sep, right = sp
         t, k, nth = el(left)
-        _value(right, ctx, line, dates=(op == "equals"))
+        _value_part(right, ctx, line, dates=(op == "equals"), target=t, before=f"{verb} {ctx.show(left)} {sep}")
         return finish(action="verify", verify_op=op, target=t, kind=k, nth=nth)
     raise _need(ctx, f"{verb} needs a check", shape, f"{verb} {ctx.show(take) or '<element>'} is <value>")
 
 
-def parse_lines(text: str) -> tuple[list[Line], list[EnglishError]]:
-    """Parse without raising: (lines that parsed, every error)."""
+def _names_for(names, page: str | None):
+    if names is None:
+        return None
+    if callable(names):
+        return list(names(page) or [])
+    return list(names)
+
+
+def parse_lines(text: str, names=None) -> tuple[list[Line], list[EnglishError]]:
+    """Parse without raising: (lines that parsed, every error).
+
+    ``names``: the element names the flow can use, to settle a line with more than one possible separator
+    (`set Ship To to Boston`): an iterable, or ``names(page)`` -> iterable, where ``page`` is the page of the
+    last `go to` line as written (None before the first)."""
     lines: list[Line] = []
     errors: list[EnglishError] = []
     index = 0
+    page = None
     for n, raw in enumerate(text.splitlines(), 1):
         try:
-            ln = _parse_line(n, raw, index)
+            ln = _parse_line(n, raw, index, _names_for(names, page))
         except EnglishError as e:
             errors.append(e)
             index += 1
             continue
         if ln is not None:
+            if ln.action == "goto" and ln.page:
+                page = ln.page
             lines.append(ln)
             index += 1
     return lines, errors
 
 
-def parse(text: str) -> list[Line]:
+def parse(text: str, names=None) -> list[Line]:
     """Parse a flow. Raises ``EnglishErrors`` (an ``EnglishError``) listing every bad line."""
-    lines, errors = parse_lines(text)
+    lines, errors = parse_lines(text, names)
     if errors:
         raise EnglishErrors(errors)
     return lines

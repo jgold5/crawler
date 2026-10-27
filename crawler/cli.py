@@ -142,17 +142,11 @@ def author(flow, repo_root, version, config_path, out, runs, no_auth, do_apply, 
     """
     from crawler.author import author as run_author
 
-    parts = ["crawler author", flow, "--repo", repo_root]
-    if version:
-        parts += ["--version", version]
-    if config_path:
-        parts += ["--config", config_path]
-    parts += ["--out", out]
-    if runs != 2:
-        parts += ["--runs", str(runs)]
-    if no_auth:
-        parts.append("--no-auth")
-    command = " ".join(parts)
+    import sys
+
+    from crawler.author import author_command
+    # the command as typed (every option, --aliases/--apply included), shell-quoted, for the "answer" hint
+    command = author_command(sys.argv[sys.argv.index("author"):] if "author" in sys.argv else ["author", flow])
     res = run_author(flow, repo_root=repo_root, version=version, config=config_path, out_dir=out, runs=runs,
                      no_auth=no_auth, apply=do_apply, answers=list(answers), aliases=aliases_path,
                      headless=not headed, echo=click.echo, command=command)

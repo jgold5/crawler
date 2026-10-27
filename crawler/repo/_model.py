@@ -54,12 +54,27 @@ def split_template(template: str) -> tuple[str, str]:
     if len(found) != 1:
         raise ValueError(f"a dynamic template needs exactly one {{placeholder}}, found {len(found)} in {template!r}")
     m = found[0]
-    prefix, suffix = template[:m.start()].strip(), template[m.end():].strip()
+    # the sides next to the placeholder are kept exactly ("Total {value} USD" keeps both spaces); only the
+    # template's outer ends are trimmed (meaningless in a locator), like the reader does (see `side_text`)
+    prefix, suffix = template[:m.start()].lstrip(), template[m.end():].rstrip()
     if "{" in prefix + suffix or "}" in prefix + suffix:
         raise ValueError(f"stray brace in template {template!r}")
-    if not prefix and not suffix:
+    if not prefix.strip() and not suffix.strip():
         raise ValueError("a dynamic template needs locator text around the placeholder")
     return prefix, suffix
+
+
+_PRETTY_TAIL = re.compile(r"[ \t]*[\r\n][ \t\r\n]*$")
+_PRETTY_HEAD = re.compile(r"^[ \t\r\n]*[\r\n][ \t]*")
+
+
+def side_text(text: str, side: str) -> str:
+    """A prefix (`side="prefix"`) / suffix (`"suffix"`) node's text as the framework concatenates it: the
+    outer end is trimmed; the end next to the value is kept exactly, except pretty-printing whitespace (a line
+    break plus indentation)."""
+    if side == "prefix":
+        return _PRETTY_TAIL.sub("", text.lstrip())
+    return _PRETTY_HEAD.sub("", text.rstrip())
 
 
 def has_placeholder(s: str) -> bool:
@@ -119,8 +134,14 @@ def entry_from_element(n: Node, s: RepoSchema, page: str, file: Path, version: s
             problems.append(f"{file.name}:{n.line}: element {name!r} has {len(cs)} <{tag}> children (first used)")
         return cs[0].text.strip() if cs else None
 
+    def side(tag, which):
+        cs = child(n, tag)
+        if len(cs) > 1:
+            problems.append(f"{file.name}:{n.line}: element {name!r} has {len(cs)} <{tag}> children (first used)")
+        return side_text(cs[0].text, which) if cs else None
+
     strategy, value = one(s.strategy_tag), one(s.value_tag)
-    prefix, suffix = one(s.prefix_tag), one(s.suffix_tag)
+    prefix, suffix = side(s.prefix_tag, "prefix"), side(s.suffix_tag, "suffix")
     dynamic = not value and (prefix is not None or suffix is not None)
     if dynamic:
         value = None
@@ -130,8 +151,11 @@ def entry_from_element(n: Node, s: RepoSchema, page: str, file: Path, version: s
         if not value:
             problems.append(f"{file.name}:{n.line}: element {name!r} has no locator")
     probe = value if value is not None else (prefix or "") + "x" + (suffix or "")
+    # an iframe entry is one whose locator selects an <iframe>/<frame>: a name like "Time Frame" (a dropdown)
+    # never makes it one. A name pattern set explicitly in repo.yaml only narrows that further.
     pat = s.iframe_name_pattern
-    is_iframe = bool((pat and re.search(pat, name)) or targets_frame(value if not dynamic else None))
+    explicit = s.origin.get("iframe_name_pattern") not in (None, "default", "")
+    is_iframe = targets_frame(value if not dynamic else None) and not (explicit and pat and not re.search(pat, name))
     return RepoEntry(page, name, strategy, kind_of(strategy, probe), value, prefix, suffix, file, n.line, dynamic,
                      is_iframe, version), problems
 

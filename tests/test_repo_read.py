@@ -91,7 +91,8 @@ def test_repo_yaml_and_given_schema_override_learning(tmp_path):
     root = write_repo(tmp_path, files)
     learned = LocatorRepo.load(root)
     assert learned.schema.value_tag in ("primary", "backup")
-    assert learned.iframe_entry("p").name == "Main Frame"  # default name pattern (\bframe\b)
+    # a name with "Frame" in it does not make an entry the iframe entry: its locator must select a frame
+    assert learned.iframe_entry("p") is None and not learned.get("p", "Main Frame").is_iframe
 
     write_repo(tmp_path, {}, """
         value_tag: backup

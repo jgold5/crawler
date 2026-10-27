@@ -13,8 +13,8 @@ from pathlib import Path
 from ..config import SiteConfig, load_config
 from ..repo import LocatorRepo, RepoWarning, apply as repo_apply, diff as repo_diff
 from .output import feature_text, title_of, write_outputs
-from .run import (EXIT_ASK, EXIT_FAILED, EXIT_OK, EXIT_USAGE, Author, AuthorResult, LineRec, actual_date,
-                  parse_answers, refine)
+from .run import (EXIT_ASK, EXIT_FAILED, EXIT_OK, EXIT_USAGE, SECRET_PLACEHOLDER, Author, AuthorResult, LineRec,
+                  actual_date, author_command, parse_answers, refine)
 from .slots import build_edits
 
 
@@ -51,6 +51,9 @@ def author(flow, *, repo_root, version: str | None = None, config=None, cfg: Sit
     problems = a.prepare()
     if problems:
         return AuthorResult(EXIT_USAGE, out, records=a.records, errors=problems)
+    problems = a.check_answers()          # --answer must answer THIS flow's pending question
+    if problems:
+        return AuthorResult(EXIT_USAGE, out, records=a.records, errors=problems)
     for name in ("ASK.md", "flow.feature", "xml.diff"):
         (out / name).unlink(missing_ok=True)
 
@@ -79,14 +82,17 @@ def author(flow, *, repo_root, version: str | None = None, config=None, cfg: Sit
         res.edits = build_edits(repo, a.slot_list)
         res.diff = repo_diff(res.edits) if res.edits else ""
         res.feature = feature_text(title, a.records)
-        unstable = [s for s in a.slot_list if s.verdict == "unstable"]
-        for s in unstable:
-            echo(f"unstable: {s.page}/{s.name}: {s.reason} (not proposed)")
+        for s in a.slot_list:
+            if s.verdict in ("unstable", "conflict", "manual"):
+                echo(f"{'fix needed' if s.verdict == 'manual' else s.verdict}: {s.page}/{s.name}: {s.reason} "
+                     f"(not proposed)")
         if apply and res.edits:
             res.applied = repo_apply(res.edits)
             echo(f"applied {len(res.edits)} edit(s) to {len(res.applied)} file(s)")
     res.total_ms = round((time.monotonic() - t0) * 1000)
     write_outputs(out, title, a, res, complete=complete)
+    if complete:
+        (out / "ask.json").unlink(missing_ok=True)     # no question pending any more
     if complete:
         counts = {}
         for s in a.slot_list:
@@ -99,5 +105,6 @@ def author(flow, *, repo_root, version: str | None = None, config=None, cfg: Sit
     return res
 
 
-__all__ = ["author", "Author", "AuthorResult", "LineRec", "refine", "actual_date", "parse_answers",
+__all__ = ["author", "Author", "AuthorResult", "LineRec", "refine", "actual_date", "parse_answers", "author_command",
+           "SECRET_PLACEHOLDER",
            "EXIT_OK", "EXIT_FAILED", "EXIT_USAGE", "EXIT_ASK"]

@@ -8,8 +8,10 @@ other entry is unchanged, before and after writing.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import os
 import re
+import stat
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +54,12 @@ class Edit:
     summary: str
     create: bool = False
     version: str = ""
+    # the whole file as it was when the edit was proposed: `apply`/`diff` refuse if it changed since (an insert
+    # span has no old bytes to compare, so a shifted file would otherwise take the insert in the wrong place)
+    base_sha256: str | None = None
+    base_size: int | None = None
+    base_mtime_ns: int | None = None
+    notes: tuple[str, ...] = ()  # what the edit did that the user should know (e.g. dropped root attributes)
 
     @property
     def locator(self) -> str | None:
@@ -132,6 +140,15 @@ def encode(s: str, enc: str) -> bytes:
     return s.encode(enc, "xmlcharrefreplace")
 
 
+def file_base(path: Path, data: bytes) -> dict:
+    """Edit fields pinning the file's content at propose time (see `Edit.base_sha256`)."""
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    return {"base_sha256": hashlib.sha256(data).hexdigest(), "base_size": len(data), "base_mtime_ns": mtime}
+
+
 # ---------------------------------------------------------------------------------------------- byte helpers
 
 def newline_of(data: bytes) -> bytes:
@@ -151,8 +168,10 @@ def raw_content(data: bytes, node: Node, enc: str) -> str:
     return data[node.content_start:node.content_end].decode(enc, "surrogateescape")
 
 
-def text_span(data: bytes, node: Node, text: str, base: TextStyle, enc: str, what: str) -> Span:
-    """Replace the text of leaf `node`, keeping the whitespace around it (and its CDATA wrapper, if any)."""
+def text_span(data: bytes, node: Node, text: str, base: TextStyle, enc: str, what: str, side: str | None = None) -> Span:
+    """Replace the text of leaf `node`, keeping the whitespace around it (and its CDATA wrapper, if any).
+    ``side`` ("prefix"/"suffix"): a dynamic entry's part, whose whitespace next to the value is significant
+    (only pretty-printing whitespace there is kept as layout; see `_model.side_text`)."""
     if node.children:
         raise AmbiguousTargetError(f"{what}: <{node.tag}> (line {node.line}) has child elements")
     if node.comments:
@@ -170,12 +189,22 @@ def text_span(data: bytes, node: Node, text: str, base: TextStyle, enc: str, wha
     else:
         a = cs + (len(raw) - len(raw.lstrip(WS)))
         b = ce - (len(raw) - len(raw.rstrip(WS)))
+        if side == "prefix":     # trailing spaces/tabs are part of the prefix unless a line break follows
+            m = re.search(rb"[ \t]*[\r\n][ \t\r\n]*$", raw)
+            b = cs + m.start() if m else ce
+        elif side == "suffix":
+            m = re.match(rb"^[ \t\r\n]*[\r\n][ \t]*", raw)
+            a = cs + m.end() if m else cs
     middle = data[a:b]
     cdata = False
     if node.cdata:
         if not (middle.startswith(b"<![CDATA[") and middle.endswith(b"]]>") and middle.count(b"<![CDATA[") == 1):
             raise AmbiguousTargetError(f"{what}: <{node.tag}> (line {node.line}) mixes CDATA and text")
-        cdata = True
+        try:
+            text.encode(enc)
+            cdata = True
+        except (UnicodeEncodeError, LookupError):
+            cdata = False    # a character the file's encoding lacks: a character reference (never inside CDATA)
     st = node_style(middle.decode(enc, "surrogateescape"), base, cdata)
     return Span(a, b, middle, encode(escape_text(text, st), enc))
 
@@ -294,11 +323,17 @@ def _group(edits) -> dict[Path, list[Edit]]:
 
 def _plan(path: Path, es: list[Edit]) -> tuple[bytes, bytes]:
     if es[0].create:
-        if path.exists():
+        if path.exists() or path.is_symlink():
             raise StaleEntryError(f"{path} already exists")
         before = b""
     else:
         before = path.read_bytes()
+        digest = hashlib.sha256(before).hexdigest()
+        for e in es:
+            if (e.base_sha256 is not None and e.base_sha256 != digest) or \
+                    (e.base_size is not None and e.base_size != len(before)):
+                raise StaleEntryError(f"{path.name} changed since the edit was proposed ({e.summary}); "
+                                      "reload the repository and propose again")
     return before, apply_spans(before, [s for e in es for s in e.spans])
 
 
@@ -327,21 +362,35 @@ def apply(edits) -> list[Path]:
         verify(before, after, es)
         plans.append((path, before, after, es))
     written = []
+    temps: list[Path] = []
     try:
         for path, before, after, es in plans:
             if es[0].create:
                 path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(path.name + ".repo-tmp")
+                real, mode = path, None
+            else:
+                real = path.resolve(strict=True) if path.is_symlink() else path   # write through a symlink
+                mode = stat.S_IMODE(real.stat().st_mode)
+            tmp = real.with_name(real.name + ".repo-tmp")
+            temps.append(tmp)
             tmp.write_bytes(after)
-            os.replace(tmp, path)
-            written.append((path, before, es[0].create))
+            if mode is not None:
+                os.chmod(tmp, mode)                     # keep the file's permissions (0600 stays 0600)
+            os.replace(tmp, real)
+            written.append((real, before, es[0].create))
         for path, before, after, es in plans:
             verify(before, path.read_bytes(), es)
-    except Exception:
-        for path, before, created in written:  # roll back what was written
+    except BaseException:
+        for real, before, created in written:  # roll back what was written
             if created:
-                path.unlink(missing_ok=True)
+                real.unlink(missing_ok=True)
             else:
-                path.write_bytes(before)
+                real.write_bytes(before)
         raise
+    finally:
+        for tmp in temps:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     return [p for p, _b, _a, _e in plans]

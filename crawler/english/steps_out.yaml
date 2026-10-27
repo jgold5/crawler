@@ -4,7 +4,9 @@
 # A line no rule fits renders as None: the line is flagged (no step code is generated).
 #
 # Placeholders: {element} {row} {row_key} {grid} {value} {page} {hover} {bool} {order}
-# are rendered as Cucumber {string}s ("..."); {seconds} as a bare {long}.
+# are rendered as Cucumber {string}s ("..."); {seconds} as a bare {long}. A `"` inside a value is written `\"`
+# (Cucumber's {string} escape; it is the only one Cucumber undoes, so backslashes are written as they are). A value
+# Cucumber cannot read back exactly (a backslash right before a quote or at the end) flags the line.
 #
 # `when` keys (omitted = no constraint, except where noted):
 #   row:       none | index | key | any        (omitted = none: a rule must opt in to rows)

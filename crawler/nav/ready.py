@@ -3,12 +3,16 @@
 Three conditions, each bounded by one shared deadline:
 
 1. **Network quiet**: no request of the page (any frame) in flight, and none started for ``net_quiet_ms``.
-   In-flight requests are tracked from Playwright's request events; long-lived streams (EventSource,
-   WebSocket) are ignored.
+   In-flight requests are tracked from Playwright's request events. Ignored: long-lived streams (EventSource,
+   WebSocket, beacons), requests whose URL matches ``ignore_url_patterns`` (or ``cfg.ready_ignore_url_patterns``
+   when the config has it), and **long-lived requests**: one in flight for more than ``long_request_ms``
+   (1.5 s; a long-poll XHR, a streaming fetch) no longer holds the app "busy" (reported in ``ignored``).
 2. **No visible spinner** in the watched frames (``cfg.spinner_selectors``: AG Grid's loading overlay,
-   ``[aria-busy='true']``, ``[role='progressbar']``, the app's own spinner classes).
+   ``[aria-busy='true']``, ``[role='progressbar']``, the app's own spinner classes). A *determinate* progress
+   bar (``aria-valuenow`` set, or ``<progress value>``) shows progress, not "loading": it is not a spinner.
 3. **DOM mutation idle**: no DOM mutation in the watched frames for ``dom_quiet_ms`` (a MutationObserver
-   installed by an init script in every document, cross-origin frames included).
+   installed by an init script in every document, cross-origin frames included). A *ticker* (the same small
+   text node rewritten again and again: a clock, a "x seconds ago" label) is ignored after its 2nd change.
 
 Waiting is event/condition driven (``wait_for_event``, ``wait_for_function``); when the deadline passes the
 wait returns with ``ok=False`` and the condition that did not settle, instead of failing the caller.
@@ -18,6 +22,7 @@ wait returns with ``ok=False`` and the condition that did not settle, instead of
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -28,17 +33,37 @@ from ..config import SiteConfig
 
 NET_QUIET_MS = 100
 DOM_QUIET_MS = 150
+LONG_REQUEST_MS = 1500
+TICKER_MAX_CHARS = 40
 _IGNORED_TYPES = {"eventsource", "websocket", "ping", "beacon"}
 
 # Installed in every document (context init script) and on demand in frames that predate it.
 MUTATION_JS = """(() => {
   if (window.__crawlerReady) return true;
-  const st = window.__crawlerReady = { last: performance.now(), n: 0 };
+  const st = window.__crawlerReady = { last: performance.now(), n: 0, ticks: new WeakMap(), tickers: 0 };
+  const MAX = 40;
+  const small = r => {
+    if (r.type === 'characterData') return (r.target.data || '').length <= MAX;
+    if (r.type !== 'childList') return false;
+    const ns = [...r.addedNodes, ...r.removedNodes];
+    return ns.length > 0 && ns.length <= 2 && ns.every(n => n.nodeType === 3 && (n.data || '').length <= MAX);
+  };
   const start = () => {
     const root = document.documentElement || document;
     try {
-      new MutationObserver(() => { st.last = performance.now(); st.n++; })
-        .observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+      new MutationObserver(recs => {
+        let real = false;
+        for (const r of recs) {
+          if (small(r)) {     // the same small text rewritten again and again: a ticker, not the app settling
+            const host = r.target.nodeType === 3 ? r.target.parentNode : r.target;
+            const c = (st.ticks.get(host) || 0) + 1;
+            st.ticks.set(host, c);
+            if (c > 2) { if (c === 3) st.tickers++; continue; }
+          }
+          real = true;
+        }
+        if (real) { st.last = performance.now(); st.n++; }
+      }).observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
     } catch (e) { /* not observable yet */ }
   };
   if (document.documentElement) start(); else document.addEventListener('readystatechange', start, { once: true });
@@ -48,6 +73,7 @@ MUTATION_JS = """(() => {
 _SPINNERS_GONE_JS = """sels => {
   const vis = el => {
     if (!el.isConnected) return false;
+    if (el.matches('[role=progressbar][aria-valuenow], progress[value]')) return false;   // determinate
     const s = getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden' || +s.opacity === 0) return false;
     const r = el.getBoundingClientRect();
@@ -65,7 +91,8 @@ _DOM_IDLE_JS = """q => { const s = window.__crawlerReady; return !s || performan
 
 _SPINNER_INFO_JS = """sels => { const out = [];
   for (const sel of sels) { let els; try { els = document.querySelectorAll(sel); } catch (e) { continue; }
-    for (const el of els) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) out.push(sel); } }
+    for (const el of els) { if (el.matches('[role=progressbar][aria-valuenow], progress[value]')) continue;
+      const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) out.push(sel); } }
   return [...new Set(out)]; }"""
 
 
@@ -75,21 +102,29 @@ class ReadyReport:
     ms: int
     waited: list[str] = field(default_factory=list)   # conditions that needed waiting
     unsettled: str = ""                               # what was still busy at the deadline
+    ignored: list[str] = field(default_factory=list)  # long-lived requests not waited for (URLs)
 
     def __str__(self) -> str:
         s = f"ready in {self.ms} ms" if self.ok else f"not settled after {self.ms} ms ({self.unsettled})"
-        return s + (f" [waited: {', '.join(self.waited)}]" if self.waited else "")
+        s += f" [waited: {', '.join(self.waited)}]" if self.waited else ""
+        return s + (f" [not waited for: {len(self.ignored)} long-lived request(s), e.g. {self.ignored[0]}]"
+                    if self.ignored else "")
 
 
 class ReadyTracker:
     """Tracks the page's in-flight requests and waits for the app to settle."""
 
-    def __init__(self, page, cfg: SiteConfig, *, net_quiet_ms: int = NET_QUIET_MS, dom_quiet_ms: int = DOM_QUIET_MS):
+    def __init__(self, page, cfg: SiteConfig, *, net_quiet_ms: int = NET_QUIET_MS, dom_quiet_ms: int = DOM_QUIET_MS,
+                 long_request_ms: int = LONG_REQUEST_MS, ignore_url_patterns=None):
         self.page = page
         self.cfg = cfg
         self.net_quiet_ms = net_quiet_ms
         self.dom_quiet_ms = dom_quiet_ms
+        self.long_request_ms = long_request_ms
+        pats = list(ignore_url_patterns or []) + list(getattr(cfg, "ready_ignore_url_patterns", None) or [])
+        self._ignore = re.compile("|".join(f"(?:{p})" for p in pats)) if pats else None
         self.inflight: dict[int, object] = {}
+        self.started: dict[int, float] = {}
         self.last_net = time.monotonic()
         page.on("request", self._on_request)
         page.on("requestfinished", self._on_done)
@@ -107,16 +142,35 @@ class ReadyTracker:
     # ------------------------------------------------------------------ request tracking
     def _on_request(self, req) -> None:
         try:
-            if req.resource_type in _IGNORED_TYPES:
+            if req.resource_type in _IGNORED_TYPES or (self._ignore is not None and self._ignore.search(req.url)):
                 return
         except PlaywrightError:
             return
         self.inflight[id(req)] = req
+        self.started[id(req)] = time.monotonic()
         self.last_net = time.monotonic()
 
     def _on_done(self, req) -> None:
+        self.started.pop(id(req), None)
         if self.inflight.pop(id(req), None) is not None:
             self.last_net = time.monotonic()
+
+    def _busy(self) -> list:
+        """In-flight requests that still count: not in flight for longer than ``long_request_ms``."""
+        now = time.monotonic()
+        return [r for k, r in self.inflight.items()
+                if (now - self.started.get(k, now)) * 1000 < self.long_request_ms]
+
+    def _long_lived(self) -> list[str]:
+        now = time.monotonic()
+        out = []
+        for k, r in self.inflight.items():
+            if (now - self.started.get(k, now)) * 1000 >= self.long_request_ms:
+                try:
+                    out.append(r.url)
+                except PlaywrightError:
+                    out.append("?")
+        return out
 
     # ------------------------------------------------------------------ waiting
     def _wait_network(self, deadline: float) -> bool:
@@ -124,7 +178,7 @@ class ReadyTracker:
             remaining = (deadline - time.monotonic()) * 1000
             if remaining <= 0:
                 return False
-            if self.inflight:
+            if self._busy():
                 try:  # any finish (failures are removed by the listener while we wait)
                     self.page.wait_for_event("requestfinished", timeout=max(1, min(remaining, 250)))
                 except PlaywrightTimeoutError:
@@ -136,7 +190,7 @@ class ReadyTracker:
             try:  # quiet once no request starts within the rest of the window
                 self.page.wait_for_event("request", timeout=max(1, min(remaining, quiet_left)))
             except PlaywrightTimeoutError:
-                if not self.inflight:
+                if not self._busy():
                     return True
 
     def _frame_wait(self, frame, js: str, arg, deadline: float) -> bool:
@@ -175,12 +229,12 @@ class ReadyTracker:
         # Settling can cascade (data arrives -> render -> next request); loop until one pass is clean.
         for _ in range(5):
             clean = True
-            if self.inflight or (time.monotonic() - self.last_net) * 1000 < self.net_quiet_ms:
+            if self._busy() or (time.monotonic() - self.last_net) * 1000 < self.net_quiet_ms:
                 clean = False
                 if "network" not in waited:
                     waited.append("network")
                 if not self._wait_network(deadline):
-                    return self._report(False, t0, waited, f"{len(self.inflight)} request(s) in flight")
+                    return self._report(False, t0, waited, f"{len(self._busy())} request(s) in flight")
             for f in uniq:
                 if sels and not self._quick(f, _SPINNERS_GONE_JS, sels):
                     clean = False
@@ -211,9 +265,8 @@ class ReadyTracker:
         except PlaywrightError:
             return []
 
-    @staticmethod
-    def _report(ok: bool, t0: float, waited: list[str], unsettled: str) -> ReadyReport:
-        return ReadyReport(ok, round((time.monotonic() - t0) * 1000), list(waited), unsettled)
+    def _report(self, ok: bool, t0: float, waited: list[str], unsettled: str) -> ReadyReport:
+        return ReadyReport(ok, round((time.monotonic() - t0) * 1000), list(waited), unsettled, self._long_lived())
 
 
 def wait_ready(page, cfg: SiteConfig, frames=None, timeout_ms: int | None = None) -> ReadyReport:

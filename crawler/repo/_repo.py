@@ -9,12 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ._edit import (WS, Edit, Expect, Span, TextStyle, apply_spans, attr_span, encode, escape_attr, escape_text,
-                    file_style, line_indent, newline_of, node_bytes, node_style, raw_content, removal_span, text_span)
+                    file_base, file_style, line_indent, newline_of, node_bytes, node_style, raw_content, removal_span,
+                    text_span)
 from ._model import (AmbiguousTargetError, NameCollisionError, RepoEntry, RepoError, RepoKeyError, StaleEntryError,
                      child, entry_from_element, extract, has_placeholder, page_key_of, page_level_iframe_nodes,
                      split_template)
 from ._scan import Node, ScanError, detect_encoding, scan
-from ._schema import RepoSchema, element_nodes, kind_of, learn, load_repo_yaml, looks_like_xpath
+from ._schema import RepoSchema, element_nodes, kind_of, learn, load_repo_yaml, looks_like_xpath, targets_frame
 
 CONFIG_NAME = "repo.yaml"
 _PAGE_KEY_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -306,7 +307,8 @@ class LocatorRepo:
         if is_dyn:
             if p is None or x is None:
                 raise AmbiguousTargetError(f"{what}: dynamic entry lacks <{s.prefix_tag}> or <{s.suffix_tag}>")
-            return [text_span(data, p, prefix, st, enc, what), text_span(data, x, suffix, st, enc, what)]
+            return [text_span(data, p, prefix, st, enc, what, side="prefix"),
+                    text_span(data, x, suffix, st, enc, what, side="suffix")]
         if v is None:
             raise AmbiguousTargetError(f"{what}: no <{s.value_tag}> child to replace")
         if v.comments or v.children:
@@ -354,7 +356,8 @@ class LocatorRepo:
             raise ValueError(f"{entry.name!r} already has this locator")
         exp = Expect(entry.name, entry.page_level, False, loc, strategy=target)
         return Edit(entry.file, entry.page, "fix", tuple(spans), self.schema, exp,
-                    f"{entry.name!r}: {entry.template!r} -> {loc!r}", version=entry.version)
+                    f"{entry.name!r}: {entry.template!r} -> {loc!r}", version=entry.version,
+                    **file_base(entry.file, data))
 
     def propose_dynamic(self, entry: RepoEntry, template: str, *, strategy: str | None = None) -> Edit:
         """Make an entry dynamic: `template` holds one `{placeholder}` that splits it into prefix/suffix."""
@@ -376,7 +379,8 @@ class LocatorRepo:
             raise ValueError(f"{entry.name!r} already has this template")
         exp = Expect(entry.name, False, True, None, prefix, suffix, strategy=target)
         return Edit(entry.file, entry.page, "dynamic", tuple(spans), self.schema, exp,
-                    f"{entry.name!r}: {entry.template!r} -> {prefix + '{value}' + suffix!r}", version=entry.version)
+                    f"{entry.name!r}: {entry.template!r} -> {prefix + '{value}' + suffix!r}", version=entry.version,
+                    **file_base(entry.file, data))
 
     # ------------------------------------------------------------------------------------------ new entries
 
@@ -507,6 +511,10 @@ class LocatorRepo:
         anchor = elems[-1] if elems else (root.children[-1] if root.children else None)
         if anchor is not None:
             pos, ind = anchor.end, line_indent(data, anchor.start)
+            # a comment on the anchor's own line belongs to it ("</element> <!-- legacy -->"): insert after it
+            cm = re.match(rb"(?:[ \t]*<!--(?:(?!-->)[^\n])*-->)+", data[pos:])
+            if cm:
+                pos += cm.end()
             indent = ind if ind is not None else b""
             lead, tail = nl + indent, b""
         else:
@@ -520,7 +528,8 @@ class LocatorRepo:
         span = Span(pos, pos, b"", lead + frag + tail)
         exp = Expect(name, False, dynamic, value, prefix, suffix, strategy=strategy if has_strat else None)
         return Edit(pf.path, pf.page, "add", (span,), self.schema, exp,
-                    f"new {name!r}: {value if not dynamic else prefix + '{value}' + suffix!r}", version=pf.version)
+                    f"new {name!r}: {value if not dynamic else prefix + '{value}' + suffix!r}", version=pf.version,
+                    **file_base(pf.path, data))
 
     # ------------------------------------------------------------------------------------------ new pages
 
@@ -559,7 +568,7 @@ class LocatorRepo:
             if iframe_xpath:
                 level = [p for p in pfs if p.frame]
                 elem = [p for p in pfs if not p.frame and any(e.is_iframe for e in p.entries)]
-                model = (level if len(level) >= len(elem) else elem or level or pfs)[0]
+                model = (level if level and len(level) >= len(elem) else elem or level or pfs)[0]
         path = model.path.with_name(page_key + ".xml")
         if path.exists():
             raise NameCollisionError(f"{path} already exists", path)
@@ -568,10 +577,8 @@ class LocatorRepo:
         if root.content_start is None:
             raise RepoError(f"{model.path.name}: empty root element, cannot mirror it")
         prolog = _prolog(data, root)
-        start_tag = data[root.start:root.content_start]
-        if s.page_key and s.page_key.startswith("attr:"):
-            sp = attr_span(data, root, s.page_key[5:], page_key, enc)
-            start_tag = apply_spans(data, [sp])[root.start:root.content_start + len(sp.new) - len(sp.old)]
+        notes: list[str] = []
+        start_tag = self._root_start_tag(data, root, enc, model.page, page_key, notes)
         end_tag = data[root.content_end:root.end]
         rest = data[root.end:]
         epilog = rest if not rest.strip(WS) else nl
@@ -582,15 +589,49 @@ class LocatorRepo:
             lead, trail = nl + b"    ", nl
         exp = None
         body = trail
+        if iframe_xpath and self._frame_model(model)[0] is None:
+            # no page of the repository holds an iframe locator: there is no convention to follow (the framework
+            # evidently does not switch frames this way), so the page file gets none
+            notes.append(f"iframe {iframe_xpath.strip()!r} not written: no page of "
+                         f"{self.version or 'the repository'} has an iframe locator to copy the form from")
+            iframe_xpath = None
         if iframe_xpath:
             loc = iframe_xpath.strip()
             indent = lead[lead.rfind(b"\n") + 1:]
             frag, exp = self._frame_fragment(model, loc, enc, nl, st, indent, page_key)
             body = lead + frag + trail
         content = prolog + start_tag + body + end_tag + epilog
+        summary = f"new page {page_key!r} like {model.page!r}" + (f", iframe {iframe_xpath!r}" if iframe_xpath else "")
         return Edit(path, page_key, "new_page", (Span(0, 0, b"", content),), self.schema, exp,
-                    f"new page {page_key!r} like {model.page!r}" + (f", iframe {iframe_xpath!r}" if iframe_xpath else ""),
-                    create=True, version=model.version)
+                    summary + "".join(f"; {n}" for n in notes), create=True, version=model.version,
+                    notes=tuple(notes))
+
+    # attributes of a root start tag a new page may copy: namespace declarations and schema/version markers
+    _STRUCTURAL_ATTR = re.compile(r"(?i)^(?:xmlns(?::[\w.-]+)?|xsi:[\w.-]+|[\w.-]+:schemaLocation|version|"
+                                  r"schemaVersion|xml:lang)$")
+
+    def _root_start_tag(self, data: bytes, root: Node, enc: str, model_page: str, page_key: str,
+                        notes: list[str]) -> bytes:
+        """The model's root start tag for a new page: structural attributes kept as written, the page-key
+        attribute set to the new key, every other (page-identifying) attribute dropped and reported."""
+        tag = data[root.start:root.content_start].decode(enc, "surrogateescape")
+        key_attr = self.schema.page_key[5:] if self.schema.page_key and self.schema.page_key.startswith("attr:") else None
+        dropped: list[str] = []
+
+        def one(m: re.Match) -> str:
+            name, q, value = m.group(2), m.group(3)[0], m.group(3)[1:-1]
+            if name == key_attr:
+                return f"{m.group(1)}{name}={q}{escape_attr(page_key, q)}{q}"
+            if self._STRUCTURAL_ATTR.match(name):
+                return m.group(0)
+            dropped.append(f"{name}={q}{value}{q}")
+            return ""
+
+        out = re.sub(r"""(\s+)([\w:.-]+)\s*=\s*("[^"]*"|'[^']*')""", one, tag)
+        if dropped:
+            notes.append(f"root attributes of {model_page!r} not copied (page-specific): {', '.join(dropped)}; "
+                         f"set them for {page_key!r} by hand if the framework needs them")
+        return out.encode(enc, "surrogateescape")
 
     def _frame_name(self, model_entry: RepoEntry, model_page: str, page_key: str) -> str:
         """Name for a new page's iframe element: the name most pages share, else the model's with its page

@@ -506,3 +506,147 @@ def test_edge_formats_nonleaf_iframe_self_closing_value_latin1_numeric_entities(
     assert again.get(page, "Café").render() == "//td[.='Café crème €']"
     assert again.iframe_entry(page).render() == "//iframe[@name='main2']"
     assert again.get(page, "Other").render() == "//b"
+
+
+# ---------------------------------------------------------------------------------------------- audit regressions
+
+_STD = b"""<?xml version="1.0" encoding="UTF-8"?>
+<pageDefinition>
+    <element name="Save">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//button[@id='save']</locatorValue>
+    </element>
+    <element name="Row cell">
+        <locatorType>dynamicXpath</locatorType>
+        <xpath_a>//div[@row-index='</xpath_a>
+        <xpath_b>']//div[@col-id='qty']</xpath_b>
+    </element>
+    <element name="Other">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//a[@id='o']</locatorValue>
+    </element>
+</pageDefinition>
+"""
+
+
+def _mini(tmp_path, files: dict[str, bytes]) -> tuple[LocatorRepo, Path]:
+    d = tmp_path / "r" / "v1"
+    d.mkdir(parents=True)
+    for name, data in files.items():
+        (d / name).write_bytes(data)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RepoWarning)
+        return LocatorRepo.load(tmp_path / "r", "v1"), d
+
+
+def _reload(tmp_path) -> LocatorRepo:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RepoWarning)
+        return LocatorRepo.load(tmp_path / "r", "v1")
+
+
+def test_dynamic_template_keeps_spaces_next_to_the_placeholder(tmp_path):
+    repo, d = _mini(tmp_path, {"p.xml": _STD})
+    apply([repo.propose_dynamic(repo.get("p", "Save"), "//td[normalize-space()='Total {value} USD']")])
+    r2 = _reload(tmp_path)
+    assert r2.get("p", "Save").render("5") == "//td[normalize-space()='Total 5 USD']"
+    assert b"<xpath_a>//td[normalize-space()='Total </xpath_a>" in (d / "p.xml").read_bytes()
+    # and back: a prefix ending in a space is replaced whole (the space is part of it, not layout)
+    apply([r2.propose_dynamic(r2.get("p", "Save"), "//td[normalize-space()='Sum{value}']")])
+    assert _reload(tmp_path).get("p", "Save").render("5") == "//td[normalize-space()='Sum5']"
+    ed = _reload(tmp_path).add_entry("p", "Greeting", "//span[text()='Hello {name}']", dynamic=True)
+    assert "<xpath_a>//span[text()='Hello </xpath_a>" in diff([ed])
+
+
+def test_insert_refused_when_the_file_changed_since_propose(tmp_path):
+    repo, d = _mini(tmp_path, {"p.xml": _STD})
+    ed = repo.add_entry("p", "New one", "//button[@id='new']")
+    assert ed.base_sha256 and ed.base_size == len(_STD)
+    p = d / "p.xml"
+    tail = b"\n    </element>"
+    data = p.read_bytes()
+    i = data.index(b"<pageDefinition>")
+    p.write_bytes(data[:i] + b"<!--" + b"x" * (len(tail) - 8) + b"-->\n" + data[i:])  # shifts every offset
+    changed = p.read_bytes()
+    with pytest.raises(StaleEntryError, match="changed since the edit was proposed"):
+        apply([ed])
+    with pytest.raises(StaleEntryError):
+        diff([ed])
+    assert p.read_bytes() == changed
+
+
+def test_apply_keeps_mode_writes_through_symlinks_and_cleans_temp_files(tmp_path, monkeypatch):
+    import os
+    import stat as st
+    import crawler.repo._edit as E
+    shared = tmp_path / "shared.xml"
+    shared.write_bytes(_STD.replace(b"Save", b"Shared"))
+    repo, d = _mini(tmp_path, {"real.xml": _STD})
+    (d / "link.xml").symlink_to(shared)
+    os.chmod(d / "real.xml", 0o600)
+    repo = _reload(tmp_path)
+    apply([repo.propose(repo.get("real", "Save"), "//button[@data-testid='save']")])
+    assert st.S_IMODE((d / "real.xml").stat().st_mode) == 0o600
+    apply([repo.propose(repo.get("link", "Shared"), "//button[@data-testid='shared']")])
+    assert (d / "link.xml").is_symlink() and b"data-testid='shared'" in shared.read_bytes()
+    # a failing write rolls back and leaves no temp file behind
+    repo = _reload(tmp_path)
+    before = {p.name: p.read_bytes() for p in d.iterdir()}
+    e1 = repo.propose(repo.get("real", "Save"), "//button[@data-testid='a']")
+    e2 = repo.propose(repo.get("link", "Shared"), "//button[@data-testid='b']")
+    real, n = os.replace, [0]
+
+    def flaky(a, b):
+        n[0] += 1
+        if n[0] == 2:
+            raise OSError("disk full")
+        return real(a, b)
+
+    monkeypatch.setattr(E.os, "replace", flaky)
+    with pytest.raises(OSError):
+        apply([e1, e2])
+    assert {p.name: p.read_bytes() for p in d.iterdir()} == before
+    assert not list(tmp_path.rglob("*.repo-tmp"))
+
+
+def test_new_page_without_any_iframe_and_root_attributes(tmp_path):
+    src = _STD.replace(b"<pageDefinition>", b'<pageDefinition xmlns:x="urn:x" name="orders" url="/orders">')
+    repo, d = _mini(tmp_path, {"orders.xml": src})
+    for frame in ("//iframe[@name='appFrame-reports']", None):
+        ed = repo.new_page("reports", iframe_xpath=frame)     # no page has an iframe: no IndexError
+        text = diff([ed])
+        assert '<pageDefinition xmlns:x="urn:x">' in text and "orders" not in text and "iframe" not in text.split(
+            "+++")[1].split("\n", 1)[1]
+        assert any("name=\"orders\"" in n and "url=\"/orders\"" in n for n in ed.notes)
+        if frame:
+            assert any("not written" in n for n in ed.notes)
+    apply([repo.new_page("reports")])
+    assert _reload(tmp_path).pages() == ["orders", "reports"]
+
+
+def test_add_entry_after_a_trailing_comment_and_cdata_in_latin1(tmp_path):
+    src = _STD.replace(b"<locatorValue>//a[@id='o']</locatorValue>\n    </element>",
+                       b"<locatorValue>//a[@id='o']</locatorValue>\n    </element> <!-- Other: legacy link -->")
+    repo, d = _mini(tmp_path, {"p.xml": src, "l.xml": (
+        b'<?xml version="1.0" encoding="ISO-8859-1"?>\n<pageDefinition>\n    <element name="Price">\n'
+        b"        <locatorType>xpath</locatorType>\n        <locatorValue><![CDATA[//td[.='x']]]></locatorValue>\n"
+        b"    </element>\n</pageDefinition>\n")})
+    text = diff([repo.add_entry("p", "Added", "//button[@id='a']")])
+    assert "     </element> <!-- Other: legacy link -->\n+    <element name=\"Added\">" in text
+    apply([repo.propose(repo.get("l", "Price"), "//td[normalize-space()='Prix €']")])
+    assert _reload(tmp_path).get("l", "Price").value == "//td[normalize-space()='Prix €']"
+
+
+def test_name_containing_frame_is_not_the_iframe_entry(tmp_path):
+    src = _STD.replace(b'    <element name="Save">', b"""    <element name="Time Frame">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//select[@id='timeframe']</locatorValue>
+    </element>
+    <element name="App Frame">
+        <locatorType>xpath</locatorType>
+        <locatorValue>//iframe[@name='app']</locatorValue>
+    </element>
+    <element name="Save">""")
+    repo, _d = _mini(tmp_path, {"p.xml": src})
+    assert not repo.get("p", "Time Frame").is_iframe
+    assert repo.iframe_entry("p").name == "App Frame"
