@@ -126,12 +126,33 @@ def test_scripts_were_decoded():
     assert set(SCRIPTS) == {"COMMON_JS", "SCROLL_JS", "REVEAL_JS", "STATE_JS", "EDITOR_JS", "OPTION_JS"}
 
 
-def execute_async(page, script: str, *args):
-    """Selenium executeAsyncScript: script body gets `arguments` + a trailing callback."""
-    h = page.evaluate_handle("""([src, args]) => new Promise((resolve, reject) => {
-                                  try { new Function(src).apply(null, args.concat([resolve])); } catch (e) { reject(e); } })""",
-                             [SCRIPTS["COMMON_JS"] + script, list(args)])
+def execute_async(page, script: str, *args, watchdog_ms: int = 60_000):
+    """Selenium executeAsyncScript: script body gets `arguments` + a trailing callback. Like Selenium's script
+    timeout, a watchdog timer fails the call instead of hanging the test when the script never answers."""
+    h = page.evaluate_handle("""([src, args, ms]) => Promise.race([
+                                  new Promise((resolve, reject) => {
+                                    try { new Function(src).apply(null, args.concat([resolve])); } catch (e) { reject(e); } }),
+                                  new Promise(r => setTimeout(() => r({ error: 'script timeout (test watchdog)' }), ms))])""",
+                             [SCRIPTS["COMMON_JS"] + script, list(args), watchdog_ms])
     return h.as_element() or h.json_value()
+
+
+_STEP_PROBE = """([root, n]) => new Promise(done => { (async function () {
+  const w = wrapperOf(root), sc = scrollerOf(w, 'y'), t0 = performance.now();
+  if (!sc) return done({ perStep: 0, steps: 0 });
+  for (let i = 0; i < n; i++) { sc.scrollTop += sc.clientHeight; await settle(w, sc, Date.now() + 5000, null); }
+  const perStep = (performance.now() - t0) / n, steps = Math.ceil(sc.scrollHeight / Math.max(1, sc.clientHeight));
+  sc.scrollTop = 0; await settle(w, sc, Date.now() + 5000, null);
+  done({ perStep, steps });
+})(); })"""
+
+
+def sweep_budget_ms(page, root, floor_ms: int = 15_000) -> int:
+    """Budget for a whole-grid sweep, scaled with the measured time of one scroll step on THIS machine now
+    (a loaded CI box renders slower): steps x per-step x 3, never below ``floor_ms``."""
+    m = page.evaluate("([src, args]) => new Function('args', src + 'return (' + args[2] + ')([args[0], args[1]]);')(args)",
+                      [SCRIPTS["COMMON_JS"], [root, 4, _STEP_PROBE]])
+    return max(floor_ms, int(m["perStep"] * m["steps"] * 3))
 
 
 def execute(page, script: str, *args):
@@ -160,8 +181,11 @@ def test_scroll_row_into_view_script(open_orders, ag, mode):
     el = execute_async(page, SCRIPTS["SCROLL_JS"], root, index_cell.candidates[0].xpath, 15000)
     assert not isinstance(el, dict) and describe_cell(page, el)["rowIndex"] == 776
     missing = templates["Quantity"].candidates[0].xpath.replace("'A-950'", "'A-0'")
-    res = execute_async(page, SCRIPTS["SCROLL_JS"], root, missing, 15000)
-    assert isinstance(res, dict) and "no element matches" in res["error"]
+    budget = sweep_budget_ms(page, root)
+    res = execute_async(page, SCRIPTS["SCROLL_JS"], root, missing, budget, watchdog_ms=budget + 30_000)
+    assert isinstance(res, dict) and "no element matches" in res["error"], res
+    if mode == "angular":      # the grid API knows the key is in no row: no sweep
+        assert "grid API" in res["error"]
 
 
 def test_state_editor_and_option_scripts(open_orders):

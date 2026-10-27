@@ -4,7 +4,7 @@ Three conditions, each bounded by one shared deadline:
 
 1. **Network quiet**: no request of the page (any frame) in flight, and none started for ``net_quiet_ms``.
    In-flight requests are tracked from Playwright's request events. Ignored: long-lived streams (EventSource,
-   WebSocket, beacons), requests whose URL matches ``ignore_url_patterns`` (or ``cfg.ready_ignore_url_patterns``
+   WebSocket, beacons), requests whose URL matches ``ignore_url_patterns`` (and ``cfg.ready_ignore_urls``
    when the config has it), and **long-lived requests**: one in flight for more than ``long_request_ms``
    (1.5 s; a long-poll XHR, a streaming fetch) no longer holds the app "busy" (reported in ``ignored``).
 2. **No visible spinner** in the watched frames (``cfg.spinner_selectors``: AG Grid's loading overlay,
@@ -15,7 +15,14 @@ Three conditions, each bounded by one shared deadline:
    text node rewritten again and again: a clock, a "x seconds ago" label) is ignored after its 2nd change.
 
 Waiting is event/condition driven (``wait_for_event``, ``wait_for_function``); when the deadline passes the
-wait returns with ``ok=False`` and the condition that did not settle, instead of failing the caller.
+wait returns with ``ok=False`` and the condition that did not settle, instead of failing the caller. A sub-wait
+that times out does not end the wait: the other signals are still evaluated (with a short grace,
+``min(1 s, budget / 10)``), so a long-poll never hides a spinner and the report names everything still busy.
+
+**Stuck spinners**: a spinner still visible when a wait times out is marked stuck (in-page, on the element) and
+remembered by its signature (selector + position + size). A stuck element is not waited for again; the same
+spinner in a later document (the next page load) gets one short bounded wait (``min(1 s, budget / 10)``) per
+step, then the step goes on. ``ReadyReport.stuck`` lists them so the caller can note them once per page.
 
     tracker = ReadyTracker(page, cfg)        # once per page (installs listeners + the init script)
     tracker.wait([page.main_frame, frame])   # after goto / after each action
@@ -40,7 +47,8 @@ _IGNORED_TYPES = {"eventsource", "websocket", "ping", "beacon"}
 # Installed in every document (context init script) and on demand in frames that predate it.
 MUTATION_JS = """(() => {
   if (window.__crawlerReady) return true;
-  const st = window.__crawlerReady = { last: performance.now(), n: 0, ticks: new WeakMap(), tickers: 0 };
+  const st = window.__crawlerReady = { last: performance.now(), n: 0, ticks: new WeakMap(), tickers: 0,
+                                      id: Math.random().toString(36).slice(2) };
   const MAX = 40;
   const small = r => {
     if (r.type === 'characterData') return (r.target.data || '').length <= MAX;
@@ -70,30 +78,42 @@ MUTATION_JS = """(() => {
   return true;
 })()"""
 
-_SPINNERS_GONE_JS = """sels => {
+# Visible spinners as signatures (selector@x,y,wxh). ``known``: signatures of spinners found stuck earlier; with
+# ``fresh`` they are left out (waited for separately, briefly). Elements marked stuck in-page are never counted.
+_SPINNERS_JS = """([sels, known, fresh]) => {
   const vis = el => {
-    if (!el.isConnected) return false;
+    if (!el.isConnected || el.__crawlerStuck) return false;
     if (el.matches('[role=progressbar][aria-valuenow], progress[value]')) return false;   // determinate
     const s = getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden' || +s.opacity === 0) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
+  const out = [];
   for (const sel of sels) {
     let els;
     try { els = document.querySelectorAll(sel); } catch (e) { continue; }
-    for (const el of els) if (vis(el)) return false;
+    for (const el of els) {
+      if (!vis(el)) continue;
+      const r = el.getBoundingClientRect();
+      const sig = sel + '@' + Math.round(r.left / 8) + ',' + Math.round(r.top / 8) + ',' + Math.round(r.width) + 'x' + Math.round(r.height);
+      if (fresh && known.includes(sig)) continue;
+      out.push(sig);
+    }
   }
-  return true;
+  return [...new Set(out)];
 }"""
+_SPINNERS_GONE_JS = "args => (" + _SPINNERS_JS + ")(args).length === 0"
+# mark every visible spinner (of ``sels``) stuck: it is not waited for again in this document
+_MARK_STUCK_JS = """sels => { let n = 0;
+  for (const sel of sels) { let els; try { els = document.querySelectorAll(sel); } catch (e) { continue; }
+    for (const el of els) { const r = el.getBoundingClientRect();
+      if (el.isConnected && r.width > 0 && r.height > 0) { el.__crawlerStuck = true; n++; } } }
+  return n; }"""
 
 _DOM_IDLE_JS = """q => { const s = window.__crawlerReady; return !s || performance.now() - s.last >= q; }"""
 
-_SPINNER_INFO_JS = """sels => { const out = [];
-  for (const sel of sels) { let els; try { els = document.querySelectorAll(sel); } catch (e) { continue; }
-    for (const el of els) { if (el.matches('[role=progressbar][aria-valuenow], progress[value]')) continue;
-      const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) out.push(sel); } }
-  return [...new Set(out)]; }"""
+DOC_ID_JS = "() => (window.__crawlerReady && window.__crawlerReady.id) || null"
 
 
 @dataclass
@@ -103,10 +123,12 @@ class ReadyReport:
     waited: list[str] = field(default_factory=list)   # conditions that needed waiting
     unsettled: str = ""                               # what was still busy at the deadline
     ignored: list[str] = field(default_factory=list)  # long-lived requests not waited for (URLs)
+    stuck: list[str] = field(default_factory=list)    # spinners treated as stuck (not waited for any more)
 
     def __str__(self) -> str:
         s = f"ready in {self.ms} ms" if self.ok else f"not settled after {self.ms} ms ({self.unsettled})"
         s += f" [waited: {', '.join(self.waited)}]" if self.waited else ""
+        s += f" [stuck spinner(s), not waited for again: {', '.join(self.stuck)}]" if self.stuck else ""
         return s + (f" [not waited for: {len(self.ignored)} long-lived request(s), e.g. {self.ignored[0]}]"
                     if self.ignored else "")
 
@@ -115,17 +137,20 @@ class ReadyTracker:
     """Tracks the page's in-flight requests and waits for the app to settle."""
 
     def __init__(self, page, cfg: SiteConfig, *, net_quiet_ms: int = NET_QUIET_MS, dom_quiet_ms: int = DOM_QUIET_MS,
-                 long_request_ms: int = LONG_REQUEST_MS, ignore_url_patterns=None):
+                 long_request_ms: int = LONG_REQUEST_MS, ignore_url_patterns=None, stuck_sigs: list | None = None):
         self.page = page
         self.cfg = cfg
         self.net_quiet_ms = net_quiet_ms
         self.dom_quiet_ms = dom_quiet_ms
         self.long_request_ms = long_request_ms
-        pats = list(ignore_url_patterns or []) + list(getattr(cfg, "ready_ignore_url_patterns", None) or [])
+        pats = (list(ignore_url_patterns or []) + list(getattr(cfg, "ready_ignore_urls", None) or [])
+                + list(getattr(cfg, "ready_ignore_url_patterns", None) or []))
         self._ignore = re.compile("|".join(f"(?:{p})" for p in pats)) if pats else None
         self.inflight: dict[int, object] = {}
         self.started: dict[int, float] = {}
         self.last_net = time.monotonic()
+        # spinner signatures found stuck (across documents; pass one list to share it between pages/runs)
+        self.stuck_sigs: list[str] = stuck_sigs if stuck_sigs is not None else []
         page.on("request", self._on_request)
         page.on("requestfinished", self._on_done)
         page.on("requestfailed", self._on_done)
@@ -212,10 +237,14 @@ class ReadyTracker:
             pass
 
     def wait(self, frames=None, timeout_ms: int | None = None) -> ReadyReport:
-        """Wait until network quiet, no visible spinner and DOM idle in ``frames`` (default: main frame)."""
+        """Wait until network quiet, no visible spinner and DOM idle in ``frames`` (default: main frame).
+
+        Each condition shares one deadline; once a sub-wait has timed out, the remaining ones still run with a
+        short grace (``min(1 s, budget / 10)``) so the report names every condition still busy."""
         t0 = time.monotonic()
         budget = timeout_ms if timeout_ms is not None else self.cfg.timeout_ms
         deadline = t0 + budget / 1000.0
+        grace = min(1.0, budget / 10000.0)
         frames = [f for f in (frames or [self.page.main_frame]) if f is not None]
         seen, uniq = set(), []
         for f in frames:
@@ -223,9 +252,15 @@ class ReadyTracker:
                 seen.add(id(f))
                 uniq.append(f)
         waited: list[str] = []
+        unsettled: list[str] = []
+        stuck: list[str] = []
         sels = list(self.cfg.spinner_selectors or [])
         for f in uniq:
             self._ensure_observer(f)
+
+        def until() -> float:     # after a timeout, the other signals still get a short grace
+            return deadline if not unsettled else max(deadline, time.monotonic() + grace)
+
         # Settling can cascade (data arrives -> render -> next request); loop until one pass is clean.
         for _ in range(5):
             clean = True
@@ -233,25 +268,48 @@ class ReadyTracker:
                 clean = False
                 if "network" not in waited:
                     waited.append("network")
-                if not self._wait_network(deadline):
-                    return self._report(False, t0, waited, f"{len(self._busy())} request(s) in flight")
+                if not self._wait_network(until()):
+                    unsettled.append(f"{len(self._busy())} request(s) in flight")
             for f in uniq:
-                if sels and not self._quick(f, _SPINNERS_GONE_JS, sels):
+                if not sels:
+                    break
+                if not self._quick(f, _SPINNERS_GONE_JS, [sels, self.stuck_sigs, True]):
                     clean = False
                     if "spinner" not in waited:
                         waited.append("spinner")
-                    if not self._frame_wait(f, _SPINNERS_GONE_JS, sels, deadline):
-                        return self._report(False, t0, waited, "spinner visible: " + ", ".join(self._spinners(f, sels)))
+                    if not self._frame_wait(f, _SPINNERS_GONE_JS, [sels, self.stuck_sigs, True], until()):
+                        sigs = self._spinners(f, sels)
+                        unsettled.append("spinner visible: " + ", ".join(sorted({x.split("@")[0] for x in sigs})))
+                        self._mark_stuck(f, sels, sigs)
+                        stuck += [x for x in sigs if x not in stuck]
+                # a spinner seen stuck before (an earlier document): one short bounded wait, then go on
+                if not self._quick(f, _SPINNERS_GONE_JS, [sels, [], False]):
+                    short = min(until(), time.monotonic() + grace)
+                    if not self._frame_wait(f, _SPINNERS_GONE_JS, [sels, [], False], short):
+                        sigs = self._spinners(f, sels)
+                        self._mark_stuck(f, sels, sigs)
+                        stuck += [x for x in sigs if x not in stuck]
             for f in uniq:
                 if not self._quick(f, _DOM_IDLE_JS, self.dom_quiet_ms):
                     clean = False
                     if "dom" not in waited:
                         waited.append("dom")
-                    if not self._frame_wait(f, _DOM_IDLE_JS, self.dom_quiet_ms, deadline):
-                        return self._report(False, t0, waited, "DOM still changing")
+                    if not self._frame_wait(f, _DOM_IDLE_JS, self.dom_quiet_ms, until()):
+                        unsettled.append("DOM still changing")
+            if unsettled:
+                return self._report(False, t0, waited, "; ".join(dict.fromkeys(unsettled)), stuck)
             if clean:
-                return self._report(True, t0, waited, "")
-        return self._report(True, t0, waited, "")
+                break
+        return self._report(True, t0, waited, "", stuck)
+
+    def _mark_stuck(self, frame, sels, sigs: list[str]) -> None:
+        for x in sigs:
+            if x not in self.stuck_sigs:
+                self.stuck_sigs.append(x)
+        try:
+            frame.evaluate(_MARK_STUCK_JS, sels)
+        except PlaywrightError:
+            pass
 
     def _quick(self, frame, js: str, arg) -> bool:
         try:
@@ -261,12 +319,13 @@ class ReadyTracker:
 
     def _spinners(self, frame, sels) -> list[str]:
         try:
-            return frame.evaluate(_SPINNER_INFO_JS, sels)
+            return frame.evaluate(_SPINNERS_JS, [sels, [], False])
         except PlaywrightError:
             return []
 
-    def _report(self, ok: bool, t0: float, waited: list[str], unsettled: str) -> ReadyReport:
-        return ReadyReport(ok, round((time.monotonic() - t0) * 1000), list(waited), unsettled, self._long_lived())
+    def _report(self, ok: bool, t0: float, waited: list[str], unsettled: str, stuck=None) -> ReadyReport:
+        return ReadyReport(ok, round((time.monotonic() - t0) * 1000), list(waited), unsettled, self._long_lived(),
+                           list(stuck or []))
 
 
 def wait_ready(page, cfg: SiteConfig, frames=None, timeout_ms: int | None = None) -> ReadyReport:
@@ -274,4 +333,4 @@ def wait_ready(page, cfg: SiteConfig, frames=None, timeout_ms: int | None = None
     return ReadyTracker(page, cfg).wait(frames, timeout_ms)
 
 
-__all__ = ["ReadyTracker", "ReadyReport", "wait_ready", "MUTATION_JS"]
+__all__ = ["ReadyTracker", "ReadyReport", "wait_ready", "MUTATION_JS", "DOC_ID_JS"]

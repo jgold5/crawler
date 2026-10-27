@@ -9,11 +9,12 @@
  *             .ag-grid-scrolling-cells / .ag-grid-pinned-right-cells; one scroller
  *             (.ag-grid-viewport, role=grid) for both axes with a sticky header inside it.
  * Scrollers are found from the live DOM (nearest scrollable ancestor), not hard-coded.
- * Waiting is frame-driven (requestAnimationFrame) and bounded by a deadline; no sleeps.
+ * Waiting is frame-driven (requestAnimationFrame) and bounded by a deadline; no sleeps. Every frame wait
+ * races a 100 ms timer used only as a watchdog (an idle/hidden renderer may never run rAF callbacks).
  */
 (function () {
   "use strict";
-  var VERSION = 8;
+  var VERSION = 9;
   if (window.__crawlerGrid && window.__crawlerGrid.VERSION === VERSION) return;
 
   // ------------------------------------------------------------------ utils
@@ -30,7 +31,17 @@
   }
   function now() { return performance.now(); }
   var frames = 0;   // frames waited (reported in timings, useful when tuning speed)
-  function frame() { frames++; return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); }
+  var FRAME_WATCHDOG_MS = 100;
+  function frame() {
+    frames++;
+    return new Promise(function (r) {
+      var done = false, go = function () { if (!done) { done = true; r(); } };
+      requestAnimationFrame(go);
+      setTimeout(go, FRAME_WATCHDOG_MS);   // watchdog only: rAF normally wins
+    });
+  }
+  // A grid with no loading overlay and no rows for this long is empty (time-based: frames slow down under load).
+  function emptyAfterMs(timeoutMs) { return Math.min(2000, Math.max(300, (timeoutMs || 10000) / 20)); }
   function xpAll(xp, ctx) {
     var r = document.evaluate(xp, ctx || document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     var out = [];
@@ -767,10 +778,13 @@
     if (!g.w) return fail(g.error, g.alternatives);
     var w = g.w, def = g.def, desc = describe(w);
     // 2. ready: loading overlay gone and rows (or the no-rows overlay) present
-    var quiet = 0;
+    var quietSince = null, emptyMs = emptyAfterMs(spec.timeoutMs);
     while (now() < deadline) {
       if (!w.isConnected) return fail("Grid was removed from the page while waiting", [], { retry: true });
-      if (!loading(w)) { if (rowsOf(w).length || noRows(w) || ++quiet > 30) break; } else quiet = 0;
+      if (!loading(w)) {
+        if (quietSince == null) quietSince = now();
+        if (rowsOf(w).length || noRows(w) || now() - quietSince >= emptyMs) break;
+      } else quietSince = null;
       await frame();
     }
     if (loading(w)) return fail("Grid " + gridTitle(desc) + " still shows its loading overlay after " + spec.timeoutMs + " ms");
@@ -964,6 +978,37 @@
     return !!findOption(text).option;
   }
 
+  // ------------------------------------------------------------------ following a row (re-sorted grids)
+  // The `colId` cell of the row whose AG Grid row-id is `rowId` (row-ids are node ids: they survive sorting and
+  // filtering, the displayed index does not). Rendered rows first, then the grid API (getRowNode), then a sweep.
+  async function rowCell(spec, apis, rowId, colId) {
+    var deadline = now() + (spec.timeoutMs || 3000);
+    var g = findGrid(spec);
+    if (!g.w) return { result: { ok: false, error: g.error || "grid not found" }, el: null };
+    var w = g.w, api = getApi(w, g.def, [], apis, { api: null });
+    var check = function () {
+      var r = rowsOf(w).filter(function (x) { return x.getAttribute("row-id") === rowId; })[0];
+      return r ? cellAt(w, rowIdx(r), colId) : null;
+    };
+    // the row may still be moving (a sort that started right after the edit): find it, let the grid settle,
+    // and find it again where it ended up, until it stays put or time runs out
+    for (var attempt = 0; attempt < 5 && now() < deadline; attempt++) {
+      var hit = check();
+      if (!hit && api && api.getRowNode) {
+        try {
+          var n = api.getRowNode(rowId);
+          if (n && n.rowIndex != null) { api.ensureIndexVisible(n.rowIndex, "middle"); hit = await settle(w, vScroller(w), deadline, check); }
+        } catch (e) { /* fall back to scrolling */ }
+      }
+      if (!hit) hit = await sweepRows(w, deadline, check, colId, { steps: 0, hsteps: 0, revisits: 0, unseen: [], rowsSeen: 0 });
+      if (!hit) break;
+      await settle(w, vScroller(w), deadline, null);
+      var again = check();
+      if (again && again.isConnected) return { result: { ok: true, rowIndex: rowIdx(rowOf(again)) }, el: again };
+    }
+    return { result: { ok: false, error: "row " + rowId + " was not found again" }, el: null };
+  }
+
   // ------------------------------------------------------------------ grid summary (crawler.author)
   // The grid as a whole: every column (scrolled-out ones included), the displayed row count and the
   // verified anchors of its root. `el` is the grid's .ag-root-wrapper.
@@ -976,10 +1021,13 @@
       await frame();
     }
     if (!g.w) return { result: { ok: false, error: g.error, alternatives: g.alternatives || [] }, el: null };
-    var w = g.w, desc = describe(w), quiet = 0;
+    var w = g.w, desc = describe(w), quietSince = null, emptyMs = emptyAfterMs(spec.timeoutMs);
     while (now() < deadline) {
       if (!w.isConnected) return { result: { ok: false, retry: true, error: "Grid was removed from the page while waiting" }, el: null };
-      if (!loading(w)) { if (rowsOf(w).length || noRows(w) || ++quiet > 30) break; } else quiet = 0;
+      if (!loading(w)) {
+        if (quietSince == null) quietSince = now();
+        if (rowsOf(w).length || noRows(w) || now() - quietSince >= emptyMs) break;
+      } else quietSince = null;
       await frame();
     }
     var apiSrc = { api: null }, api = getApi(w, g.def, notes, apis, apiSrc);
@@ -1015,7 +1063,7 @@
   window.__crawlerGrid = {
     VERSION: VERSION, resolve: resolve, reveal: reveal, cellInfo: cellInfo, editorRoot: editorRoot,
     editorKind: editorKind, findOption: findOption, scrollOptions: scrollOptions, lit: lit, norm: norm,
-    info: info, rootCheck: rootCheck,
+    info: info, rootCheck: rootCheck, rowCell: rowCell,
     listGrids: function () { return allGrids().map(function (w) { return gridTitle(describe(w)); }); }
   };
 })();

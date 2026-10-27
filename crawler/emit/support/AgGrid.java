@@ -39,6 +39,8 @@ public final class AgGrid {
 
     private static final Duration POLL = Duration.ofMillis(50);
     private static final Duration EDIT_START = Duration.ofSeconds(2);
+    /** Upper bound of {@link #reveal}; every in-browser wait also races a watchdog timer (never a sleep). */
+    private static final Duration REVEAL_TIMEOUT = Duration.ofSeconds(3);
     private static final String TEXT_INPUT = "textarea,input:not([type=checkbox]):not([type=radio]):not([type=hidden])";
 
     private AgGrid() {
@@ -92,7 +94,14 @@ public final class AgGrid {
 
     /** Scrolls the grid so that {@code element} is fully visible inside it (not under pinned columns). */
     public static void reveal(WebDriver driver, WebElement element) {
-        js(driver).executeAsyncScript(COMMON_JS + REVEAL_JS, element);
+        WebDriver.Timeouts timeouts = driver.manage().timeouts();
+        Duration previous = timeouts.getScriptTimeout();
+        timeouts.scriptTimeout(REVEAL_TIMEOUT.plusSeconds(5));
+        try {
+            js(driver).executeAsyncScript(COMMON_JS + REVEAL_JS, element, REVEAL_TIMEOUT.toMillis());
+        } finally {
+            timeouts.scriptTimeout(previous);
+        }
     }
 
     // ------------------------------------------------------------------ editing
@@ -370,7 +379,17 @@ public final class AgGrid {
     private static final String COMMON_JS = ""
         + "var Q = String.fromCharCode(34);\n"
         + "var norm = function (s) { return String(s == null ? '' : s).replace(/[ \\t\\r\\n]+/g, ' ').replace(/^ | $/g, ''); };\n"
-        + "var frame = function () { return new Promise(function (r) { requestAnimationFrame(function () { r(); }); }); };\n"
+        + "var frame = function () {\n"
+        + "  return new Promise(function (r) {\n"
+        + "    var done = false, go = function () { if (!done) { done = true; r(); } };\n"
+        + "    requestAnimationFrame(go);\n"
+        + "    setTimeout(go, 100);   // watchdog only: rAF normally wins\n"
+        + "  });\n"
+        + "};\n"
+        + "var bounded = function (cb, ms) {\n"
+        + "  var fired = false, t = setTimeout(function () { if (!fired) { fired = true; cb({ error: 'timed out after ' + ms + ' ms (watchdog)' }); } }, ms);\n"
+        + "  return function (v) { if (!fired) { fired = true; clearTimeout(t); cb(v); } };\n"
+        + "};\n"
         + "var vis = function (e) { return !!e && e.isConnected && !e.closest('.ag-hidden') && e.getClientRects().length > 0; };\n"
         + "var wrapperOf = function (root) {\n"
         + "  if (!root) return null;\n"
@@ -445,7 +464,8 @@ public final class AgGrid {
         + "};\n";
 
     private static final String SCROLL_JS = ""
-        + "var root = arguments[0], xp = arguments[1], deadline = Date.now() + arguments[2], done = arguments[arguments.length - 1];\n"
+        + "var root = arguments[0], xp = arguments[1], deadline = Date.now() + arguments[2];\n"
+        + "var done = bounded(arguments[arguments.length - 1], arguments[2] + 2000);\n"
         + "var one = function () {\n"
         + "  var r = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);\n"
         + "  return r.snapshotLength === 1 ? r.snapshotItem(0) : null;\n"
@@ -494,12 +514,29 @@ public final class AgGrid {
         + "    var el = one();\n"
         + "    if (el) return done(el);\n"
         + "    var colId = lastColId(), key = keyOf(), idx = indexOf(), api = ngApi(w);\n"
+        + "    var apiVal = function (n, col) { return norm(api.getCellValue ? api.getCellValue({ rowNode: n, colKey: col, useFormatter: true }) : (n.data || {})[col]); };\n"
+        + "    var keyCells = function () {\n"
+        + "      return key ? Array.prototype.filter.call(w.querySelectorAll('[row-index] [col-id]'), function (c) { return c.getAttribute('col-id') === key.col && c.closest('.ag-root-wrapper') === w; }) : [];\n"
+        + "    };\n"
+        + "    var rowTotal = function () {\n"
+        + "      var g = w.querySelector('[role=grid],[role=treegrid]'), rc = g ? parseInt(g.getAttribute('aria-rowcount') || '', 10) : NaN;\n"
+        + "      var hdr = {};\n"
+        + "      Array.prototype.forEach.call(w.querySelectorAll('.ag-header [role=row][aria-rowindex]'), function (r) { hdr[r.getAttribute('aria-rowindex')] = 1; });\n"
+        + "      return isNaN(rc) ? null : Math.max(0, rc - Object.keys(hdr).length);\n"
+        + "    };\n"
+        + "    var missing = 'no element matches the locator: no row with ' + (key ? key.col + ' = ' + key.value : '') ;\n"
         + "    if (api && (key || idx != null)) {\n"
         + "      if (key) {\n"
-        + "        api.forEachNodeAfterFilterAndSort(function (n) {\n"
-        + "          var v = api.getCellValue ? api.getCellValue({ rowNode: n, colKey: key.col, useFormatter: true }) : (n.data || {})[key.col];\n"
-        + "          if (idx == null && norm(v) === key.value) idx = n.rowIndex;\n"
+        + "        var hits = 0, all = 0;\n"
+        + "        api.forEachNodeAfterFilterAndSort(function (n) { if (!n.group && apiVal(n, key.col) === key.value) { hits++; if (idx == null) idx = n.rowIndex; } });\n"
+        + "        if (!hits) api.forEachNode(function (n) { if (!n.group && apiVal(n, key.col) === key.value) all++; });\n"
+        + "        var kc = keyCells();\n"
+        + "        var sameText = api.getDisplayedRowAtIndex && kc.length > 0 && kc.every(function (c) {\n"
+        + "          var n = api.getDisplayedRowAtIndex(parseInt(c.closest('[row-index]').getAttribute('row-index'), 10));\n"
+        + "          return !!n && apiVal(n, key.col) === norm(c.textContent);\n"
         + "        });\n"
+        + "        if (!hits && all) return done({ error: missing + ' displayed: the row is hidden by the grid filter (grid API)' });\n"
+        + "        if (!hits && sameText) return done({ error: missing + ' (grid API: the key is in no row)' });\n"
         + "      }\n"
         + "      if (idx != null) {\n"
         + "        api.ensureIndexVisible(idx, 'middle');\n"
@@ -507,6 +544,12 @@ public final class AgGrid {
         + "        el = await settle(w, scrollerOf(w, 'y'), deadline, one);\n"
         + "        if (el) return done(el);\n"
         + "      }\n"
+        + "    }\n"
+        + "    if (key) {\n"
+        + "      var total = rowTotal(), kcs = keyCells(), seen = {};\n"
+        + "      kcs.forEach(function (c) { seen[c.closest('[row-index]').getAttribute('row-index')] = norm(c.textContent); });\n"
+        + "      var vals = Object.keys(seen).map(function (k) { return seen[k]; });\n"
+        + "      if (total != null && total > 0 && vals.length >= total && vals.indexOf(key.value) < 0) return done({ error: missing + ' (every row is rendered)' });\n"
         + "    }\n"
         + "    var hs = scrollerOf(w, 'x');\n"
         + "    var colRendered = function () {\n"
@@ -552,7 +595,8 @@ public final class AgGrid {
         + "})();\n";
 
     private static final String REVEAL_JS = ""
-        + "var el = arguments[0], done = arguments[arguments.length - 1], deadline = Date.now() + 3000;\n"
+        + "var el = arguments[0], ms = typeof arguments[1] === 'number' ? arguments[1] : 3000, deadline = Date.now() + ms;\n"
+        + "var done = bounded(arguments[arguments.length - 1], ms + 2000);\n"
         + "var w = el.closest('.ag-root-wrapper');\n"
         + "el.scrollIntoView({ block: 'center', inline: el.closest(pinnedSel) ? 'nearest' : 'center' });\n"
         + "if (!w) return done(true);\n"

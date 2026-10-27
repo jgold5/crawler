@@ -112,6 +112,20 @@ location in the repo is known. Until then the report notes that grid config wasn
 a cropped screenshot, its location ("toolbar of Open Trades, 3rd icon") and its evidence
 ("fa-arrows-rotate, no tooltip"). You answer with a number or reword the line, and the answer is
 remembered in a small local `aliases.yaml` (`"refresh icon" on TradeEntry → entry X`).
+It asks only when 2+ plausible candidates exist (same kind, similar name). An element that is
+simply not there after waiting fails the line clearly ("not found" + the closest names); a
+`verify` of a missing element is a failed check and the flow goes on.
+
+**Late rendering and transient changes.** A match is accepted only once it is stable: the page
+has been mutation-quiet for 250 ms, or two looks at least 250 ms apart agree (an element that
+appeared late needs a window as long as its delay), so a second "Save" rendering a moment later
+makes the line ambiguous instead of picking the first. Entry match counts are taken the same way.
+The page's iframe is found again from its iframe locator on every line (a framed app waits for
+it). A line whose element, document or frame changed under it is retried once; when the page
+reloaded right after the previous line acted, that line is replayed once. A toast that is gone
+before its `verify ... is displayed` line runs is caught by a watcher installed before the action.
+App-ready ignores long-lived requests and `ready_ignore_urls` (site.yaml); a spinner that never
+goes away is waited for once, then noted (once per page) and given one short wait per step.
 
 **Locators for icons** target the clickable element, not the `<i>`/`<svg>` itself, anchored on
 the icon's identity, e.g.

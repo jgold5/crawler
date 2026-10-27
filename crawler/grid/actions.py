@@ -3,7 +3,12 @@
 Every action re-finds the cell through its verified concrete XPath (re-scrolling the grid if
 the row/column was virtualized away since resolve_cell), brings it fully into the grid's
 visible body, acts like a user (double-click / keys / clicks), and verifies the outcome
-(editor closed, displayed value or checkbox state). All waits are event/condition driven.
+(editor closed, displayed value or checkbox state). All waits are event/condition driven, and every
+sub-wait's budget is a fraction of the caller's timeout (``cfg.timeout_ms``), never a fixed number.
+
+A grid may re-sort while a cell is edited (sort on the edited column, live updates): after the commit the row is
+followed by its AG Grid row-id (a key row by its key), so the value is verified in the row that was edited,
+wherever it is now; a move is noted on the cell (``ResolvedCell.row_moved`` and ``notes``).
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from ..config import SiteConfig
-from .resolve import GridError, ResolvedCell, ensure_grid_engine, run_engine
+from .resolve import GridError, ResolvedCell, _apis, ensure_grid_engine, evaluate_bounded, run_engine
 from .xpath import fill_template, normalize_space
 
 ACTIONS = ("click", "fill", "select", "check", "uncheck", "locate")
@@ -26,6 +31,13 @@ _CELL_OF = "el => el.closest('[col-id]') || el"
 _INFO = "el => window.__crawlerGrid.cellInfo(el)"
 _EDITING = "el => { const c = el.closest('[col-id]') || el; return !!c.isConnected && !!window.__crawlerGrid.cellInfo(c).editing; }"
 _NOT_EDITING = "el => { const c = el.closest('[col-id]') || el; return !c.isConnected || !window.__crawlerGrid.cellInfo(c).editing; }"
+_ROW_OF = """el => { const c = el.closest('[col-id]') || el, r = c.closest('[row-index]');
+  return r ? { id: r.getAttribute('row-id'), index: parseInt(r.getAttribute('row-index'), 10) } : null; }"""
+
+
+def quick_ms(timeout_ms: int, frac: float = 0.2, floor: int = 300) -> int:
+    """A sub-wait's budget: a fraction of the caller's timeout (10 s -> 2 s), never more than the timeout."""
+    return max(1, min(int(timeout_ms), max(floor, int(timeout_ms * frac))))
 
 
 def _single(page, xpath: str):
@@ -54,11 +66,69 @@ def _locate(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, timeout_ms: i
                                 f"is gone: {res.get('error')}", res.get("alternatives") or [])
             el = _single(page, xpath)
         if el is not None:
-            page.evaluate("el => window.__crawlerGrid.reveal(el, 3000)", el)
+            _reveal(page, el, timeout_ms)
             again = _single(page, xpath)
             if again is not None:
                 return again
     raise GridError(f"grid row found again but {xpath} no longer matches exactly one element")
+
+
+def _reveal(page, el, timeout_ms: int) -> None:
+    budget = quick_ms(timeout_ms, 0.3)
+    evaluate_bounded(page, "([el, ms]) => window.__crawlerGrid.reveal(el, ms)", [el, budget], budget, fallback=False)
+
+
+def _row_cell(page, cell: ResolvedCell, row_id: str, timeout_ms: int):
+    """(element, row-index) of ``cell``'s column in the row whose row-id is ``row_id`` (None, None: gone)."""
+    ensure_grid_engine(page)
+    spec = dict(cell.spec, timeoutMs=int(timeout_ms))
+    jh = evaluate_bounded(page, "([spec, apis, id, col]) => window.__crawlerGrid.rowCell(spec, apis, id, col)",
+                          [spec, _apis(page, spec), row_id, cell.col_id], timeout_ms,
+                          fallback={"result": {"ok": False}, "el": None}, handle=True)
+    res = jh.get_property("result").json_value()
+    if not res.get("ok"):
+        return None, None
+    el = jh.get_property("el").as_element()
+    if el is None:
+        return None, None
+    _reveal(page, el, timeout_ms)
+    if not page.evaluate("el => el.isConnected", el):     # re-rendered while being revealed: once more
+        return _row_cell_once(page, cell, row_id, timeout_ms)
+    return el, res.get("rowIndex")
+
+
+def _row_cell_once(page, cell: ResolvedCell, row_id: str, timeout_ms: int):
+    spec = dict(cell.spec, timeoutMs=int(timeout_ms))
+    jh = evaluate_bounded(page, "([spec, apis, id, col]) => window.__crawlerGrid.rowCell(spec, apis, id, col)",
+                          [spec, _apis(page, spec), row_id, cell.col_id], timeout_ms,
+                          fallback={"result": {"ok": False}, "el": None}, handle=True)
+    res = jh.get_property("result").json_value()
+    el = jh.get_property("el").as_element() if res.get("ok") else None
+    return (el, res.get("rowIndex")) if el is not None else (None, None)
+
+
+def locate_followed(page, cell: ResolvedCell, cfg: SiteConfig, timeout_ms: int):
+    """The cell's live element: through the followed row when the row moved (re-sorted grid), else its XPath."""
+    if cell.row_dom_id and cell.key_value is None:      # an edited index row: the row itself, wherever it is now
+        el, now = _row_cell(page, cell, cell.row_dom_id, timeout_ms)
+        if el is None:
+            raise GridError(f"the edited row (row-id {cell.row_dom_id}) is not in the grid any more")
+        _note_move(cell, now)
+        cell.handle = el
+        return el
+    el = _locate(page, cell, cfg, cell.candidates[0].xpath, timeout_ms)
+    cell.handle = el
+    return el
+
+
+def _note_move(cell: ResolvedCell, now: int | None) -> None:
+    before = cell.row_moved[0] if cell.row_moved else cell.row_index
+    if before is None or now is None or now == before:
+        return
+    cell.row_moved = (before, now)
+    note = (f"the grid re-sorted during the edit: the edited row moved from row-index {before} to {now}; "
+            f"it was followed (by its row-id) and verified at its new position")
+    cell.notes = [n for n in cell.notes if not n.startswith("the grid re-sorted during the edit")] + [note]
 
 
 def _truthy(value: str | None) -> bool:
@@ -109,7 +179,7 @@ def _set_checkbox(page, cell_el, want: bool, timeout_ms: int) -> None:
 
 
 def _start_editing(page, cell_el, timeout_ms: int) -> None:
-    quick = min(timeout_ms, 2000)
+    quick = quick_ms(timeout_ms)
     cell_el.dblclick(timeout=timeout_ms)
     if _wait(page, _EDITING, cell_el, quick):
         return
@@ -127,7 +197,7 @@ def _commit(page, cell_el, focus_el, timeout_ms: int) -> None:
         (focus_el or cell_el).press("Enter")
     except PlaywrightError:
         page.keyboard.press("Enter")
-    if _wait(page, _NOT_EDITING, cell_el, min(timeout_ms, 2000)):
+    if _wait(page, _NOT_EDITING, cell_el, quick_ms(timeout_ms)):
         return
     page.keyboard.press("Tab")  # last resort: moves focus out, which also stops editing
     if not _wait(page, _NOT_EDITING, cell_el, timeout_ms):
@@ -152,7 +222,9 @@ def _pick_option(page, root, value: str, timeout_ms: int) -> None:
             raise GridError("the cell's select editor did not open its option list")
     found = page.evaluate("v => window.__crawlerGrid.findOption(v)", value)
     if found["count"] == 0:
-        page.evaluate("([v, t]) => window.__crawlerGrid.scrollOptions(v, t)", [value, min(timeout_ms, 3000)])
+        budget = quick_ms(timeout_ms, 0.3)
+        evaluate_bounded(page, "([v, t]) => window.__crawlerGrid.scrollOptions(v, t)", [value, budget], budget,
+                         fallback=False)
         found = page.evaluate("v => window.__crawlerGrid.findOption(v)", value)
     if found["count"] != 1:
         raise GridError(f"{'no' if not found['count'] else str(found['count'])} option(s) {value!r} in the select editor",
@@ -164,6 +236,9 @@ def _pick_option(page, root, value: str, timeout_ms: int) -> None:
 def _edit(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, cell_el, action: str, value: str,
           timeout_ms: int) -> None:
     info = page.evaluate(_INFO, cell_el)
+    row = page.evaluate(_ROW_OF, cell_el) or {}
+    cell.row_dom_id = row.get("id")
+    before = row.get("index")
     if info.get("checkbox") and not info.get("editing"):
         if action == "select":
             raise GridError(f"column {cell.col_id!r} is a checkbox; use check/uncheck")
@@ -181,7 +256,7 @@ def _edit(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, cell_el, action
         _commit(page, cell_el, box, timeout_ms)
     elif kind in ("picker", "native-select"):
         _pick_option(page, root, value, timeout_ms)
-        if not _wait(page, _NOT_EDITING, cell_el, min(timeout_ms, 1000)):
+        if not _wait(page, _NOT_EDITING, cell_el, quick_ms(timeout_ms, 0.1)):
             _commit(page, cell_el, None, timeout_ms)
     elif kind == "checkbox":
         box = root.query_selector("input[type=checkbox], [role=checkbox]")
@@ -192,18 +267,40 @@ def _edit(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, cell_el, action
     else:
         page.keyboard.press("Escape")
         raise GridError(f"unsupported cell editor in column {cell.col_id!r} ({kind or 'none found'})")
-    _verify_value(page, cell, cfg, xpath, value, timeout_ms)
+    _verify_value(page, cell, cfg, xpath, value, timeout_ms, before)
 
 
-def _verify_value(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, value: str, timeout_ms: int) -> None:
-    """The cell (re-found by its locator; by the new key when the key itself was edited) shows `value`."""
-    if cell.key_col_id and cell.col_id == cell.key_col_id and not cell.control:
+_SHOWS = """([el, v]) => { if (!el.isConnected) return false;
+  const t = window.__crawlerGrid.cellInfo(el).text; return t === v || t.toLowerCase() === v.toLowerCase(); }"""
+
+
+def _verify_value(page, cell: ResolvedCell, cfg: SiteConfig, xpath: str, value: str, timeout_ms: int,
+                  before: int | None = None) -> None:
+    """The edited cell shows `value`. Re-found in the row that was edited: an index row by its row-id (the grid
+    may have re-sorted it elsewhere), a key row by its key (the new key when the key itself was edited)."""
+    by_key_edit = bool(cell.key_col_id and cell.col_id == cell.key_col_id and not cell.control)
+    if by_key_edit:
         xpath = fill_template(cell.template.xpath, {cell.template.params[0]: value})
-    el = _locate(page, cell, cfg, xpath, timeout_ms) if xpath == cell.candidates[0].xpath else _single(page, xpath)
-    if el is None:
-        raise GridError(f"after editing, no cell matches {xpath}")
-    ok = _wait(page, """([el, v]) => { const t = window.__crawlerGrid.cellInfo(el).text; return t === v || t.toLowerCase() === v.toLowerCase(); }""",
-               [el, normalize_space(value)], min(timeout_ms, 1500))
+    deadline_ms = quick_ms(timeout_ms, 0.15)
+    for _ in range(2):           # the row may move again while it is being read (a grid that keeps re-sorting)
+        el, now = None, None
+        if cell.key_value is None and cell.row_dom_id and not by_key_edit:
+            el, now = _row_cell(page, cell, cell.row_dom_id, timeout_ms)
+            if el is None:       # never read another row at the old index instead
+                raise GridError(f"after editing, the edited row (row-id {cell.row_dom_id}) was not found again "
+                                f"in the grid (re-sorted or reloaded?)")
+        if el is None:
+            el = _locate(page, cell, cfg, xpath, timeout_ms) if xpath == cell.candidates[0].xpath else _single(page, xpath)
+            if el is None:
+                raise GridError(f"after editing, no cell matches {xpath}")
+            now = (page.evaluate(_ROW_OF, el) or {}).get("index")
+        if before is not None and now is not None and now != before:
+            cell.row_index = before if cell.row_index is None else cell.row_index
+            _note_move(cell, now)
+        ok = _wait(page, _SHOWS, [el, normalize_space(value)], deadline_ms)
+        if ok or page.evaluate("el => el.isConnected", el):
+            break
+    cell.handle = el
     text = page.evaluate(_INFO, el)["text"]
     if not ok and not _display_matches(text, value):
         raise GridError(f"cell {cell.col_id!r} shows {text!r} after editing, expected {value!r}")
@@ -217,8 +314,7 @@ def act_on_cell(page, cell: ResolvedCell, action: str, value: str | None, cfg: S
         raise GridError(f"unsupported grid action {action!r}", list(ACTIONS))
     timeout_ms = int(timeout_ms or cfg.timeout_ms)
     xpath = cell.candidates[0].xpath
-    el = _locate(page, cell, cfg, xpath, timeout_ms)
-    cell.handle = el
+    el = locate_followed(page, cell, cfg, timeout_ms)
     if action == "locate":
         return
     if action == "click":

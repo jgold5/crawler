@@ -354,3 +354,63 @@ def test_contenteditable_and_role_textbox_near_text(page):
     assert r.handle.get_attribute("role") == "textbox"
     cs = generate(page, r.handle, CFG)
     assert cs[0].xpath == "//b[normalize-space()='Summary']/following::div[1]"
+
+
+# ---------------------------------------------------------------- stability under late rendering (GOALS G2)
+
+def test_second_match_rendering_just_after_the_first_is_ambiguous(page):
+    """A second "Save" rendered 120 ms after the first: the resolution must be stable for a window, so the line
+    is ambiguous instead of silently resolving to the first one to appear."""
+    page.set_content("""<div id="a"></div><div id="b"></div><script>
+      setTimeout(() => { document.getElementById('a').innerHTML = '<button>Save</button>'; }, 300);
+      setTimeout(() => { document.getElementById('b').innerHTML = '<button>Save</button>'; }, 420);
+    </script>""")
+    with pytest.raises(ResolveError) as ei:
+        res(page, "click", timeout=4000, query="Save")
+    assert ei.value.kind == "ambiguous" and "2 elements match equally well" in ei.value.message
+
+
+def test_late_arrival_needs_a_longer_window(page):
+    """Content that arrives late (1.2 s, no app-ready signal) may keep arriving: the window grows to the delay,
+    so a second "Save" 700 ms after the first still makes the line ambiguous."""
+    page.set_content("""<div id="a"></div><div id="b"></div><script>
+      setTimeout(() => { document.getElementById('a').innerHTML = '<button>Save</button>'; }, 1200);
+      setTimeout(() => { document.getElementById('b').innerHTML = '<button>Save</button>'; }, 1900);
+    </script>""")
+    with pytest.raises(ResolveError) as ei:
+        res(page, "click", timeout=8000, query="Save")
+    assert ei.value.kind == "ambiguous"
+
+
+def test_stable_single_match_is_accepted_quickly(page):
+    page.set_content("<button>Save</button>")
+    page.evaluate("() => new Promise(r => setTimeout(r, 300))")       # the document has been quiet a while
+    t0 = time.monotonic()
+    r = res(page, "click", query="Save")
+    assert r.description and time.monotonic() - t0 < 1.0
+
+
+def test_rerendered_element_is_stable_by_description(page):
+    """The element is replaced by an identical clone every 100 ms: the description stays the same, so the
+    resolution is stable (the latest element is returned)."""
+    page.set_content("""<div id="a"><button>Save</button></div><script>
+      setInterval(() => { const b = document.querySelector('#a button'); b.replaceWith(b.cloneNode(true)); }, 100);
+    </script>""")
+    r = res(page, "click", timeout=4000, query="Save")
+    assert r.handle.evaluate("e => e.localName") == "button"
+
+
+def test_transient_errors_match_case_insensitively():
+    from crawler.grid.resolve import is_transient as grid_transient
+    from crawler.resolver import is_transient
+    for msg in ("ElementHandle.click: Element is not attached to the DOM", "EXECUTION CONTEXT WAS DESTROYED",
+                "Frame.evaluate: Frame was detached", "frame was detached", "Protocol error: Cannot find context"):
+        assert is_transient(Exception(msg)) and grid_transient(Exception(msg)), msg
+    assert not is_transient(Exception("Invalid XPath"))
+
+
+def test_missing_element_is_kind_none(page):
+    page.set_content("<button>Save</button>")
+    with pytest.raises(ResolveError) as ei:
+        res(page, "click", timeout=300, query="Delete account")
+    assert ei.value.kind == "none"

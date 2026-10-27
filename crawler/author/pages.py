@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -85,8 +86,13 @@ def find_page(written: str, repo: LocatorRepo, cfg: SiteConfig) -> tuple[PageRef
     return PageRef(written, key, in_repo, cname, page_url(cfg, cname), how or chow), []
 
 
-def content_frame(page, timeout_ms: int = 10_000):
-    """The app's content frame: the largest visible iframe of the main document (None: the app is not framed)."""
+_VISIBLE_FRAME_JS = """() => [...document.querySelectorAll('iframe, frame')].some(f => {
+  const r = f.getBoundingClientRect(), src = f.getAttribute('src') || '';
+  return r.width > 0 && r.height > 0 && !!src && !src.startsWith('about:'); })"""
+_BODY_READY_JS = "() => document.readyState !== 'loading' && !!document.body"
+
+
+def _largest_iframe(page):
     best, best_area = None, 0.0
     for el in page.main_frame.query_selector_all("iframe, frame"):
         try:
@@ -99,16 +105,47 @@ def content_frame(page, timeout_ms: int = 10_000):
         area = box["width"] * box["height"]
         if area > best_area:
             best, best_area = el, area
-    if best is None:
-        return None
-    frame = best.content_frame()
-    if frame is None:
-        return None
-    try:
-        frame.wait_for_url(lambda u: not u.startswith("about:"), wait_until="domcontentloaded", timeout=timeout_ms)
-    except PlaywrightError:
-        return None
-    return frame
+    return best
+
+
+def content_frame(page, timeout_ms: int = 10_000, expect: bool = False):
+    """The app's content frame: the largest visible iframe of the main document (None: the app is not framed).
+
+    ``expect``: the app is known to be framed (the repository's pages have iframe entries, or an earlier page of
+    this run was framed): wait, bounded by ``timeout_ms``, for such an iframe to appear (a shell may add it after
+    its own XHR) instead of concluding "not framed". The frame is returned once it is attached, has left
+    about:blank and its document has a body (it is re-found if the iframe is replaced meanwhile)."""
+    from ..resolver import is_transient
+    deadline = time.monotonic() + max(1, timeout_ms) / 1000.0
+
+    def left() -> float:
+        return max(1.0, (deadline - time.monotonic()) * 1000.0)
+
+    if expect:
+        try:
+            page.main_frame.wait_for_function(_VISIBLE_FRAME_JS, timeout=left())
+        except PlaywrightError:
+            return None
+    while time.monotonic() < deadline:
+        best = _largest_iframe(page)
+        if best is None:
+            return None
+        try:
+            frame = best.content_frame()
+            if frame is None:            # the element exists, its frame is not attached yet
+                try:
+                    page.wait_for_event("frameattached", timeout=min(left(), 250.0))
+                except PlaywrightError:
+                    pass
+                continue
+            frame.wait_for_url(lambda u: not u.startswith("about:"), wait_until="domcontentloaded", timeout=left())
+            frame.wait_for_function(_BODY_READY_JS, timeout=left())
+            if not frame.is_detached():
+                return frame
+        except PlaywrightError as e:
+            if not is_transient(e) or time.monotonic() >= deadline:
+                return None
+    return None
 
 
 __all__ = ["PageRef", "find_page", "match_name", "page_url", "new_page_key", "content_frame"]

@@ -352,3 +352,44 @@ def test_font_awesome_short_form_is_not_class_fragile():
         "//button[.//i[contains(concat(' ',normalize-space(@class),' '),' fa-arrows-rotate ')]]")
     assert fragility("//button[contains(@class,'btn-primary')]")      # ordinary classes still flagged
     assert fragility("//button[.//i[contains(@class,'fa-pen')]]")     # single-word FA name: substring-unsafe
+
+
+# ---------------------------------------------------------------- slots.check: real reasons, transient errors raised
+
+class _Raising:
+    def __init__(self, msg):
+        self.msg = msg
+
+    def evaluate(self, *a, **kw):
+        from playwright.sync_api import Error as PlaywrightError
+        raise PlaywrightError(self.msg)
+
+
+def test_check_records_the_real_error_and_raises_transient_ones():
+    import pytest
+    from playwright.sync_api import Error as PlaywrightError
+
+    from crawler.author.slots import Use, _entry_problem, check
+    res = check(_Raising("Frame.evaluate: SyntaxError: bad xpath"), [("xpath", "//a")], None)
+    assert res[0]["n"] == -1 and "SyntaxError" in res[0]["error"]
+    assert "could not be checked: Frame.evaluate: SyntaxError" in _entry_problem(Use(1, 1, entry=res[0]))
+    for msg in ("ElementHandle.evaluate: Execution context was destroyed", "Frame.evaluate: FRAME WAS DETACHED",
+                "Element is not attached to the DOM"):
+        with pytest.raises(PlaywrightError):
+            check(_Raising(msg), [("xpath", "//a")], None)
+
+
+def test_product_code_has_no_fixed_sleeps():
+    """GOALS G2: waits are condition driven; a timer appears only as a watchdog racing a real condition."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "crawler"
+    bad = []
+    for f in root.rglob("*"):
+        if f.suffix not in (".py", ".js", ".java") or "__pycache__" in f.parts:
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if "time.sleep(" in line or "wait_for_timeout(" in line:
+                bad.append(f"{f.relative_to(root)}:{i}: {line.strip()}")
+            if "setTimeout(" in line and "watchdog" not in line:
+                bad.append(f"{f.relative_to(root)}:{i}: {line.strip()}")
+    assert not bad, "\n".join(bad)

@@ -35,6 +35,7 @@ from .quality import fragility
 # count matches of each locator and whether they are the intended element. ``mode``: "click" (the element, its
 # label or its clickable wrapper all do), "control" (fill/select/check/clear and reading a field's value: it must
 # be the form control itself), "label" (exactly the element: a hidden checkbox's label). ``near``: exactly one match, loosely related to the element (label/wrapper/part).
+# ``exact``: exactly one match, the element itself (a locator the action can re-find the element by).
 CHECK_JS = """([items, el, mode]) => {
   const INTER = 'a,button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],' +
                 '[role=menuitem],[role=option],[role=checkbox],[role=radio],[role=switch],[role=combobox]';
@@ -73,20 +74,28 @@ CHECK_JS = """([items, el, mode]) => {
     // "label": the element clicked instead of a hidden control; only that element itself will do
     const rel = mode === 'control' ? ctl : mode === 'label' ? ((x, y) => x === y) : loose;
     return { n: nodes.length, same: nodes.length === 1 && rel(nodes[0], el), any: nodes.some(x => rel(x, el)),
-             near: nodes.length === 1 && loose(nodes[0], el) };
+             near: nodes.length === 1 && loose(nodes[0], el), exact: nodes.length === 1 && nodes[0] === el };
   });
 }"""
 
 
 def check(frame, items: list[tuple[str, str]], handle, mode: str = "click") -> list[dict]:
     """[(kind, locator)] -> [{n, same, any, near}] evaluated in ``frame`` against ``handle`` (one round trip).
-    ``mode="control"``: the locator must select the form control itself (a label is not enough)."""
+    ``mode="control"``: the locator must select the form control itself (a label is not enough).
+
+    A transient error (the document, frame or element changed under us: navigation, re-render, iframe replaced)
+    is raised, so the caller re-finds the element and retries; any other error is recorded on every item
+    (``error``) instead of passing for "matches nothing", so a verdict names the real reason."""
     if not items:
         return []
+    from ..resolver import is_transient
     try:
         return frame.evaluate(CHECK_JS, [[list(i) for i in items], handle, mode])
-    except PlaywrightError:
-        return [{"n": -1, "same": False, "any": False, "near": False} for _ in items]
+    except PlaywrightError as e:
+        if is_transient(e):
+            raise
+        msg = str(e).split("\n")[0].strip()
+        return [{"n": -1, "same": False, "any": False, "near": False, "error": msg} for _ in items]
 
 
 def norm(s: str) -> str:
@@ -114,6 +123,7 @@ class Use:
     entry_render: str | None = None    # the rendered locator that was checked
     cands: list[bool] = field(default_factory=list)
     value: str | None = None           # the value a dynamic entry was rendered with
+    exact: list[bool] = field(default_factory=list)   # per candidate: selects exactly the element itself
 
 
 @dataclass
@@ -232,7 +242,7 @@ def _entry_problem(u: Use) -> str:
     n = r.get("n", -1)
     run = f" in run {u.run}" if u.run > 1 else ""
     if n < 0:
-        return f"invalid locator{run}"
+        return f"could not be checked{run}: {r['error']}" if r.get("error") else f"invalid locator{run}"
     if n == 0:
         return f"broken: matches nothing{run}"
     if n > 1:

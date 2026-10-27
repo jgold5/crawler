@@ -40,7 +40,15 @@ class GridError(_ErrorBase):
 
 
 AGGRID_JS = Path(__file__).with_name("aggrid.js")
-_TRANSIENT = ("Execution context was destroyed", "Cannot find context", "navigat", "frame was detached")
+_TRANSIENT = ("execution context was destroyed", "cannot find context", "navigat", "frame was detached",
+              "frame has been detached", "element is not attached", "node is detached", "not attached to the dom",
+              "context was destroyed")
+
+
+def is_transient(e: Exception) -> bool:
+    """The document/frame changed under us (matched case-insensitively)."""
+    msg = str(e).casefold()
+    return any(t in msg for t in _TRANSIENT)
 _ANCHOR_SCORE = {"test-id": 95.0, "id": 92.0, "aria-label": 90.0, "heading": 85.0}
 
 
@@ -51,6 +59,19 @@ def _engine() -> tuple[str, int]:
     if not m:
         raise RuntimeError(f"{AGGRID_JS}: missing VERSION")
     return src, int(m.group(1))
+
+
+WATCHDOG_GRACE_MS = 2000    # an in-page wait gets its own budget plus this before the watchdog answers for it
+
+
+def evaluate_bounded(page, fn_js: str, arg, budget_ms: int, fallback=None, handle: bool = False):
+    """``page.evaluate(fn_js, arg)`` for a script that waits in the page (frames, settles), raced against a
+    ``setTimeout`` watchdog of ``budget_ms`` + grace that resolves with ``fallback``: a renderer that never
+    runs the script's callbacks cannot hang the caller. The timer is only a watchdog, never a wait."""
+    js = ("([a, ms, fb]) => Promise.race([Promise.resolve().then(() => (" + fn_js + ")(a)), "
+          "new Promise(r => setTimeout(() => r(fb), ms))])")     # the watchdog
+    ms = max(1, int(budget_ms)) + WATCHDOG_GRACE_MS
+    return (page.evaluate_handle if handle else page.evaluate)(js, [arg, ms, fallback])
 
 
 def ensure_grid_engine(page) -> None:
@@ -87,6 +108,8 @@ class ResolvedCell:
     notes: list[str] = field(default_factory=list)
     timings: dict = field(default_factory=dict)
     spec: dict = field(default_factory=dict)   # what to re-run to find this cell again
+    row_moved: tuple | None = None   # (row-index before, after) when the row moved during an edit (grid re-sorted)
+    row_dom_id: str | None = None    # AG Grid row-id of the edited row (followed when the grid re-sorts)
 
 
 def _spec(target: GridTarget, cfg: SiteConfig, timeout_ms: int) -> dict:
@@ -142,13 +165,16 @@ def run_engine(page, spec: dict, timeout_ms: int, entry: str = "resolve") -> tup
             return last, None
         try:
             ensure_grid_engine(page)
-            jh = page.evaluate_handle("([spec, apis, fn]) => window.__crawlerGrid[fn](spec, apis)",
-                                      [dict(spec, timeoutMs=remaining), _apis(page, spec), entry])
+            jh = evaluate_bounded(page, "([spec, apis, fn]) => window.__crawlerGrid[fn](spec, apis)",
+                                  [dict(spec, timeoutMs=remaining), _apis(page, spec), entry], remaining,
+                                  fallback={"result": {"ok": False, "retry": True,
+                                                       "error": "the grid engine did not answer (watchdog)"},
+                                            "el": None}, handle=True)
             res = jh.get_property("result").json_value()
             el = jh.get_property("el").as_element() if res.get("ok") else None
         except PlaywrightError as e:
-            if not any(t in str(e) for t in _TRANSIENT):
-                raise
+            if not is_transient(e) or getattr(page, "is_detached", lambda: False)():
+                raise           # a detached frame has no next document: the caller re-acquires it
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=max(1, int((deadline - time.monotonic()) * 1000)))
             except PlaywrightError:
@@ -281,5 +307,8 @@ def check_roots(page, items: list[tuple[str, str]], handle) -> list[dict]:
     try:
         return page.evaluate("([items, w]) => window.__crawlerGrid.rootCheck(items, w)",
                              [[list(i) for i in items], handle])
-    except PlaywrightError:
-        return [{"n": -1, "same": False, "any": False} for _ in items]
+    except PlaywrightError as e:
+        if is_transient(e):     # the grid's document changed under us: the caller re-finds and retries
+            raise
+        msg = str(e).split("\n")[0].strip()
+        return [{"n": -1, "same": False, "any": False, "error": msg} for _ in items]

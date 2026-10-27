@@ -119,3 +119,57 @@ def test_frame_survives_navigation_inside_iframe(page, site_url):
     fr.goto(f"{site_url}/blotter.html")                               # the app navigates inside its iframe
     r = resolve(fr, Target(query="refresh"), "click", CFG, T)          # engine re-injected in the new document
     assert r.handle.evaluate("e => !!e.querySelector('.fa-refresh')")
+
+
+# ---------------------------------------------------------------- late, replaced and reloaded iframes
+
+LATE_SHELL = """<div id="host"></div><script>
+  setTimeout(() => { const f = document.createElement('iframe'); f.name = 'appFrame-late';
+    f.src = '/trades.html'; document.getElementById('host').appendChild(f); }, %d);
+</script>"""
+
+
+def _late_shell(page, site_url, delay_ms):
+    page.route(f"{site_url}/late-shell.html", lambda r: r.fulfill(body=LATE_SHELL % delay_ms, content_type="text/html"))
+    page.goto(f"{site_url}/late-shell.html")
+
+
+def test_frame_for_waits_for_a_late_iframe(page, site_url):
+    """The iframe element is added 600 ms after load: frame_for waits for it, its content frame and its body."""
+    _late_shell(page, site_url, 600)
+    fr = frame_for(page, "//iframe[@name='appFrame-late']", T)
+    assert fr.evaluate("() => !!document.body && document.readyState !== 'loading'")
+    assert describe_frame(fr).url_path == "/trades.html"
+
+
+def test_frame_for_reacquires_a_replaced_iframe(page, site_url):
+    xp = shell(page, site_url)
+    old = frame_for(page, xp, T)
+    page.evaluate("""() => { const f = document.querySelector('iframe.app-frame'); const n = document.createElement('iframe');
+                             n.name = f.name; n.className = f.className; n.src = f.src; f.replaceWith(n); }""")
+    assert old.is_detached()
+    fr = frame_for(page, xp, T)
+    assert fr is not old and not fr.is_detached()
+    assert resolve(fr, Target(query="New Trade"), "click", CFG, T).handle.owner_frame() == fr
+
+
+def test_content_frame_expect_waits_for_the_shell(page, site_url):
+    from crawler.author.pages import content_frame
+    _late_shell(page, site_url, 600)
+    assert content_frame(page, 300) is None                           # not known to be framed: no wait
+    fr = content_frame(page, T, expect=True)                          # the app is framed: wait for it
+    assert fr is not None and describe_frame(fr).name == "appFrame-late"
+
+
+def test_resolve_in_a_detached_frame_raises_at_once(page, site_url):
+    """A frame detached under the resolver is not polled until the timeout: the error is raised at once (the
+    caller re-acquires the frame from its iframe)."""
+    import time
+
+    from playwright.sync_api import Error as PlaywrightError
+    fr = frame_for(page, shell(page, site_url), T)
+    page.evaluate("() => document.querySelector('iframe.app-frame').remove()")
+    t0 = time.monotonic()
+    with pytest.raises(PlaywrightError):
+        resolve(fr, Target(query="New Trade"), "click", CFG, 8000)
+    assert time.monotonic() - t0 < 3

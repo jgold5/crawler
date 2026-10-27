@@ -5,10 +5,29 @@ XML entry it should use, check that entry and the proposed replacements against 
 so the next line sees the right state, and wait for the app to settle. After all runs every slot (page, entry)
 gets its verdict (reuse / fix / new / unstable); only locators that verified in every use of every run are
 proposed. See docs/FLOWS.md.
+
+Reliability (never guess, recover from transient changes):
+
+* The page's iframe is re-acquired from its iframe XPath at every line (a Frame is never kept across lines),
+  waiting for the element, its content frame and its document; when the app is known to be framed (the
+  repository's pages have iframe entries, or an earlier page was framed) a page waits for its iframe to appear.
+* A line whose element/frame/document changed under it (element detached, execution context destroyed, frame
+  detached) is retried ONCE after re-finding the frame; when the document was replaced right after the previous
+  line acted (a late reload), the previous line is replayed once first. Actions go through a verified unique
+  locator of the element (re-found on every attempt), not a stale handle.
+* Entry match counts are taken once the document is mutation-quiet for a stability window (else two consecutive
+  checks at least a window apart must agree): a late second match makes the entry ambiguous.
+* A missing element is a clear failure ("not found" + the closest names), not a question; the line asks only
+  when 2+ plausible candidates (same kind, similar name) exist.
+* `verify X is displayed` right after an action: a watcher (MutationObserver) is installed before the action, so
+  a toast that shows for 150 ms and is gone before the verify line runs is still seen, with its locators checked
+  while it was displayed.
+* A stuck spinner costs one bounded wait and is noted once per page.
 """
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import hashlib
 import json
 import re
@@ -18,6 +37,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .. import ask as askmod
 from ..aliases import AliasStore, describe_target
@@ -25,15 +45,18 @@ from ..config import SiteConfig
 from ..english import EnglishError, Line, normalize_date, parse_lines, render
 from ..frames import FrameError, describe_frame, frame_for, iframe_candidates
 from ..grid import GridError, act_on_cell, check_roots, grid_info, resolve_cell
+from ..grid.actions import quick_ms
 from ..locators import generate, suggest_name
-from ..model import GridTarget, RowRef, Target
-from ..nav.ready import ReadyTracker
+from ..model import Candidate, GridTarget, RowRef, Target
+from ..nav.ready import DOC_ID_JS, ReadyTracker
 from ..repo import LocatorRepo, RepoKeyError
 from ..repo._schema import targets_frame
-from ..resolver import ResolveError, resolve
+from ..resolver import STABLE_MS, ResolveError, _quiet, _wait_quiet, is_transient, resolve
+from ..resolver import _spec as _resolve_spec
+from ..resolver import _what as _target_what
 from .pages import PageRef, content_frame, find_page, match_name
 from .quality import fragility
-from .slots import Cand, Slot, Use, check, decide, entry_items, norm, static_cands
+from .slots import CHECK_JS, Cand, Slot, Use, check, decide, entry_items, norm, static_cands
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ASK = 0, 1, 2, 3
 
@@ -83,6 +106,53 @@ _COVERED_JS = """el => { const r = el.getBoundingClientRect();
   const x = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   return !x || (x !== el && !el.contains(x)); }"""
 _ROLE_WORDS = r"icon|button|btn|link|tab|field|textfield|input|box|dropdown|select|checkbox|menu"
+_IS_CONNECTED_JS = "el => el.isConnected"
+_PLAUSIBLE_SCORE = 0.4      # an ASK candidate for a missing element: a name match at least this good
+
+# Watch for the element a `verify X is displayed` line names, from before the previous line's action on: the first
+# time it is found, record it with its locator candidates and the given locators' match counts (checked while it
+# is displayed). Bounded by a watchdog timer (the observer is disconnected after ``ms``).
+_WATCH_JS = """([id, spec, items, ms]) => {
+  const C = window.__crawler;
+  if (!C) return false;
+  const CHECK = %s;
+  const all = window.__crawlerWatch = window.__crawlerWatch || {};
+  const w = all[id] = { seen: null, t0: performance.now() };
+  let obs = null;
+  const strip = r => { const o = Object.assign({}, r); delete o.el; return o; };
+  const look = () => {
+    if (w.seen) return;
+    let r;
+    try { r = C.resolve(spec); } catch (e) { return; }
+    if (r.status === 'found') {
+      const el = r.el;
+      let cands = [];
+      try { cands = C.candidates(el) || []; } catch (e) { cands = []; }
+      const its = items.concat(cands.map(c => ['xpath', c.xpath]));
+      let checks = [];
+      try { checks = CHECK([its, el, 'click']); } catch (e) { checks = []; }
+      let name = '';
+      try { name = C.suggestName(el); } catch (e) { name = ''; }
+      w.seen = { at: Math.round(performance.now() - w.t0), info: strip(r), el: el, items: its, checks: checks, name: name,
+                 cands: cands.map(c => ({ xpath: c.xpath, strategy: c.strategy, score: c.score })) };
+    } else if (r.status === 'ambiguous') {
+      w.seen = { at: Math.round(performance.now() - w.t0), info: strip(r), ambiguous: true };
+    }
+    if (w.seen && obs) obs.disconnect();
+  };
+  w.look = look;              // the verify line's wait polls it too (a change no mutation reported: CSS)
+  obs = new MutationObserver(look);
+  obs.observe(document.documentElement || document, { subtree: true, childList: true, attributes: true, characterData: true });
+  setTimeout(() => obs.disconnect(), ms);   // watchdog: the watch is bounded
+  return true;
+}""" % CHECK_JS
+_WATCH_SEEN_JS = """([id, spec]) => { const w = (window.__crawlerWatch || {})[id];
+  if (w && !w.seen && w.look) w.look();
+  if (w && w.seen) return true;
+  const C = window.__crawler; if (!C) return false;
+  const r = C.resolve(spec); return r.status === 'found' || r.status === 'ambiguous'; }"""
+_WATCH_READ_JS = """id => { const w = (window.__crawlerWatch || {})[id]; if (!w || !w.seen) return null;
+  const o = Object.assign({}, w.seen); delete o.el; o.connected = !!(w.seen.el && w.seen.el.isConnected); return o; }"""
 
 
 # ---------------------------------------------------------------------------------------------- records
@@ -145,6 +215,33 @@ class _Stop(Exception):
     pass
 
 
+class _NotFound(Exception):
+    """The line's element is not on the page (after waiting), and nothing plausible is there to ask about."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class _Seen:
+    """A transient element the watcher saw while it was displayed (gone when its verify line ran): stands in for
+    the element handle; locator checks come from what the watcher recorded at that moment."""
+
+    def __init__(self, data: dict):
+        self.data = data
+        self.at = int(data.get("at") or 0)
+        self.info = dict(data.get("info") or {})
+        self.name = data.get("name") or ""
+        self.cands = [Candidate(xpath=c["xpath"], strategy=c.get("strategy") or "", score=float(c.get("score") or 0))
+                      for c in data.get("cands") or []]
+        self._res = {tuple(it): r for it, r in zip(data.get("items") or [], data.get("checks") or [])}
+
+    def lookup(self, items) -> list[dict]:
+        miss = {"n": -1, "same": False, "any": False, "near": False, "exact": False,
+                "error": "not checked while the element was displayed"}
+        return [dict(self._res.get(tuple(it), miss)) for it in items]
+
+
 class _AskGrid(Exception):
     """A grid line names no grid and the page has several."""
 
@@ -178,9 +275,14 @@ class _Ctx:
     page: object
     tracker: ReadyTracker
     key: str | None = None
-    frame: object = None
+    frame: object = None             # the page's frame for the CURRENT line (re-acquired every line)
     frame_xpath: str | None = None
     in_repo: bool = False
+    framed: bool = False             # the current page runs in an iframe
+    watch: dict | None = None        # {"n": line, "frame": frame}: a watcher for that verify line is installed
+    docs: dict = field(default_factory=dict)       # line -> document id when the line acted
+    doc: object = None               # id of the frame's document the previous line saw
+    noted: set = field(default_factory=set)        # (page, what) readiness notes already made (once per page)
 
 
 # ---------------------------------------------------------------------------------------------- English
@@ -306,6 +408,10 @@ class Author:
         self.grid_config_missing = False   # the repository has no grid config (columns checked live only)
         self.flow_sha = ""
         self.runs_done = 0                 # runs that went through the whole flow
+        self.quick = quick_ms(self.timeout)            # sub-wait budget (a fraction of the timeout)
+        self._repo_framed: bool | None = None          # the repository's pages have iframe entries
+        self._seen_framed = False                      # an earlier page of this flow was framed
+        self.stuck_spinners: list[str] = []            # spinner signatures found stuck (shared by the runs)
 
     # ------------------------------------------------------------------ prepare (no browser)
     def prepare(self) -> list[str]:
@@ -441,7 +547,7 @@ class Author:
             ctx = self._new_context(browser, storage_state)
             try:
                 page = ctx.new_page()
-                c = _Ctx(run, page, ReadyTracker(page, self.cfg))
+                c = _Ctx(run, page, ReadyTracker(page, self.cfg, stuck_sigs=self.stuck_spinners))
                 code = self._run(c)
             finally:
                 run_ms.append(round((time.monotonic() - t0) * 1000))
@@ -461,10 +567,12 @@ class Author:
 
     def _run(self, c: _Ctx) -> int:
         failed = False
-        for rec in self.records:
+        recs = self.records
+        for i, rec in enumerate(recs):
             t0 = time.monotonic()
             try:
                 if rec.kind == "goto":
+                    c.watch = None
                     self._goto(rec, c)
                 elif rec.kind == "loader":
                     rep = c.tracker.wait([c.page.main_frame, c.frame], (rec.line.timeout or 30) * 1000)
@@ -474,7 +582,9 @@ class Author:
                         self._render(rec, None)
                 else:
                     rec.page = c.key
-                    self._element(rec, c)
+                    nxt = recs[i + 1] if i + 1 < len(recs) else None
+                    prev = recs[i - 1] if i > 0 else None
+                    self._line(rec, c, nxt, prev)
                 if rec.status == "pending":
                     rec.status = "ok"
                 if (rec.verify.get(c.run) and not rec.verify[c.run][0]) or rec.failures.get(c.run):
@@ -487,7 +597,7 @@ class Author:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 self._ask(a)
                 return EXIT_ASK
-            except (_Stop, GridError, FrameError, PlaywrightError, ResolveError) as e:
+            except (_Stop, _NotFound, GridError, FrameError, PlaywrightError, ResolveError) as e:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 msg = str(e).split("\nCall log:")[0].strip()
                 msg = self._masked(rec, msg)
@@ -497,13 +607,160 @@ class Author:
             rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
         return EXIT_FAILED if failed else EXIT_OK
 
+    def _line(self, rec: LineRec, c: _Ctx, nxt, prev) -> None:
+        """An element/grid line, retried once after a transient change (element detached, execution context
+        destroyed, frame detached). When its element is missing, or its check fails, because the document the
+        earlier lines of this page acted on was replaced (a late reload lost their effect), those lines are
+        replayed once (the last one, then the last two... at most 4) and the line runs again."""
+        retried = replayed = False
+        while True:
+            try:
+                self._refresh_frame(rec, c)
+                if nxt is not None and self._watchable(nxt) and (c.watch or {}).get("n") != nxt.line.n:
+                    self._install_watch(nxt, c)
+                self._element(rec, c)
+                v = rec.verify.get(c.run)
+                if v is not None and not v[0] and not replayed:
+                    replayed = True
+                    if self._replay(rec, c):
+                        continue
+                return
+            except _NotFound as e:
+                if not replayed:
+                    replayed = True
+                    if self._replay(rec, c):
+                        continue
+                if rec.line.action == "verify" and rec.kind == "element":
+                    self._missing_verify(rec, c, e.message)
+                    return
+                raise
+            except (PlaywrightError, ResolveError, GridError, FrameError, _Stop) as e:
+                if retried or not is_transient(e):
+                    raise
+                retried = True
+                first = str(e).split("\n")[0].strip()
+                self.echo(f"line {rec.line.n}: the page changed under the step (run {c.run}): {first}; retrying once")
+                self._note_once(rec, c, f"run {c.run}: retried once after a transient change ({first})")
+                self._undo_uses(rec, c.run)
+                c.watch = None
+
+    _REPLAY_MAX = 4
+
+    def _lost_lines(self, rec: LineRec, c: _Ctx) -> list[LineRec]:
+        """The lines of this page (before ``rec``) that acted on a document that has been replaced since: their
+        effect (an open dialog, a typed value) is gone. Checks (verify/remember/wait) are not replayed."""
+        idx = self.records.index(rec)
+        lost, chain = None, []
+        for r in reversed(self.records[:idx]):
+            if r.kind not in ("element", "grid") or r.page != c.key or r.status == "error":
+                break
+            if r.line.action in ("verify", "remember", "wait"):
+                continue
+            d = c.docs.get(r.line.n)
+            if d is None or (lost is not None and d != lost):
+                break
+            lost = d
+            chain.insert(0, r)
+        if not chain or self._doc_id(c.frame) in (None, lost):
+            return []
+        return chain[-self._REPLAY_MAX:]
+
+    def _replay(self, rec: LineRec, c: _Ctx) -> bool:
+        """Replay the lines whose effect a reload lost (the last one, then the last two, ...), each attempt with a
+        short budget (the page is loaded and ready). False when no replay helps (``rec``'s own result stands)."""
+        chain = self._lost_lines(rec, c)
+        for k in range(1, len(chain) + 1):
+            lines = chain[-k:]
+            names = ", ".join(str(r.line.n) for r in lines)
+            self.echo(f"line {rec.line.n}: the page reloaded after line(s) {names} acted (run {c.run}); replaying them")
+            if self._replay_lines(lines, c):
+                self._note_once(rec, c, f"run {c.run}: the page reloaded after line(s) {names} acted; "
+                                        f"replayed once")
+                self._undo_uses(rec, c.run)
+                return True
+        return False
+
+    def _replay_lines(self, lines: list[LineRec], c: _Ctx) -> bool:
+        saved = [([(sl, list(sl.uses)) for sl in (r.slot, r.frame_slot) if sl is not None],
+                  dict(r.verify), dict(r.failures), r.status, list(r.notes)) for r in lines]
+        timeout, self.timeout = self.timeout, quick_ms(self.timeout, 0.3)
+        try:
+            for r in lines:
+                self._undo_uses(r, c.run)
+                self._refresh_frame(r, c)
+                self._element(r, c)
+                v = r.verify.get(c.run)
+                if r.failures.get(c.run) or (v is not None and not v[0]):
+                    raise _Stop("replay failed")
+            return True
+        except (_NotFound, _Stop, _Ask, ResolveError, PlaywrightError, FrameError):
+            for r, (slots, verify, failures, status, notes) in zip(lines, saved):
+                for sl, uses in slots:         # what the lines recorded the first time stands
+                    sl.uses = uses
+                r.verify, r.failures, r.status, r.notes = verify, failures, status, notes
+            return False
+        finally:
+            self.timeout = timeout
+
+    def _note_once(self, rec: LineRec, c: _Ctx, note: str) -> None:
+        if note not in rec.notes:
+            rec.notes.append(note)
+
+    def _undo_uses(self, rec: LineRec, run: int) -> None:
+        """Forget what an interrupted attempt of ``rec`` recorded in this run (it is recorded again)."""
+        for s in (rec.slot, rec.frame_slot):
+            if s is not None:
+                s.uses = [u for u in s.uses if not (u.line == rec.line.n and u.run == run)]
+        rec.verify.pop(run, None)
+        rec.failures.pop(run, None)
+        if rec.status == "failed" and not rec.failures and not any(not v[0] for v in rec.verify.values()):
+            rec.status = "pending"
+
+    def _doc_id(self, frame):
+        try:
+            return frame.evaluate(DOC_ID_JS)
+        except PlaywrightError:
+            return None
+
+    def _refresh_frame(self, rec: LineRec, c: _Ctx) -> None:
+        """Re-acquire the page's frame for this line (never keep a Frame across lines): through the iframe's
+        XPath, else the content iframe. A new frame or document is waited on (app-ready) before the line runs."""
+        if not c.framed:
+            c.frame = c.page.main_frame
+            return
+        old = c.frame
+        frame = None
+        if c.frame_xpath:
+            try:
+                frame = frame_for(c.page, c.frame_xpath, self.timeout)
+            except FrameError:
+                frame = None
+        if frame is None:
+            frame = content_frame(c.page, self.timeout, expect=True)
+        if frame is None:
+            raise _Stop(f"the page's iframe ({c.frame_xpath or 'content iframe'}) is gone")
+        c.frame = frame
+        doc = self._doc_id(frame)
+        if frame is not old or doc != c.doc:
+            c.watch = None
+            rep = c.tracker.wait([c.page.main_frame, frame])
+            if not rep.ok:
+                self._not_ready(rec, c, rep)
+            elif rep.stuck:
+                self._stuck(rec, c, rep)
+            doc = self._doc_id(frame)
+        c.doc = doc
+
     # ------------------------------------------------------------------ goto + iframe
     def _goto(self, rec: LineRec, c: _Ctx) -> None:
         ref = rec.pageref
         c.page.goto(ref.url, wait_until="domcontentloaded")
         rep = c.tracker.wait([c.page.main_frame])
+        c.key = ref.key
         if not rep.ok:
             self._not_ready(rec, c, rep)
+        elif rep.stuck:
+            self._stuck(rec, c, rep)
         entry = self.repo.iframe_entry(ref.key) if ref.in_repo else None
         if entry is not None and not entry.page_level and not targets_frame(entry.value):
             entry = None          # only an entry whose locator selects a frame is the page's iframe entry
@@ -520,7 +777,9 @@ class Author:
                 except FrameError as e:
                     rec.notes.append(f"run {c.run}: iframe entry {entry.name!r}: {e}") if c.run == 1 else None
         if frame is None:
-            frame = content_frame(c.page, self.timeout)
+            # a framed app (the repository's pages have iframe entries, or an earlier page was framed): wait for
+            # this page's iframe to appear instead of running the page in the shell's own document
+            frame = content_frame(c.page, self.timeout, expect=self._expect_framed() or bool(entry))
         if frame is None and entry is not None and entry.value and entry.kind == "xpath":
             try:
                 frame = frame_for(c.page, entry.value, self.timeout)
@@ -529,7 +788,11 @@ class Author:
         framed = frame is not None and frame != c.page.main_frame
         if not framed:
             frame = c.page.main_frame
-        c.key, c.frame, c.in_repo = ref.key, frame, ref.in_repo
+            if self._expect_framed() and c.run == 1:
+                rec.notes.append("no content iframe appeared: the page runs in the main document")
+        else:
+            self._seen_framed = True
+        c.key, c.frame, c.in_repo, c.framed = ref.key, frame, ref.in_repo, framed
         rec.page = ref.key
         d = self.cfg.pages.get(ref.cfg_name) if ref.cfg_name else None
         if d is not None and d.ready:
@@ -540,6 +803,9 @@ class Author:
         rep = c.tracker.wait([c.page.main_frame, frame])
         if not rep.ok:
             self._not_ready(rec, c, rep)
+        elif rep.stuck:
+            self._stuck(rec, c, rep)
+        c.doc = self._doc_id(frame)
         # the iframe slot
         if framed or entry is not None:
             if c.run == 1:
@@ -555,8 +821,11 @@ class Author:
                 slot.lines.append(rec.line.n)
             handle = frame.frame_element() if framed else None
             items = ([(entry.kind, entry.value or "")] if entry is not None else []) + [("xpath", x.loc) for x in slot.cands]
-            res = check(c.page.main_frame, items, handle) if handle is not None else \
-                [{"n": 0, "same": False, "any": False} for _ in items]
+            try:
+                res = check(c.page.main_frame, items, handle) if handle is not None else \
+                    [{"n": 0, "same": False, "any": False} for _ in items]
+            except PlaywrightError as e:      # the iframe changed under the check: recorded with its reason
+                res = [{"n": -1, "same": False, "any": False, "error": str(e).split(chr(10))[0]} for _ in items]
             u = Use(rec.line.n, c.run)
             if entry is not None:
                 u.entry, u.entry_render, res = res[0], entry.value, res[1:]
@@ -654,7 +923,7 @@ class Author:
         def other_element(e) -> bool:
             if not ctx_words or norm(e.name) not in plain or (e.dynamic and not values):
                 return False
-            res = check(c.frame, entry_items(e, values)[:1], handle, mode)
+            res = self._check(c, entry_items(e, values)[:1], handle, mode)
             return bool(res) and res[0].get("n") == 1 and not res[0].get("same") and not res[0].get("near")
 
         def contextual(e) -> Slot:
@@ -692,7 +961,7 @@ class Author:
             if s.entry is None and s.cands:
                 items.append(("xpath", s.cands[0].render(values[0] if values else None)))
                 owners.append(("slot", s))
-        res = check(c.frame, items, handle, mode)
+        res = self._check(c, items, handle, mode)
         hits = [(o, it) for o, it, r in zip(owners, items, res) if r.get("same")]
         if hits:
             hits.sort(key=lambda h: (bool(fragility(h[1][1], h[1][0], self.cfg)), len(h[1][1])))
@@ -704,7 +973,7 @@ class Author:
         return self._slot(page, name, entry=None, new_page=not c.in_repo, cands=cands, found_by="new")
 
     def _record_use(self, rec: LineRec, c: _Ctx, handle, values: list[str], row_value: str | None,
-                    mode: str = "click") -> None:
+                    mode: str = "click") -> Use:
         s = rec.slot
         if rec.line.n not in s.lines:
             s.lines.append(rec.line.n)
@@ -717,14 +986,16 @@ class Author:
             items += ei
             n_entry = len(ei)
         items += [("xpath", x.render(row_value)) for x in s.cands]
-        res = check(c.frame, items, handle, mode)
+        res = self._stable_check(c, items, handle, mode)
         if n_entry:
             er = res[:n_entry]
             best = next((i for i, r in enumerate(er) if r.get("same")), 0)
             u.entry, u.entry_render = er[best], items[best][1]
             u.value = vals[best] if s.entry.dynamic and best < len(vals) else None
         u.cands = [bool(r.get("same")) for r in res[n_entry:]]
+        u.exact = [bool(r.get("exact")) for r in res[n_entry:]]
         s.uses.append(u)
+        return u
 
     # ------------------------------------------------------------------ element lines
     def _target(self, rec: LineRec):
@@ -743,23 +1014,61 @@ class Author:
         else:
             self._static(rec, c)
 
-    def _resolve(self, rec: LineRec, c: _Ctx, target: Target, action: str):
+    def _resolve(self, rec: LineRec, c: _Ctx, target: Target, action: str, timeout: int | None = None):
         try:
-            return resolve(c.frame, target, action, self.cfg, self.timeout, aliases=self.store, page_key=c.key)
+            return resolve(c.frame, target, action, self.cfg, timeout or self.timeout, aliases=self.store,
+                           page_key=c.key)
         except ResolveError as e:
             n = rec.line.n
             ln = rec.line
             # "verify Display name is X" / "remember X as": a label and its field tie on the name; the value
             # lives in the field, so a unique fillable match settles it (never a guess between two fields)
-            if action == "locate" and ("equally well" in e.message or "inexactly" in e.message) and (
+            if action == "locate" and e.kind == "ambiguous" and (
                     ln.action == "remember" or ln.verify_op in ("equals", "contains")):
                 try:
-                    return resolve(c.frame, target, "fill", self.cfg, min(self.timeout, 1500))
+                    return resolve(c.frame, target, "fill", self.cfg, quick_ms(self.timeout, 0.15))
                 except ResolveError:
                     pass
+            if e.kind == "none":
+                # nothing matched after waiting: a question only when 2+ plausible candidates exist (never a
+                # list of unrelated elements); otherwise the line fails clearly
+                plausible = self._plausible(c, target, action)
+                if len(plausible) < 2:
+                    raise _NotFound(self._not_found_message(target, action, e, plausible)) from None
             if n in self.answers:
                 return self._answer(rec, c, target, action, self.answers[n])
             raise _Ask(rec, target, c.frame, c.key, e.message, e.alternatives) from None
+
+    def _plausible(self, c: _Ctx, target, action: str) -> list:
+        """Candidates that could be what a missing element's description means: a name match (not an unlabeled
+        icon offered for lack of anything better) of the same kind, with a meaningful name similarity."""
+        if not isinstance(target, Target):
+            return []
+        try:
+            cands = askmod.candidates(c.frame, target, action, self.cfg, with_xpath=False)
+        except PlaywrightError:
+            return []
+        q = norm(target.query or "")
+        out = []
+        for x in cands:
+            if x.tier in ("", "none") or x.score < _PLAUSIBLE_SCORE:
+                continue
+            name = norm(x.name)
+            words = {w for w in re.findall(r"[a-z0-9]{3,}", q)}
+            if difflib.SequenceMatcher(None, q, name).ratio() < 0.5 and not (words & set(re.findall(r"[a-z0-9]{3,}", name))):
+                continue
+            if target.kind and target.kind not in ("field", "dialog") and target.kind not in norm(x.description):
+                continue
+            out.append(x)
+        return out
+
+    def _not_found_message(self, target, action: str, e: ResolveError, plausible: list) -> str:
+        names = [a for a in e.alternatives if a][:5] or [x.description for x in plausible][:5]
+        msg = f"not found: {action} {_target_what(target)}: no matching element after {self.timeout} ms"
+        why = re.search(r"\(([^()]*)\)$", e.message.split("\n")[0])
+        if why:
+            msg += f" ({why[1]})"
+        return msg + ("; closest: " + "; ".join(names) if names else "; nothing similar on the page")
 
     def _static(self, rec: LineRec, c: _Ctx) -> None:
         ln = rec.line
@@ -768,8 +1077,32 @@ class Author:
             h.handle.hover()
         target = self._target(rec)
         action = "click" if rec.kind == "goto-click" else _RESOLVE_ACTION.get(ln.action, "locate")
+        watched = (c.watch or {}).get("n") == ln.n and c.watch.get("frame") is c.frame
+        timeout = None
+        fallback = None                 # what the watcher saw, if the element vanishes while it is being checked
+        if watched:
+            state, seen = self._watched(rec, c, target, action)
+            if state == "gone":
+                self._static_seen(rec, c, seen)
+                return
+            if state == "absent":       # waited the whole timeout already: only a short last look
+                timeout = quick_ms(self.timeout, 0.1)
+            if state == "present":      # there a moment ago: a short look (it may be gone already)
+                timeout = quick_ms(self.timeout, 0.1)
+            fallback = seen
         try:
-            r = self._resolve(rec, c, target, action)
+            r = self._resolve(rec, c, target, action, timeout)
+        except _NotFound:
+            if fallback is not None:    # gone again since the watcher saw it: what the watcher recorded counts
+                self._static_seen(rec, c, fallback)
+                return
+            if ln.action == "verify" and ln.verify_op == "not_displayed":
+                rec.verify[c.run] = (True, "not present", "not displayed")
+                if c.run == 1:
+                    self._render(rec, ln.target)
+                    rec.notes.append("element not present: no XML entry checked")
+                return
+            raise
         except _Ask:
             if ln.action == "verify" and ln.verify_op == "not_displayed":
                 rec.verify[c.run] = (True, "not present", "not displayed")
@@ -779,6 +1112,9 @@ class Author:
                 return
             raise
         handle = self._promote(r.handle)
+        if fallback is not None and not self._connected(handle):
+            self._static_seen(rec, c, fallback)       # the transient element went away while it was resolved
+            return
         how = r.tier if r.tier != "exact" else r.matched_by or "exact"
         rec.resolved[c.run] = f"{r.description} [{how}]" + (f" (stale alias: {r.stale_alias})" if r.stale_alias else "")
         handle, hidden = self._checkable(rec, c, handle)
@@ -788,10 +1124,14 @@ class Author:
             if ln.date_hint:
                 ln = rec.line = self._date_hint(ln, handle)
         values = [ln.value] if ln.value else []
-        if c.run == 1:
+        if c.run == 1 or rec.slot is None:      # (a line that failed in run 1 has no entry yet)
             cands = static_cands(generate(c.frame, handle, self.cfg), self.cfg)
-            rec.slot = self._bind(rec, c, handle, cands, values=values,
-                                  new_name=lambda: suggest_name(c.frame, handle, self.cfg), mode=mode)
+            name = suggest_name(c.frame, handle, self.cfg)
+            if not self._connected(handle):
+                if fallback is None:     # re-rendered while it was described: what was read may be wrong
+                    raise PlaywrightError("Element is not attached to the DOM (re-rendered while it was described)")
+                cands, name, handle = static_cands(fallback.cands, self.cfg), fallback.name or name, fallback
+            rec.slot = self._bind(rec, c, handle, cands, values=values, new_name=lambda: name, mode=mode)
             rec.values = values
             for t in (r.context, ln.section):
                 if t and t not in rec.slot.context:
@@ -801,10 +1141,151 @@ class Author:
             if hidden:
                 rec.notes.append(f"{ln.target!r} is a visually hidden checkbox/radio: the user (and the step) "
                                  f"clicks its label, so the entry selects the label")
-        self._record_use(rec, c, handle, rec.values, None, mode)
+        use = self._record_use(rec, c, handle, rec.values, None, mode)
+        if fallback is not None and (isinstance(handle, _Seen) or not self._connected(handle)):
+            # gone while its locators were being checked: what the watcher recorded while it was displayed counts
+            rec.slot.uses.remove(use)
+            self._record_use(rec, c, fallback, rec.values, None, "click")
+            if c.run == 1:
+                self._render(rec, rec.slot.name)
+            self._note_once(rec, c, f"{ln.target!r} was displayed only briefly (a toast): checked while displayed")
+            self._verify(rec, c, None, lambda: True, lambda: True)
+            return
+        if not self._connected(handle):
+            # re-rendered while its locators were checked: the counts may describe a detached element
+            raise PlaywrightError("Element is not attached to the DOM (re-rendered while its locators were checked)")
         if c.run == 1:
             self._render(rec, rec.slot.name)
-        self._act_static(rec, c, handle)
+        self._act_static(rec, c, handle, self._live(rec, c, use))
+
+    @staticmethod
+    def _connected(handle) -> bool:
+        if isinstance(handle, _Seen):
+            return False
+        try:
+            return bool(handle.evaluate(_IS_CONNECTED_JS))
+        except PlaywrightError:
+            return False
+
+    # ------------------------------------------------------------------ transient elements (watcher)
+    def _watchable(self, nxt: LineRec) -> bool:
+        ln = nxt.line
+        return nxt.kind == "element" and ln.action == "verify" and ln.verify_op == "displayed" and not ln.hover
+
+    def _install_watch(self, nxt: LineRec, c: _Ctx) -> None:
+        """Before this line acts: watch for the element the next line (`verify X is displayed`) names, recording
+        it, its locator candidates and the match counts of the page's entries while it is displayed."""
+        target = self._target(nxt)
+        items: list[tuple[str, str]] = []
+        page = c.key
+        for e in self._entries(page):
+            if not e.dynamic:
+                items += entry_items(e, [])
+        for s in self.slot_list:
+            if s.page == page and s.kind == "element" and s.entry is None and s.cands:
+                items.append(("xpath", s.cands[0].render(None)))
+        if nxt.slot is not None:
+            if nxt.slot.entry is not None and not nxt.slot.entry.dynamic:
+                items += entry_items(nxt.slot.entry, [])
+            items += [("xpath", x.render(None)) for x in nxt.slot.cands]
+        items = [list(i) for i in dict.fromkeys(items)]
+        try:
+            from ..engine import ensure_engine
+            ensure_engine(c.frame, self.cfg)
+            ok = c.frame.evaluate(_WATCH_JS, [str(nxt.line.n), _resolve_spec(target, "locate"), items,
+                                              int(self.timeout) * 3])
+        except PlaywrightError:
+            ok = False
+        c.watch = {"n": nxt.line.n, "frame": c.frame} if ok else None
+
+    def _watched(self, rec: LineRec, c: _Ctx, target, action: str):
+        """A watched verify line: waits (bounded) until the watcher saw the element or it is there. Returns
+        (state, _Seen | None): "gone" (seen while displayed, gone now), "present" (still there: resolve it
+        normally; the _Seen is the fallback if it goes away meanwhile), "absent" (never seen), "none" (no watch)."""
+        wid = str(rec.line.n)
+        c.watch = None
+        try:
+            c.frame.wait_for_function(_WATCH_SEEN_JS, arg=[wid, _resolve_spec(target, action)], polling=50,
+                                      timeout=self.timeout)
+        except PlaywrightTimeoutError:
+            return "absent", None
+        except PlaywrightError:
+            pass
+        try:
+            data = c.frame.evaluate(_WATCH_READ_JS, wid)
+        except PlaywrightError:
+            data = None
+        if not data:
+            return "none", None
+        if data.get("ambiguous"):
+            info = data.get("info") or {}
+            msg = (f"{action} {_target_what(target)}: {info.get('count') or len(info.get('alternatives') or [])} "
+                   f"elements matched equally well while it was displayed; add `within:` or `nth:`")
+            raise _Ask(rec, target, c.frame, c.key, msg, info.get("alternatives") or [])
+        return ("present" if data.get("connected") else "gone"), _Seen(data)
+
+    def _static_seen(self, rec: LineRec, c: _Ctx, seen: _Seen) -> None:
+        """`verify X is displayed` for a transient element the watcher saw (gone before this line ran)."""
+        ln = rec.line
+        info = seen.info
+        how = info.get("tier") if info.get("tier") not in (None, "exact") else info.get("matchedBy") or "exact"
+        rec.resolved[c.run] = f"{info.get('description', '')} [{how}] (transient: seen while displayed)"
+        if c.run == 1 or rec.slot is None:
+            cands = static_cands(seen.cands, self.cfg)
+            rec.slot = self._bind(rec, c, seen, cands, values=[], new_name=lambda: seen.name or ln.target or "element",
+                                  mode="click")
+            rec.values = []
+            ctx = info.get("context")
+            if ctx and ctx not in rec.slot.context:
+                rec.slot.context.append(ctx)
+            if c.run == 1:
+                self._render(rec, rec.slot.name)
+        self._record_use(rec, c, seen, rec.values, None, "click")
+        self._note_once(rec, c, f"{ln.target!r} was displayed only briefly (a toast): seen and checked while "
+                                f"displayed, {seen.at} ms after the previous line started; gone before this line ran")
+        self._verify(rec, c, None, lambda: True, lambda: True)
+
+    def _missing_verify(self, rec: LineRec, c: _Ctx, msg: str) -> None:
+        """A verify line whose element is not on the page: the check fails (the flow goes on)."""
+        ln = rec.line
+        if ln.verify_op in ("displayed", "equals", "contains", "enabled", "disabled", "error"):
+            rec.verify[c.run] = (False, "not found", ln.verify_op.replace("_", " ")
+                                 if ln.verify_op in ("displayed", "enabled", "disabled") else (ln.value or ""))
+        self._fail_line(rec, c, msg)
+
+    def _check(self, c: _Ctx, items, handle, mode: str = "click") -> list[dict]:
+        if isinstance(handle, _Seen):
+            return handle.lookup(items)
+        return check(c.frame, items, handle, mode)
+
+    def _stable_check(self, c: _Ctx, items, handle, mode: str) -> list[dict]:
+        """Entry/candidate match counts, unchanged across a stability window: taken once the document has been
+        mutation-quiet for ``STABLE_MS``, else two consecutive checks at least a window apart must agree."""
+        if isinstance(handle, _Seen) or not items:
+            return self._check(c, items, handle, mode)
+        res = self._check(c, items, handle, mode)
+        deadline = time.monotonic() + self.timeout / 1000.0
+        while not _quiet(c.frame, STABLE_MS) and time.monotonic() < deadline:
+            t = time.monotonic()
+            _wait_quiet(c.frame, STABLE_MS, STABLE_MS)
+            again = self._check(c, items, handle, mode)
+            same = [(r.get("n"), r.get("same")) for r in again] == [(r.get("n"), r.get("same")) for r in res]
+            res = again
+            if same and (time.monotonic() - t) * 1000 >= STABLE_MS:
+                break
+        return res
+
+    def _live(self, rec: LineRec, c: _Ctx, use: Use | None):
+        """A Playwright Locator for the element by a locator verified (this use) to select exactly it: an action
+        through it re-finds the element each attempt (a re-rendered element is not a stale handle)."""
+        if use is None or rec.slot is None:
+            return None
+        locs = []
+        if use.entry is not None and use.entry.get("exact") and use.entry_render and rec.slot.entry is not None \
+                and rec.slot.entry.kind == "xpath":
+            locs.append(use.entry_render)
+        locs += [x.render(None) for x, ok in zip(rec.slot.cands, use.exact) if ok]
+        return c.frame.locator(f"xpath={locs[0]}") if locs else None
 
     def _checkable(self, rec: LineRec, c: _Ctx, handle):
         """check/uncheck: (the element the user acts on, hidden?). A visible checkbox: the input itself (not its
@@ -935,11 +1416,16 @@ class Author:
         act_on_cell(gf, cell, "locate", None, self.cfg, self.timeout)
         g["before"] = _norm_text(cell.handle.evaluate(_READ_JS))
         self._act_grid(rec, c, gf, cell)
-        try:
+        try:   # the edited row itself (followed by row-id when the grid re-sorted it elsewhere)
             act_on_cell(gf, cell, "locate", None, self.cfg, self.timeout)
             g["after"] = _norm_text(cell.handle.evaluate(_READ_JS))
         except (GridError, PlaywrightError):
             g["after"] = None
+        if cell.row_moved:
+            g["moved"] = list(cell.row_moved)
+            for n in cell.notes:
+                if n.startswith("the grid re-sorted"):
+                    self._note_once(rec, c, f"run {c.run}: {n}")
 
     def _grid_find(self, rec: LineRec, c: _Ctx, gf):
         """The line's grid; with no grid named: the page's only grid, or the one picked by --answer (else ask)."""
@@ -1084,10 +1570,43 @@ class Author:
             self._not_ready(rec, c, rep)
 
     def _not_ready(self, rec: LineRec, c: _Ctx, rep) -> None:
-        """A wait hit its deadline: the flow goes on, and the report (and console) say so."""
+        """A wait hit its deadline: the flow goes on, and the report (and console) say so (once per page and
+        condition: a spinner that never goes away is noted on the first line it delayed, not on every line)."""
+        what = (c.key, re.sub(r"\d+", "#", rep.unsettled or ""))
+        if what in c.noted:
+            return
+        c.noted.add(what)
+        if rep.stuck:
+            c.noted.add((c.key, "stuck"))
         prev = rec.ready.get(c.run)
         rec.ready[c.run] = f"{prev}; {rep}" if prev else str(rep)
         self.echo(f"line {rec.line.n}: app not settled (run {c.run}): {rep}; going on")
+
+    def _stuck(self, rec: LineRec, c: _Ctx, rep) -> None:
+        """A spinner known to be stuck got its short bounded wait: noted once per page."""
+        if (c.key, "stuck") in c.noted:
+            return
+        c.noted.add((c.key, "stuck"))
+        note = (f"run {c.run}: spinner stuck on page {c.key!r} ({', '.join(rep.stuck)}): not waited for again "
+                f"(one short bounded wait per step)")
+        self._note_once(rec, c, note)
+        self.echo(f"line {rec.line.n}: {note}")
+
+    def _expect_framed(self) -> bool:
+        """The app is framed: an earlier page of this flow was, or the repository's pages have iframe entries."""
+        if self._seen_framed:
+            return True
+        if self._repo_framed is None:
+            self._repo_framed = False
+            for k in self.repo.pages():
+                try:
+                    e = self.repo.iframe_entry(k)
+                except Exception:  # noqa: BLE001 - a page the repository cannot read is not evidence
+                    continue
+                if e is not None and e.value and (e.page_level or targets_frame(e.value)):
+                    self._repo_framed = True
+                    break
+        return self._repo_framed
 
     def _verify(self, rec: LineRec, c: _Ctx, actual_text: str | None, visible, enabled) -> None:
         ln = rec.line
@@ -1119,31 +1638,35 @@ class Author:
                 a = x = "••••"
             self.echo(f"line {ln.n}: verify FAILED (run {c.run}): expected {x!r}, got {a!r}")
 
-    def _act_static(self, rec: LineRec, c: _Ctx, handle) -> None:
+    def _act_static(self, rec: LineRec, c: _Ctx, handle, live=None) -> None:
+        """Perform the line's action. ``live``: a Locator verified to select exactly the element; clicks, typing
+        and reads go through it (re-found on each attempt), the handle is the fallback."""
         ln = rec.line
         act = "click" if rec.kind == "goto-click" else ln.action
+        el = live if live is not None else handle
+        c.docs[ln.n] = self._doc_id(c.frame)
         if act in ("click", "sort", "close"):
-            handle.click()
+            el.click()
         elif act == "right_click":
-            handle.click(button="right")
+            el.click(button="right")
         elif act == "double_click":
-            handle.dblclick()
+            el.dblclick()
         elif act in ("fill", "clear"):
             value = "" if act == "clear" else self._value(ln)
-            if handle.evaluate("el => el.localName") == "select":
-                handle.select_option(label=value)
+            if el.evaluate("el => el.localName") == "select":
+                el.select_option(label=value)
             else:
-                if handle.evaluate("el => el.localName === 'input' && el.type === 'date'") and ln.is_date:
+                if el.evaluate("el => el.localName === 'input' && el.type === 'date'") and ln.is_date:
                     value = actual_date(ln.value, ln.business_days, "%Y-%m-%d")
-                handle.fill(value)
+                el.fill(value)
         elif act == "select":
-            if handle.evaluate("el => el.localName") == "select":
+            if el.evaluate("el => el.localName") == "select":
                 try:
-                    handle.select_option(label=ln.value)
+                    el.select_option(label=ln.value)
                 except PlaywrightError:
-                    handle.select_option(value=ln.value)
+                    el.select_option(value=ln.value)
             else:
-                handle.click()
+                el.click()
                 self._settle(rec, c)
                 opt = resolve(c.frame, Target(query=ln.value), "click", self.cfg, self.timeout)
                 opt.handle.click()
@@ -1154,7 +1677,7 @@ class Author:
                 try:
                     if handle.evaluate("el => !!(el.labels && el.labels.length)") and handle.evaluate(_COVERED_JS):
                         raise PlaywrightError("covered")
-                    handle.set_checked(want, timeout=min(self.timeout, 2000))
+                    handle.set_checked(want, timeout=self.quick)
                 except PlaywrightError:
                     # a visually hidden checkbox: click what the user clicks (its label)
                     lab = handle.evaluate_handle("el => (el.labels && el.labels[0]) || el.closest('label') || el").as_element()
@@ -1164,12 +1687,13 @@ class Author:
         elif act == "remember":
             pass
         elif act == "verify":
-            self._verify(rec, c, handle.evaluate(_READ_JS), handle.is_visible, handle.is_enabled)
+            self._verify(rec, c, el.evaluate(_READ_JS), el.is_visible, el.is_enabled)
         self._settle(rec, c)
 
     def _act_grid(self, rec: LineRec, c: _Ctx, gf, cell) -> None:
         ln = rec.line
         act = ln.action
+        c.docs[ln.n] = self._doc_id(c.frame)
         if act in ("fill", "select", "check", "uncheck", "click"):
             act_on_cell(gf, cell, act, self._value(ln) if act in ("fill", "select") else None, self.cfg, self.timeout)
         elif act in ("right_click", "double_click"):
