@@ -80,7 +80,7 @@ stable XPaths** as Java/Selenium page objects that our Cucumber suite uses.
 ### G6. Tuned to our site through config, not code
 - `site.yaml` holds base URL, test-id attribute names, id/class/text
   patterns to reject, spinner selectors, page URLs, grid aliases plus key
-  columns, auth flow and Java package.
+  columns, auth cache path/max age and Java package.
 - Adapting to a site change means editing config, not Python.
 
 ### G7. Share the framework's shape, never its secrets
@@ -107,7 +107,7 @@ stable XPaths** as Java/Selenium page objects that our Cucumber suite uses.
 ### G8. Tune for a site we can't see
 - The tool runs on the product owner's machine. We never get access to the
   site. Only redacted output comes back.
-- `crawler probe <url> [--manual-login]` crawls read-only and writes a
+- `crawler probe <url>` (login borrowed from Chrome over CDP; `--no-auth` for public pages) crawls read-only and writes a
   fingerprint built only from shapes and counts. It covers:
   - frameworks and their versions
   - AG Grid version, theme, pinned columns, whether the grid API can be
@@ -121,6 +121,15 @@ stable XPaths** as Java/Selenium page objects that our Cucumber suite uses.
 - `distill` lists **every existing step definition**, infers each one's action
   from its method body, and drafts `step-mappings.draft.yaml`, so our
   existing features run without being rewritten.
+
+## Status notes (kept current)
+- **Built and in use:** `crawler distill` (G7/G8), `crawler probe` (G8), `crawler author` (docs/FLOWS.md:
+  English flow → verified XPaths, the owner's existing steps, minimal XML diffs; G1/G2/G3/G4 apply).
+- **Grids follow the owner's framework** (docs/FLOWS.md "Grids"): rows are 0-based indexes; fill/click by
+  key value is reported (with the matching row index) rather than written, because no existing step takes a key.
+- **Not built:** the `.feature`/YAML → Java page-object pipeline as a CLI command (the `flows/` and `emit/`
+  libraries exist and are tested), the parallel runner (G4 "parallel", "< 20 s full crawl"), and an end-to-end
+  10-runs-in-a-row gate (G2). `docs/AUDIT.md` and `docs/DISTILL.md` describe future work.
 
 ## Milestones
 

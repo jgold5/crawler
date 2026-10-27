@@ -246,7 +246,7 @@ def test_delete_account_dialog(authed_page, site_url):
     dialog = pg.get_by_role("dialog", name="Delete account?")
     expect(dialog).to_be_visible()
     # "Delete" exists both behind the modal and inside it
-    assert pg.locator("xpath=//button[normalize-space()='Delete']").count() == 2
+    expect(pg.locator("xpath=//button[normalize-space()='Delete']")).to_have_count(2)
     dialog.get_by_role("button", name="Cancel").click()
     expect(dialog).to_have_count(0)
     pg.get_by_role("button", name="Delete account").click()

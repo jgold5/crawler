@@ -31,7 +31,13 @@ default and mention it in your report.
 | `crawler/emit/` | M1d | Java page objects, `locators.json`, `report.md` |
 | `tests/site/` (everything else) | M1e | fixture app shell + `tests/site/site.yaml` + `tests/conftest.py` server fixture |
 | `crawler/distill/` | M1f | `distill(src_dir, out_dir, denylist) -> Path`; redacted framework profile + `profile.yaml` |
-| `crawler/nav/`, `crawler/runner.py`, `crawler/merge.py`, `crawler/cli.py` | M2 | orchestration |
+| `crawler/nav/` (`connect.py` auth over CDP, `ready.py` app-ready waits), `crawler/cli.py` | PM / author | sessions, waits, CLI |
+| `crawler/english/` | author | English flow parser + rendering to the owner's step phrasing (`steps_out.yaml`) |
+| `crawler/repo/` | author | learns the owner's XML locator repository; minimal byte-preserving edits |
+| `crawler/author/` | author | `crawler author`: English flow → verified XPaths, steps, XML diff (docs/FLOWS.md) |
+| `crawler/frames.py`, `crawler/ask.py`, `crawler/aliases.py` | engine | iframes, ask-mode screenshots, remembered answers |
+| `crawler/probe/` | probe | redacted site fingerprint |
+| (not built) `crawler/runner.py`, `crawler/merge.py` | M2 | feature/YAML → Java pipeline orchestration (paused) |
 
 Tests go in `tests/test_<area>_*.py`. Each owner writes tests only for its own
 area. Python 3.11+, Playwright (sync API) 1.63, Chromium is preinstalled.
@@ -100,3 +106,8 @@ escaped literal (`'A-100'`, or `concat(...)`). Example:
 
 The Java emitter turns that into
 `public static By qtyCell(String rowKey) { return By.xpath("..." + XPathLiteral.of(rowKey) + "..."); }`.
+
+## Row numbering
+`RowRef.index` (crawler/model.py, used by `crawler/grid`) is **1-based** display order. The owner's steps use
+**0-based** rows (`row "0"` = first displayed row = AG Grid `row-index="0"`); `SiteConfig.grid_row_base` (default 0)
+is converted once, in `Line.grid_row()` / `Line.to_target(row_base)`. Nothing else converts.

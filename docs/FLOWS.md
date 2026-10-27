@@ -1,6 +1,6 @@
 # English flows → verified XPaths + your existing steps
 
-**Status:** proposal, for approval. Nothing here is built yet.
+**Status:** approved and built as `crawler author` (see the README for usage).
 
 ## Goal
 Write a flow in plain English. The tool finds every element on the live app (AG Grid UI
@@ -130,7 +130,7 @@ scoped by context when that's not unique.
    - it exists, matches exactly one element, it's the intended one, and it's not fragile → **reuse**
    - it exists but is broken, ambiguous or fragile → **propose a fix** (verified replacement)
    - it doesn't exist → **propose a new entry** (static locator)
-   - **grid lines are different** (see "Grids" below): no per-cell entries are ever created
+   - **grid lines are different** (see "Grids" above): no per-cell entries are ever created
 5. Map to an existing step by action and modifiers, with the element name as its `{string}`.
    If nothing fits → **flag** the line.
 6. Perform the action so the next line sees the right state.

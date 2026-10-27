@@ -25,7 +25,7 @@ crawler = "crawler.cli:main"
 include = ["crawler*"]
 
 [tool.setuptools.package-data]
-crawler = ["js/*.js", "grid/*.js", "emit/support/*.java"]
+crawler = ["js/*.js", "grid/*.js", "emit/support/*.java", "english/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
