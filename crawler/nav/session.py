@@ -169,16 +169,20 @@ class Session:
         self.browser = None
 
 
-def _settle_and_check(sess: Session, target: str, shot: Path | None = None) -> str | None:
-    """Open the start page in a page of ``sess``; the login reason, if it looks like a login page."""
+def _settle_and_check(sess: Session, target: str, shot: Path | None = None, *, borrowed: bool = True) -> str | None:
+    """Open the start page in a page of ``sess``; the reason it can't be used (a login page; for a borrowed
+    session also a start page that doesn't load: the user's Chrome reaches it, ours may not), else None."""
     from .ready import MUTATION_JS, ReadyTracker
     page = sess.new_page(init_scripts=[MUTATION_JS])
     try:
+        load_error = None
         try:
             page.goto(target, wait_until="domcontentloaded")
-        except PlaywrightError:
-            pass          # interrupted by a redirect, or unreachable (the tool reports that itself)
+        except PlaywrightError as e:
+            load_error = str(e).splitlines()[0]   # a redirect interrupting goto is fine if a page did load
         if not (page.url or "").startswith(("http://", "https://")):
+            if borrowed and load_error:
+                return f"the start page didn't load in our browser ({load_error})"
             return None
         ReadyTracker(page, sess.cfg).wait([page.main_frame])
         why = login_reason(page, target, sess.cfg)
@@ -204,7 +208,7 @@ def _drive(cfg: SiteConfig, browser_type, target: str, shot: Path, check: bool =
         if not b.contexts:
             raise SessionError(f"your Chrome at {ep} has no browser window open; open one, log in, run again")
         if check and target:
-            why = _settle_and_check(sess, target, shot)
+            why = _settle_and_check(sess, target, shot, borrowed=False)
             if why:
                 raise SessionError(f"log in in that Chrome first (it showed a login page too: {why}); "
                                    f"screenshot: {shot}")
@@ -248,7 +252,7 @@ def open_session(cfg: SiteConfig, playwright=None, browser=None, *, mode: str | 
         return sess
 
     def switch(why: str) -> Session:
-        echo(f"borrowed session landed on a login page ({why}); driving your logged-in Chrome at {ep} instead "
+        echo(f"the borrowed session can't be used here ({why}); driving your logged-in Chrome at {ep} instead "
              f"(a new tab; your other tabs aren't touched)")
         sess.close()
         return _drive(cfg, bt, target, shot)

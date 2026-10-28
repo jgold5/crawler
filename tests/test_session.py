@@ -46,6 +46,25 @@ class _Gate(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
 
+class _Hang(_Gate):
+    """User report: with the borrowed session our browser's Page.goto timed out (the user's Chrome loads it fine)."""
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path.endswith(".html") and TOKEN not in (self.headers.get("User-Agent") or ""):
+            time.sleep(8)                      # longer than timeout_ms below: our browser never gets the page
+        super().do_GET()
+
+
+@pytest.fixture(scope="module")
+def hanging_url():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Hang, directory=str(SITE)))
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
 @pytest.fixture(scope="module")
 def gated_url():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Gate, directory=str(SITE)))
@@ -120,7 +139,7 @@ def test_auto_drives_users_chrome_when_the_borrowed_login_lands_on_a_login_page(
                      browser=browser, runs=2, tabs=["Trading"], echo=lines.append)
         report = (out / "report.md").read_text()
         assert res.exit_code == EXIT_OK, report + "\n".join(lines)
-        switch = [ln for ln in lines if ln.startswith("borrowed session landed on a login page")]
+        switch = [ln for ln in lines if ln.startswith("the borrowed session can't be used here")]
         assert switch and ep in switch[0] and "a new tab; your other tabs aren't touched" in switch[0]
         assert (tmp_path / "auth.json").is_file()                          # it did borrow first
         assert "fresh tab of your logged-in Chrome" in report
@@ -254,3 +273,16 @@ def test_bad_session_value(pw):
         open_session(SiteConfig(session="sometimes"), pw)
     with pytest.raises(SessionError, match="don't mix"):
         open_session(SiteConfig(), pw, mode="drive", no_auth=True)
+
+
+def test_auto_drives_when_the_borrowed_start_page_times_out(hanging_url, pw, browser, tmp_path):
+    with users_chrome(pw, tmp_path, login_origin=hanging_url,
+                      tabs=[hanging_url + "/login.html"]) as (chrome, ep, pre, opened):
+        before = [p.url for p in pre]
+        repo, cfgp, out = _ws(tmp_path, hanging_url, ep, extra="timeout_ms: 5000\n")
+        lines: list[str] = []
+        res = navmap(repo_root=repo, version="aggrid", cfg=load_config(cfgp), out_dir=out, playwright=pw,
+                     browser=browser, runs=1, tabs=["Trading"], echo=lines.append)
+        assert res.exit_code == EXIT_OK, "\n".join(lines + res.errors)
+        assert any("the borrowed session can't be used here" in ln and "didn't load" in ln for ln in lines), lines
+        _assert_untouched(chrome, pre, before, opened)
