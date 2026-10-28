@@ -172,13 +172,14 @@ class Session:
 def _settle_and_check(sess: Session, target: str, shot: Path | None = None, *, borrowed: bool = True) -> str | None:
     """Open the start page in a page of ``sess``; the reason it can't be used (a login page; for a borrowed
     session also a start page that doesn't load: the user's Chrome reaches it, ours may not), else None."""
-    from .ready import MUTATION_JS, ReadyTracker
+    from .ready import MUTATION_JS, OpenError, ReadyTracker, open_url
     page = sess.new_page(init_scripts=[MUTATION_JS])
     try:
         load_error = None
         try:
-            page.goto(target, wait_until="domcontentloaded")
-        except PlaywrightError as e:
+            # a check, not the run: no answer within timeout_ms means "use the user's Chrome instead"
+            open_url(page, target, int(sess.cfg.timeout_ms), min_commit_ms=0)
+        except (OpenError, PlaywrightError) as e:
             load_error = str(e).splitlines()[0]   # a redirect interrupting goto is fine if a page did load
         if not (page.url or "").startswith(("http://", "https://")):
             if borrowed and load_error:

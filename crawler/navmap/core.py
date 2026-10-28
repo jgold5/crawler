@@ -23,6 +23,7 @@ from ..author.pages import new_page_key
 from ..author.quality import fragility
 from ..author.slots import Cand, Slot, Use, build_edits, decide, norm
 from ..config import SiteConfig, load_config
+from ..nav.ready import OpenError
 from ..frames import FrameError
 from ..nav.ready import ReadyTracker
 from ..repo import LocatorRepo, RepoKeyError, RepoWarning
@@ -203,7 +204,7 @@ class NavMapper:
                 self.echo(f"run {run}/{self.runs}: tabs {', '.join(self.crawl_tabs)}")
                 ex.tab_pass(self.crawl_tabs)
                 ex.option_pass(self.crawl_tabs)
-            except (NavError, FrameError, PlaywrightError) as e:
+            except (NavError, FrameError, PlaywrightError, OpenError) as e:
                 return EXIT_FAILED, run_ms, [f"run {run}: {str(e).splitlines()[0]}"]
             finally:
                 run_ms.append(round((time.monotonic() - t0) * 1000))

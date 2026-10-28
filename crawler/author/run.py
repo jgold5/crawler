@@ -43,6 +43,7 @@ from .. import ask as askmod
 from ..aliases import AliasStore, describe_target
 from ..config import SiteConfig
 from ..english import EnglishError, Line, normalize_date, parse_lines, render
+from ..nav.ready import OpenError, open_url
 from ..frames import FrameError, describe_frame, frame_for, iframe_candidates
 from ..grid import GridError, act_on_cell, check_roots, grid_info, resolve_cell
 from ..grid.actions import quick_ms
@@ -608,7 +609,7 @@ class Author:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 self._ask(a)
                 return EXIT_ASK
-            except (_Stop, _NotFound, GridError, FrameError, PlaywrightError, ResolveError) as e:
+            except (_Stop, _NotFound, GridError, FrameError, PlaywrightError, ResolveError, OpenError) as e:
                 rec.ms[c.run] = round((time.monotonic() - t0) * 1000)
                 msg = str(e).split("\nCall log:")[0].strip()
                 msg = self._masked(rec, msg)
@@ -769,10 +770,13 @@ class Author:
     # ------------------------------------------------------------------ goto + iframe
     def _goto(self, rec: LineRec, c: _Ctx) -> None:
         ref = rec.pageref
+        note = None
         if not rec.switch:
-            c.page.goto(ref.url, wait_until="domcontentloaded")
+            note = open_url(c.page, ref.url, self.timeout)
         elif c.page.url in ("", "about:blank") or (rec.nav is not None and not self._at_base(c)):
-            c.page.goto(self.cfg.base_url, wait_until="domcontentloaded")   # the flow starts by switching
+            note = open_url(c.page, self.cfg.base_url, self.timeout)   # the flow starts by switching
+        if note and c.run == 1:
+            rec.notes.append(note)
         rep = c.tracker.wait([c.page.main_frame])
         c.key = ref.key
         if not rep.ok:

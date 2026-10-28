@@ -91,3 +91,23 @@ def test_document_id_changes_on_reload(page):
     page.reload()
     b = page.evaluate(DOC_ID_JS)
     assert a and b and a != b
+
+
+def test_open_url_slow_document_is_a_note_not_a_failure(page, site_url):
+    """User report: 'Page.goto: Timeout 10000ms exceeded' in their real Chrome (a heavy app behind login).
+    The server answered; only the document was slow. That must not fail the run."""
+    from crawler.nav.ready import open_url
+    page.route("**/slowdoc.html", lambda r: r.fulfill(
+        status=200, content_type="text/html",
+        body="<html><body>app<script src='/never.js'></script></body></html>"))
+    page.route("**/never.js", lambda r: None)          # a blocking script that never arrives
+    note = open_url(page, site_url + "/slowdoc.html", 1000, min_commit_ms=1000, min_load_ms=1500)
+    assert note and "still loading" in note
+
+
+def test_open_url_no_answer_is_a_clear_error(page):
+    import pytest
+    from crawler.nav.ready import OpenError, open_url
+    page.route("**/*", lambda r: None)                  # nothing ever answers
+    with pytest.raises(OpenError, match="no response from"):
+        open_url(page, "http://127.0.0.1:9/app", 1000, min_commit_ms=1000, min_load_ms=1000)

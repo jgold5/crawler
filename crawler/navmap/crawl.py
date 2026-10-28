@@ -16,6 +16,7 @@ No fixed sleeps: waits are ``wait_for_function`` polls and ``wait_for_event`` ca
 """
 from __future__ import annotations
 
+from ..nav.ready import open_url
 import re
 import secrets
 import time
@@ -216,7 +217,9 @@ class Explorer:
     # ------------------------------------------------------------------ basics
     def start(self) -> None:
         """The start page, settled in every frame (a shell inside a frame loads its content iframe late)."""
-        self.page.goto(self.cfg.base_url, wait_until="domcontentloaded")
+        note = open_url(self.page, self.cfg.base_url, self.timeout)
+        if note:
+            self.nm.echo(f"run {self.run}: {note}")
         seen = -1
         for _ in range(4):           # frames attached while settling get their own settle
             frames = [f for f in self.page.frames if not f.is_detached()]

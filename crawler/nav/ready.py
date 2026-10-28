@@ -335,3 +335,31 @@ def wait_ready(page, cfg: SiteConfig, frames=None, timeout_ms: int | None = None
 
 
 __all__ = ["ReadyTracker", "ReadyReport", "wait_ready", "MUTATION_JS", "DOC_ID_JS"]
+
+
+class OpenError(RuntimeError):
+    """The server never started answering the URL (wrong base_url, or this browser can't reach it)."""
+
+
+def open_url(page, url: str, timeout_ms: int, *, min_commit_ms: int = 30_000, min_load_ms: int = 60_000) -> str | None:
+    """Navigate without making "the whole document finished loading" a hard deadline.
+
+    Waits for the server to start answering (commit), then gives the document generous time to reach
+    DOMContentLoaded; heavy apps behind corporate login can take longer than a step's timeout to get there.
+    Readiness after that is the caller's ReadyTracker's job. Returns a note when the document was still
+    loading (the run continues), raises OpenError when nothing answered at all.
+    """
+    commit_ms = max(int(timeout_ms), min_commit_ms)
+    try:
+        page.goto(url, wait_until="commit", timeout=commit_ms)
+    except PlaywrightTimeoutError as e:
+        raise OpenError(f"no response from {url} within {commit_ms // 1000} s: check base_url / pages url in "
+                        f"site.yaml and that this browser can reach it") from e
+    load_ms = max(int(timeout_ms) * 3, min_load_ms)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=load_ms)
+    except PlaywrightTimeoutError:
+        return f"{url} was still loading after {load_ms // 1000} s; continued with the app-ready checks"
+    except PlaywrightError:
+        return None        # navigated on (redirect / client-side route): the ready checks take it from here
+    return None
